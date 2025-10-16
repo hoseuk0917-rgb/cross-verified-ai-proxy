@@ -1,4 +1,6 @@
 // Cross-Verified AI v8.6.5 - Render Serverless Proxy
+// server.js
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -21,37 +23,38 @@ console.log('   JWT_SECRET:', JWT_SECRET ? 'Set' : 'Not Set');
 console.log('   HMAC_SECRET:', HMAC_SECRET ? 'Set' : 'Not Set');
 console.log('   ALLOWED_ORIGINS:', ALLOWED_ORIGINS);
 
-// Security middleware
+// ===== SECURITY MIDDLEWARE =====
+
+// Helmet for security headers
 app.use(helmet({
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false
 }));
 
-// CORS configuration
-app.use(cors({
-    origin: function(origin, callback) {
-        // Allow requests with no origin (mobile apps, curl, etc)
-        if (!origin) return callback(null, true);
-        
-        // Allow all origins if * is set
-        if (ALLOWED_ORIGINS.includes('*')) {
-            return callback(null, true);
-        }
-        
-        // Check if origin is in allowed list
-        if (ALLOWED_ORIGINS.includes(origin)) {
-            callback(null, true);
-        } else {
-            console.log('⚠️ CORS blocked origin:', origin);
-            callback(null, true); // Allow anyway for testing
-        }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-app-signature', 'x-timestamp']
-}));
+// CORS - Handle preflight and actual requests
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    
+    // Allow all origins if * is set, or check whitelist
+    if (ALLOWED_ORIGINS.includes('*') || !origin || ALLOWED_ORIGINS.some(o => origin.includes(o))) {
+        res.header('Access-Control-Allow-Origin', origin || '*');
+    }
+    
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-app-signature, x-timestamp, Accept, Origin, X-Requested-With');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400'); // 24 hours
+    
+    // Handle preflight
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    
+    next();
+});
 
 app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
 
 // Rate limiter - 100 requests per 15 minutes
 const limiter = rateLimit({
@@ -60,6 +63,7 @@ const limiter = rateLimit({
     message: { error: 'Too many requests, please try again later.' },
     standardHeaders: true,
     legacyHeaders: false,
+    skip: (req) => req.path === '/health' || req.path === '/healthz' || req.path === '/ping'
 });
 
 app.use('/api/', limiter);
@@ -71,6 +75,7 @@ app.get('/', (req, res) => {
     res.json({ 
         message: 'Cross-Verified AI Proxy v8.6.5',
         status: 'running',
+        timestamp: new Date().toISOString(),
         endpoints: {
             health: '/health',
             healthz: '/healthz',
@@ -120,27 +125,34 @@ app.get('/ping', (req, res) => {
 
 // JWT 토큰 발급 (15분 TTL)
 app.post('/auth/token', (req, res) => {
-    const { appId } = req.body;
-    
-    if (!appId || appId !== 'cross-verified-ai-v8.6.5') {
-        return res.status(401).json({ error: 'Invalid app identification' });
+    try {
+        const { appId } = req.body;
+        
+        if (!appId || appId !== 'cross-verified-ai-v8.6.5') {
+            console.log('❌ Invalid app ID:', appId);
+            return res.status(401).json({ error: 'Invalid app identification' });
+        }
+        
+        const token = jwt.sign(
+            { appId, timestamp: Date.now() },
+            JWT_SECRET,
+            { expiresIn: '15m' }
+        );
+        
+        console.log('✅ JWT token issued');
+        res.json({ token, expiresIn: 900 });
+    } catch (error) {
+        console.error('❌ Token generation error:', error);
+        res.status(500).json({ error: 'Token generation failed' });
     }
-    
-    const token = jwt.sign(
-        { appId, timestamp: Date.now() },
-        JWT_SECRET,
-        { expiresIn: '15m' }
-    );
-    
-    console.log('✅ JWT token issued');
-    res.json({ token, expiresIn: 900 });
 });
 
 // ===== MIDDLEWARE =====
 
 // JWT 검증 미들웨어
 function verifyJWT(req, res, next) {
-    const token = req.headers['authorization']?.replace('Bearer ', '');
+    const authHeader = req.headers['authorization'];
+    const token = authHeader?.replace('Bearer ', '');
     
     if (!token) {
         console.log('❌ No JWT token provided');
@@ -170,25 +182,30 @@ function verifyHMAC(req, res, next) {
     // 타임스탬프 검증 (5분 이내)
     const now = Date.now();
     const requestTime = parseInt(timestamp);
-    if (Math.abs(now - requestTime) > 5 * 60 * 1000) {
-        console.log('❌ Timestamp expired');
-        return res.status(401).json({ error: 'Request timestamp expired' });
+    if (isNaN(requestTime) || Math.abs(now - requestTime) > 5 * 60 * 1000) {
+        console.log('❌ Timestamp expired or invalid');
+        return res.status(401).json({ error: 'Request timestamp expired or invalid' });
     }
     
     // HMAC 검증
-    const body = JSON.stringify(req.body);
-    const data = body + timestamp;
-    const expectedSignature = crypto
-        .createHmac('sha256', HMAC_SECRET)
-        .update(data)
-        .digest('hex');
-    
-    if (signature !== expectedSignature) {
-        console.log('❌ Invalid HMAC signature');
-        return res.status(401).json({ error: 'Invalid signature' });
+    try {
+        const body = JSON.stringify(req.body);
+        const data = body + timestamp;
+        const expectedSignature = crypto
+            .createHmac('sha256', HMAC_SECRET)
+            .update(data)
+            .digest('hex');
+        
+        if (signature !== expectedSignature) {
+            console.log('❌ Invalid HMAC signature');
+            return res.status(401).json({ error: 'Invalid signature' });
+        }
+        
+        next();
+    } catch (error) {
+        console.error('❌ HMAC verification error:', error);
+        return res.status(401).json({ error: 'Signature verification failed' });
     }
-    
-    next();
 }
 
 // ===== API ENDPOINTS =====
@@ -200,6 +217,7 @@ app.post('/api/gemini', verifyJWT, verifyHMAC, async (req, res) => {
     console.log('📤 Gemini API request received');
     
     if (!apiKey || !prompt) {
+        console.log('❌ Missing apiKey or prompt');
         return res.status(400).json({ error: 'Missing apiKey or prompt' });
     }
     
@@ -423,6 +441,7 @@ app.use((req, res) => {
     res.status(404).json({ 
         error: 'Not Found',
         path: req.path,
+        method: req.method,
         message: 'The requested endpoint does not exist'
     });
 });
@@ -438,7 +457,7 @@ app.use((err, req, res, next) => {
 
 // ===== START SERVER =====
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log('');
     console.log('🚀 Cross-Verified AI Proxy Server v8.6.5');
     console.log('📡 Server running on port', PORT);
@@ -456,6 +475,14 @@ app.listen(PORT, () => {
     console.log('  POST /api/verify/openalex');
     console.log('  POST /api/verify/wikidata');
     console.log('');
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('📴 SIGTERM signal received: closing HTTP server');
+    server.close(() => {
+        console.log('✅ HTTP server closed');
+    });
 });
 
 module.exports = app;
