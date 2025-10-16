@@ -27,8 +27,8 @@ const limiter = rateLimit({
   max: 100,
   message: { error: 'Too many requests' }
 });
-app.use('/api/', limiter);
-
-// ===== Render 헬스체크용 엔드포인트 =====
-app.get('/healthz', (req, res) => {
-  r
+app.listen(PORT, () => {
+  console.log(`🚀 Cross-Verified AI Proxy Server v8.6.5`);
+  console.log(`📡 Server running on port ${PORT}`);
+  console.log(`🔒 Security: JWT + HMAC-SHA256 enabled`);
+});
