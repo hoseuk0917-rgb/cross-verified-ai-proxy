@@ -211,8 +211,9 @@ function verifyHMAC(req, res, next) {
 // ===== API ENDPOINTS =====
 
 // Gemini API Proxy
+// Gemini API Proxy
 app.post('/api/gemini', verifyJWT, verifyHMAC, async (req, res) => {
-    const { apiKey, prompt, model = 'gemini-pro' } = req.body;
+    const { apiKey, prompt, model = 'gemini-1.5-flash' } = req.body; // ← 기본값 변경!
     
     console.log('📤 Gemini API request received');
     
@@ -222,8 +223,11 @@ app.post('/api/gemini', verifyJWT, verifyHMAC, async (req, res) => {
     }
     
     try {
+        // v1beta 대신 v1 사용 가능
+        const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
+        
         const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+            apiUrl,
             {
                 contents: [{ parts: [{ text: prompt }] }],
                 generationConfig: {
@@ -242,6 +246,7 @@ app.post('/api/gemini', verifyJWT, verifyHMAC, async (req, res) => {
             success: true,
             data: response.data,
             engine: 'Gemini',
+            model: model,
             timestamp: Date.now()
         });
         
@@ -259,11 +264,53 @@ app.post('/api/gemini', verifyJWT, verifyHMAC, async (req, res) => {
         
         res.status(500).json({
             error: 'Gemini API request failed',
-            details: error.message
+            details: error.response?.data?.error?.message || error.message
         });
     }
 });
 
+// DuckDuckGo Search Proxy - 타임아웃 증가
+app.post('/api/search/duckduckgo', verifyJWT, verifyHMAC, async (req, res) => {
+    const { query } = req.body;
+    
+    console.log('📤 DuckDuckGo search request:', query);
+    
+    if (!query) {
+        return res.status(400).json({ error: 'Missing query' });
+    }
+    
+    try {
+        const response = await axios.get(
+            `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`,
+            { timeout: 20000 } // ← 10초 → 20초로 증가
+        );
+        
+        console.log('✅ DuckDuckGo search success');
+        res.json({
+            success: true,
+            data: response.data,
+            source: 'DuckDuckGo',
+            timestamp: Date.now()
+        });
+        
+    } catch (error) {
+        console.error('❌ DuckDuckGo Error:', error.message);
+        
+        // 타임아웃이면 빈 결과 반환 (실패로 처리하지 않음)
+        if (error.code === 'ECONNABORTED') {
+            console.log('⚠️ DuckDuckGo timeout, returning empty results');
+            return res.json({
+                success: true,
+                data: { RelatedTopics: [] },
+                source: 'DuckDuckGo',
+                timeout: true,
+                timestamp: Date.now()
+            });
+        }
+        
+        res.status(500).json({ error: 'Search failed', details: error.message });
+    }
+});
 // Mistral API Proxy (무료)
 app.post('/api/mistral', verifyJWT, verifyHMAC, async (req, res) => {
     const { prompt } = req.body;
