@@ -28,10 +28,18 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 
 // ===== Health Check =====
-app.get('/healthz', (req, res) => {
-  res.status(200).send('OK');
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        version: '8.6.5',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
 });
 
+app.get('/healthz', (req, res) => {
+    res.json({ status: 'ok' });  // 기존 것도 유지
+});
 // ===== Ping =====
 app.get('/ping', (req, res) => {
   res.json({ pong: true, timestamp: Date.now() });
