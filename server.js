@@ -1,5 +1,5 @@
 // Cross-Verified AI v8.6.5 - Render Serverless Proxy
-// server.js
+// server.js - Complete Production Version
 
 const express = require('express');
 const cors = require('cors');
@@ -24,6 +24,9 @@ console.log('   HMAC_SECRET:', HMAC_SECRET ? 'Set' : 'Not Set');
 console.log('   ALLOWED_ORIGINS:', ALLOWED_ORIGINS);
 
 // ===== SECURITY MIDDLEWARE =====
+
+// CRITICAL: Trust proxy for Render.com (behind reverse proxy)
+app.set('trust proxy', 1);
 
 // Helmet for security headers
 app.use(helmet({
@@ -211,11 +214,11 @@ function verifyHMAC(req, res, next) {
 // ===== API ENDPOINTS =====
 
 // Gemini API Proxy
-// Gemini API Proxy
 app.post('/api/gemini', verifyJWT, verifyHMAC, async (req, res) => {
-    const { apiKey, prompt, model = 'gemini-1.5-flash' } = req.body; // ← 기본값 변경!
+    const { apiKey, prompt, model = 'gemini-1.5-flash-latest' } = req.body;
     
     console.log('📤 Gemini API request received');
+    console.log('   Model:', model);
     
     if (!apiKey || !prompt) {
         console.log('❌ Missing apiKey or prompt');
@@ -223,8 +226,8 @@ app.post('/api/gemini', verifyJWT, verifyHMAC, async (req, res) => {
     }
     
     try {
-        // v1beta 대신 v1 사용 가능
-        const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
+        // Use v1beta API with latest model
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
         
         const response = await axios.post(
             apiUrl,
@@ -269,48 +272,6 @@ app.post('/api/gemini', verifyJWT, verifyHMAC, async (req, res) => {
     }
 });
 
-// DuckDuckGo Search Proxy - 타임아웃 증가
-app.post('/api/search/duckduckgo', verifyJWT, verifyHMAC, async (req, res) => {
-    const { query } = req.body;
-    
-    console.log('📤 DuckDuckGo search request:', query);
-    
-    if (!query) {
-        return res.status(400).json({ error: 'Missing query' });
-    }
-    
-    try {
-        const response = await axios.get(
-            `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`,
-            { timeout: 20000 } // ← 10초 → 20초로 증가
-        );
-        
-        console.log('✅ DuckDuckGo search success');
-        res.json({
-            success: true,
-            data: response.data,
-            source: 'DuckDuckGo',
-            timestamp: Date.now()
-        });
-        
-    } catch (error) {
-        console.error('❌ DuckDuckGo Error:', error.message);
-        
-        // 타임아웃이면 빈 결과 반환 (실패로 처리하지 않음)
-        if (error.code === 'ECONNABORTED') {
-            console.log('⚠️ DuckDuckGo timeout, returning empty results');
-            return res.json({
-                success: true,
-                data: { RelatedTopics: [] },
-                source: 'DuckDuckGo',
-                timeout: true,
-                timestamp: Date.now()
-            });
-        }
-        
-        res.status(500).json({ error: 'Search failed', details: error.message });
-    }
-});
 // Mistral API Proxy (무료)
 app.post('/api/mistral', verifyJWT, verifyHMAC, async (req, res) => {
     const { prompt } = req.body;
@@ -367,7 +328,7 @@ app.post('/api/search/duckduckgo', verifyJWT, verifyHMAC, async (req, res) => {
     try {
         const response = await axios.get(
             `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`,
-            { timeout: 10000 }
+            { timeout: 20000 } // Increased timeout
         );
         
         console.log('✅ DuckDuckGo search success');
@@ -380,6 +341,19 @@ app.post('/api/search/duckduckgo', verifyJWT, verifyHMAC, async (req, res) => {
         
     } catch (error) {
         console.error('❌ DuckDuckGo Error:', error.message);
+        
+        // Handle timeout gracefully
+        if (error.code === 'ECONNABORTED') {
+            console.log('⚠️ DuckDuckGo timeout, returning empty results');
+            return res.json({
+                success: true,
+                data: { RelatedTopics: [] },
+                source: 'DuckDuckGo',
+                timeout: true,
+                timestamp: Date.now()
+            });
+        }
+        
         res.status(500).json({ error: 'Search failed', details: error.message });
     }
 });
@@ -509,6 +483,7 @@ const server = app.listen(PORT, () => {
     console.log('🚀 Cross-Verified AI Proxy Server v8.6.5');
     console.log('📡 Server running on port', PORT);
     console.log('🔒 Security: JWT + HMAC-SHA256 enabled');
+    console.log('🌐 Trust Proxy: Enabled (Render.com)');
     console.log('⏰ Auto-sleep after 15 minutes of inactivity (Render free tier)');
     console.log('');
     console.log('Available endpoints:');
