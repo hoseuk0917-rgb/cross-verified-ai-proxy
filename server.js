@@ -13,6 +13,9 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Trust proxy for Render.com
+app.set('trust proxy', 1);
+
 // ========================
 // 환경 변수
 // ========================
