@@ -1,653 +1,544 @@
-// Cross-Verified AI v8.7.9 - Health Dual Fallback Edition
-// server.js - Production Ready with Auto Health Endpoint Detection
+// Cross-Verified AI Proxy Server v8.8.5 - Adaptive Reset Full Edition
+// Author: Claude + User
+// Date: 2025-10-30
+// Platform: Render.com Serverless
 
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
-const jwt = require('jsonwebtoken');
 const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ========================
 // 환경 변수
-const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this';
-const HMAC_SECRET = process.env.HMAC_SECRET || 'your-hmac-secret-key-change-this';
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || ['*'];
+// ========================
+const JWT_SECRET = process.env.JWT_SECRET || 'your-jwt-secret-key';
+const HMAC_SECRET = process.env.HMAC_SECRET || 'your-hmac-secret-key';
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || '*';
 
-console.log('🔧 Server Configuration:');
-console.log('   VERSION: 8.7.9 (Health Dual Fallback Edition)');
-console.log('   PORT:', PORT);
-console.log('   JWT_SECRET:', JWT_SECRET ? 'Set' : 'Not Set');
-console.log('   HMAC_SECRET:', HMAC_SECRET ? 'Set' : 'Not Set');
-console.log('   ALLOWED_ORIGINS:', ALLOWED_ORIGINS);
-
-// ===== UTILITY FUNCTIONS =====
-
-// 재시도 로직 (exponential backoff)
-async function retryRequest(fn, retries = 3, delay = 1000) {
-    for (let i = 0; i < retries; i++) {
-        try {
-            return await fn();
-        } catch (error) {
-            const isLastAttempt = i === retries - 1;
-            const isRetryable = error.code === 'ECONNABORTED' || 
-                                error.code === 'ETIMEDOUT' ||
-                                error.response?.status >= 500;
-            
-            if (isLastAttempt || !isRetryable) {
-                throw error;
-            }
-            
-            console.log(`⚠️ Retry ${i + 1}/${retries} after ${delay}ms...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-            delay *= 2; // exponential backoff
-        }
-    }
-}
-
-// ===== SECURITY MIDDLEWARE =====
-
-app.set('trust proxy', 1);
-
-app.use(helmet({
-    contentSecurityPolicy: false,
-    crossOriginEmbedderPolicy: false
+// ========================
+// 미들웨어
+// ========================
+app.use(helmet());
+app.use(cors({
+  origin: ALLOWED_ORIGINS === '*' ? '*' : ALLOWED_ORIGINS.split(','),
+  credentials: true
 }));
-
-app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    
-    if (ALLOWED_ORIGINS.includes('*') || !origin || ALLOWED_ORIGINS.some(o => origin.includes(o))) {
-        res.header('Access-Control-Allow-Origin', origin || '*');
-    }
-    
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-app-signature, x-timestamp, Accept, Origin, X-Requested-With');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Max-Age', '86400');
-    
-    if (req.method === 'OPTIONS') {
-        return res.sendStatus(200);
-    }
-    
-    next();
-});
-
 app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
 
-// Rate limiter - 100 requests per 15 minutes
+// Rate Limiter
 const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
-    message: { error: 'Too many requests, please try again later.' },
-    standardHeaders: true,
-    legacyHeaders: false,
-    skip: (req) => req.path === '/health' || req.path === '/healthz' || req.path === '/ping'
+  windowMs: 15 * 60 * 1000, // 15분
+  max: 100, // 100 요청
+  message: { error: 'Too many requests, please try again later.' }
 });
-
 app.use('/api/', limiter);
 
-// ===== PUBLIC ENDPOINTS =====
+// ========================
+// 유틸리티 함수
+// ========================
 
-// Root endpoint
-app.get('/', (req, res) => {
-    res.json({ 
-        message: 'Cross-Verified AI Proxy v8.7.9 - Health Dual Fallback Edition',
-        status: 'running',
-        timestamp: new Date().toISOString(),
-        edition: 'Health Dual Fallback Edition',
-        features: [
-            'Health Auto-Fallback (/health + /healthz)',
-            'Gemini Key Rotation (1-3 keys)',
-            'Pre-Wake Cold Start Optimization',
-            'JWT + HMAC-SHA256 Security',
-            'GDELT News/Web Verification',
-            'TruthScore with ECC Correction',
-            'Fail-Grace: Gemini → Mistral → Partial → Standby'
-        ],
-        endpoints: {
-            health: '/health (or /healthz - both work!)',
-            ping: '/ping',
-            auth: '/auth/token',
-            test: '/api/test-connection',
-            api: {
-                gemini: '/api/gemini',
-                mistral: '/api/mistral',
-                verify: {
-                    gdelt: '/api/verify/gdelt',
-                    crossref: '/api/verify/crossref',
-                    openalex: '/api/verify/openalex',
-                    wikidata: '/api/verify/wikidata'
-                }
-            }
-        }
-    });
+// JWT 생성
+function generateJWT(payload) {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 15 * 60 * 1000 })).toString('base64url');
+  const signature = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
+  return `${header}.${body}.${signature}`;
+}
+
+// JWT 검증
+function verifyJWT(token) {
+  try {
+    const [header, payload, signature] = token.split('.');
+    const expectedSig = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest('base64url');
+    if (signature !== expectedSig) return null;
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString());
+    if (decoded.exp < Date.now()) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+// HMAC 검증
+function verifyHMAC(body, timestamp, signature) {
+  const expectedSig = crypto.createHmac('sha256', HMAC_SECRET)
+    .update(JSON.stringify(body) + timestamp)
+    .digest('hex');
+  return signature === expectedSig;
+}
+
+// 재시도 로직 (Exponential Backoff)
+async function retryRequest(fn, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (i === maxRetries - 1) throw error;
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+    }
+  }
+}
+
+// ========================
+// 미들웨어 - 보안 검증
+// ========================
+function securityMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const signature = req.headers['x-app-signature'];
+  const timestamp = req.headers['x-timestamp'];
+
+  // JWT 검증
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing or invalid JWT token' });
+  }
+  const token = authHeader.split(' ')[1];
+  const decoded = verifyJWT(token);
+  if (!decoded) {
+    return res.status(401).json({ error: 'Invalid or expired JWT token' });
+  }
+
+  // HMAC 검증
+  if (!signature || !timestamp) {
+    return res.status(401).json({ error: 'Missing HMAC signature or timestamp' });
+  }
+  if (!verifyHMAC(req.body, timestamp, signature)) {
+    return res.status(401).json({ error: 'Invalid HMAC signature' });
+  }
+
+  req.user = decoded;
+  next();
+}
+
+// ========================
+// Health Check (Pre-Wake Ping)
+// ========================
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    version: '8.8.5',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
 });
 
-// 🔥 Health Check - Dual Fallback (both /health and /healthz work!)
-app.get(['/health', '/healthz'], (req, res) => {
-    res.status(200).json({ 
-        status: 'ok', 
-        version: '8.7.9',
-        edition: 'Health Dual Fallback',
-        endpoint: req.path,
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        memory: process.memoryUsage(),
-        engines: {
-            ai: ['Gemini (1-3 keys)', 'Mistral (fallback)'],
-            verification: ['GDELT (0.9)', 'CrossRef (1.0)', 'OpenAlex (1.0)', 'Wikidata (0.8)']
-        },
-        env: {
-            node: process.version,
-            platform: process.platform
-        }
-    });
+app.get('/healthz', (req, res) => {
+  res.json({
+    status: 'healthy',
+    version: '8.8.5',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
 });
 
-// Ping endpoint (Pre-Wake용)
-app.get('/ping', (req, res) => {
-    res.json({ 
-        pong: true, 
-        timestamp: Date.now(),
-        uptime: process.uptime(),
-        version: '8.7.9',
-        message: 'Server awake and ready!'
-    });
-});
-
-// JWT 토큰 발급 (15분 TTL)
+// ========================
+// JWT 토큰 발급
+// ========================
 app.post('/auth/token', (req, res) => {
-    try {
-        const { appId } = req.body;
-        
-        // v8.7.9 appId 검증
-        if (!appId || appId !== 'cross-verified-ai-v8.7.9') {
-            console.log('❌ Invalid app ID:', appId);
-            return res.status(401).json({ error: 'Invalid app identification' });
-        }
-        
-        const token = jwt.sign(
-            { appId, timestamp: Date.now() },
-            JWT_SECRET,
-            { expiresIn: '15m' }
-        );
-        
-        console.log('✅ JWT token issued for v8.7.9');
-        res.json({ token, expiresIn: 900, version: '8.7.9' });
-    } catch (error) {
-        console.error('❌ Token generation error:', error);
-        res.status(500).json({ error: 'Token generation failed' });
-    }
+  const { appId } = req.body;
+  if (!appId || appId !== 'cross-verified-ai') {
+    return res.status(400).json({ error: 'Invalid appId' });
+  }
+  const token = generateJWT({ appId, iat: Date.now() });
+  res.json({ token, expiresIn: '15m' });
 });
 
-// 통합 연결 테스트 엔드포인트
-app.post('/api/test-connection', async (req, res) => {
-    try {
-        const results = {
-            server: { status: 'ok', version: '8.7.9' },
-            endpoints: {
-                health: false,
-                healthz: false,
-                ping: false
-            },
-            timestamp: Date.now()
-        };
+// ========================
+// Gemini API - 답변 생성
+// ========================
+app.post('/api/gemini', securityMiddleware, async (req, res) => {
+  const { prompt, apiKey } = req.body;
 
-        // 자체 엔드포인트 확인
-        try {
-            results.endpoints.health = true;
-            results.endpoints.healthz = true;
-            results.endpoints.ping = true;
-        } catch (e) {
-            console.error('❌ Endpoint check failed:', e);
-        }
+  if (!prompt || !apiKey) {
+    return res.status(400).json({ error: 'Missing prompt or apiKey' });
+  }
 
-        res.json(results);
-    } catch (error) {
-        console.error('❌ Connection test error:', error);
-        res.status(500).json({ error: 'Connection test failed' });
-    }
-});
+  try {
+    const response = await retryRequest(() => 
+      axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
+        {
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 2048
+          }
+        },
+        { timeout: 30000 }
+      )
+    );
 
-// ===== MIDDLEWARE =====
-
-// JWT 검증 미들웨어
-function verifyJWT(req, res, next) {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader?.replace('Bearer ', '');
-    
-    if (!token) {
-        console.log('❌ No JWT token provided');
-        return res.status(401).json({ error: 'No token provided' });
-    }
-    
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        req.user = decoded;
-        next();
-    } catch (err) {
-        console.log('❌ Invalid JWT token:', err.message);
-        return res.status(401).json({ error: 'Invalid or expired token' });
-    }
-}
-
-// HMAC 서명 검증 미들웨어
-function verifyHMAC(req, res, next) {
-    const signature = req.headers['x-app-signature'];
-    const timestamp = req.headers['x-timestamp'];
-    
-    if (!signature || !timestamp) {
-        console.log('❌ Missing signature or timestamp');
-        return res.status(401).json({ error: 'Missing signature or timestamp' });
-    }
-    
-    // 타임스탬프 검증 (5분 이내)
-    const now = Date.now();
-    const requestTime = parseInt(timestamp);
-    if (isNaN(requestTime) || Math.abs(now - requestTime) > 5 * 60 * 1000) {
-        console.log('❌ Timestamp expired or invalid');
-        return res.status(401).json({ error: 'Request timestamp expired or invalid' });
-    }
-    
-    // HMAC 검증
-    try {
-        const body = JSON.stringify(req.body);
-        const data = body + timestamp;
-        const expectedSignature = crypto
-            .createHmac('sha256', HMAC_SECRET)
-            .update(data)
-            .digest('hex');
-        
-        if (signature !== expectedSignature) {
-            console.log('❌ Invalid HMAC signature');
-            return res.status(401).json({ error: 'Invalid signature' });
-        }
-        
-        next();
-    } catch (error) {
-        console.error('❌ HMAC verification error:', error);
-        return res.status(401).json({ error: 'Signature verification failed' });
-    }
-}
-
-// ===== API ENDPOINTS =====
-
-// Gemini API Proxy (Key Rotation Support)
-app.post('/api/gemini', verifyJWT, verifyHMAC, async (req, res) => {
-    const { apiKey, prompt, model = 'gemini-flash-latest' } = req.body;
-    
-    console.log('📤 Gemini API request received');
-    console.log('   Model:', model);
-    
-    if (!apiKey || !prompt) {
-        console.log('❌ Missing apiKey or prompt');
-        return res.status(400).json({ error: 'Missing apiKey or prompt' });
-    }
-    
-    try {
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-        
-        const response = await retryRequest(async () => {
-            return await axios.post(
-                apiUrl,
-                {
-                    contents: [{ parts: [{ text: prompt }] }],
-                    generationConfig: {
-                        temperature: 0.7,
-                        maxOutputTokens: 2048,
-                    }
-                },
-                {
-                    headers: { 'Content-Type': 'application/json' },
-                    timeout: 30000
-                }
-            );
-        }, 2); // 2회 재시도
-        
-        console.log('✅ Gemini API success');
-        res.json({
-            success: true,
-            data: response.data,
-            engine: 'Gemini',
-            model: model,
-            timestamp: Date.now(),
-            version: '8.7.9'
-        });
-        
-    } catch (error) {
-        console.error('❌ Gemini API Error:', error.response?.data || error.message);
-        
-        // 429 또는 403 에러를 클라이언트에 전달 (키 로테이션용)
-        if (error.response?.status === 429 || error.response?.status === 403) {
-            return res.status(error.response.status).json({
-                error: 'API quota exceeded',
-                status: error.response.status,
-                needRotation: true,
-                message: 'Please rotate to next Gemini key or use Mistral fallback'
-            });
-        }
-        
-        res.status(500).json({
-            error: 'Gemini API request failed',
-            details: error.response?.data?.error?.message || error.message
-        });
-    }
-});
-
-// Mistral API Proxy (무료 Fallback)
-app.post('/api/mistral', verifyJWT, verifyHMAC, async (req, res) => {
-    const { prompt } = req.body;
-    
-    console.log('📤 Mistral API request received (Fallback mode)');
-    
-    if (!prompt) {
-        return res.status(400).json({ error: 'Missing prompt' });
-    }
-    
-    try {
-        const response = await retryRequest(async () => {
-            return await axios.post(
-                'https://api.mistral.ai/v1/chat/completions',
-                {
-                    model: 'mistral-tiny',
-                    messages: [{ role: 'user', content: prompt }]
-                },
-                {
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${process.env.MISTRAL_API_KEY || ''}`
-                    },
-                    timeout: 30000
-                }
-            );
-        }, 2);
-        
-        console.log('✅ Mistral API success');
-        res.json({
-            success: true,
-            data: response.data,
-            engine: 'Mistral',
-            weight: 0.8,
-            fallback: true,
-            timestamp: Date.now(),
-            version: '8.7.9'
-        });
-        
-    } catch (error) {
-        console.error('❌ Mistral API Error:', error.message);
-        res.status(500).json({
-            error: 'Mistral API request failed',
-            details: error.message
-        });
-    }
-});
-
-// GDELT API Proxy (뉴스·웹 검증)
-app.post('/api/verify/gdelt', verifyJWT, verifyHMAC, async (req, res) => {
-    const { query, maxrecords = 10 } = req.body;
-    
-    console.log('📤 GDELT verification request:', query);
-    
-    if (!query) {
-        return res.status(400).json({ error: 'Missing query' });
-    }
-    
-    try {
-        const response = await retryRequest(async () => {
-            return await axios.get(
-                'https://api.gdeltproject.org/api/v2/doc/doc',
-                {
-                    params: {
-                        query: query,
-                        mode: 'artlist',
-                        format: 'json',
-                        maxrecords: maxrecords,
-                        sort: 'datedesc'
-                    },
-                    headers: { 
-                        'User-Agent': 'CrossVerifiedAI/8.7.9 (mailto:admin@example.com)' 
-                    },
-                    timeout: 15000
-                }
-            );
-        }, 3); // 3회 재시도
-        
-        console.log('✅ GDELT verification success');
-        
-        const articles = response.data?.articles || [];
-        
-        res.json({
-            success: true,
-            data: {
-                articles: articles,
-                count: articles.length,
-                query: query
-            },
-            source: 'GDELT',
-            weight: 0.9,
-            timestamp: Date.now(),
-            version: '8.7.9'
-        });
-        
-    } catch (error) {
-        console.error('❌ GDELT Error:', error.message);
-        
-        // Graceful degradation
-        if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
-            console.log('⚠️ GDELT timeout, returning empty results');
-            return res.json({
-                success: true,
-                data: { articles: [], count: 0, query: query },
-                source: 'GDELT',
-                weight: 0.9,
-                timeout: true,
-                message: 'GDELT search timed out, returned empty results',
-                timestamp: Date.now(),
-                version: '8.7.9'
-            });
-        }
-        
-        res.status(500).json({ 
-            error: 'GDELT verification failed', 
-            details: error.message,
-            code: error.code
-        });
-    }
-});
-
-// CrossRef API Proxy
-app.post('/api/verify/crossref', verifyJWT, verifyHMAC, async (req, res) => {
-    const { doi } = req.body;
-    
-    console.log('📤 CrossRef verification request:', doi);
-    
-    if (!doi) {
-        return res.status(400).json({ error: 'Missing DOI' });
-    }
-    
-    try {
-        const response = await retryRequest(async () => {
-            return await axios.get(
-                `https://api.crossref.org/works/${encodeURIComponent(doi)}`,
-                {
-                    headers: { 'User-Agent': 'CrossVerifiedAI/8.7.9 (mailto:admin@example.com)' },
-                    timeout: 10000
-                }
-            );
-        }, 2);
-        
-        console.log('✅ CrossRef verification success');
-        res.json({
-            success: true,
-            data: response.data,
-            source: 'CrossRef',
-            weight: 1.0,
-            timestamp: Date.now(),
-            version: '8.7.9'
-        });
-        
-    } catch (error) {
-        console.error('❌ CrossRef Error:', error.message);
-        res.status(404).json({ 
-            error: 'DOI not found', 
-            details: error.message 
-        });
-    }
-});
-
-// OpenAlex API Proxy
-app.post('/api/verify/openalex', verifyJWT, verifyHMAC, async (req, res) => {
-    const { query } = req.body;
-    
-    console.log('📤 OpenAlex search request:', query);
-    
-    if (!query) {
-        return res.status(400).json({ error: 'Missing query' });
-    }
-    
-    try {
-        const response = await retryRequest(async () => {
-            return await axios.get(
-                `https://api.openalex.org/works?search=${encodeURIComponent(query)}`,
-                {
-                    headers: { 'User-Agent': 'mailto:admin@example.com' },
-                    timeout: 10000
-                }
-            );
-        }, 2);
-        
-        console.log('✅ OpenAlex search success');
-        res.json({
-            success: true,
-            data: response.data,
-            source: 'OpenAlex',
-            weight: 1.0,
-            timestamp: Date.now(),
-            version: '8.7.9'
-        });
-        
-    } catch (error) {
-        console.error('❌ OpenAlex Error:', error.message);
-        res.status(500).json({ 
-            error: 'Search failed', 
-            details: error.message 
-        });
-    }
-});
-
-// Wikidata API Proxy
-app.post('/api/verify/wikidata', verifyJWT, verifyHMAC, async (req, res) => {
-    const { query } = req.body;
-    
-    console.log('📤 Wikidata search request:', query);
-    
-    if (!query) {
-        return res.status(400).json({ error: 'Missing query' });
-    }
-    
-    try {
-        const response = await retryRequest(async () => {
-            return await axios.get(
-                `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(query)}&language=en&format=json`,
-                { timeout: 10000 }
-            );
-        }, 2);
-        
-        console.log('✅ Wikidata search success');
-        res.json({
-            success: true,
-            data: response.data,
-            source: 'Wikidata',
-            weight: 0.8,
-            timestamp: Date.now(),
-            version: '8.7.9'
-        });
-        
-    } catch (error) {
-        console.error('❌ Wikidata Error:', error.message);
-        res.status(500).json({ 
-            error: 'Search failed', 
-            details: error.message 
-        });
-    }
-});
-
-// ===== ERROR HANDLING =====
-
-// 404 handler
-app.use((req, res) => {
-    console.log('⚠️ 404 Not Found:', req.method, req.path);
-    res.status(404).json({ 
-        error: 'Not Found',
-        path: req.path,
-        method: req.method,
-        message: 'The requested endpoint does not exist',
-        version: '8.7.9',
-        hint: 'Try /health or /healthz for health check'
+    const text = response.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    res.json({ 
+      success: true, 
+      text,
+      model: 'gemini-flash-latest'
     });
-});
-
-// Error handler
-app.use((err, req, res, next) => {
-    console.error('❌ Error:', err);
-    res.status(err.status || 500).json({
-        error: err.message || 'Internal server error',
-        path: req.path,
-        version: '8.7.9'
+  } catch (error) {
+    const status = error.response?.status || 500;
+    const message = error.response?.data?.error?.message || error.message;
+    
+    res.status(status).json({
+      success: false,
+      error: message,
+      code: status === 429 ? 'RATE_LIMIT' : status === 403 ? 'FORBIDDEN' : 'ERROR'
     });
+  }
 });
 
-// ===== START SERVER =====
+// ========================
+// Gemini API - 일치도 평가
+// ========================
+app.post('/api/gemini/evaluate', securityMiddleware, async (req, res) => {
+  const { answer, verificationSources, apiKey } = req.body;
 
-const server = app.listen(PORT, () => {
-    console.log('');
-    console.log('🚀 Cross-Verified AI Proxy Server v8.7.9');
-    console.log('📡 Health Dual Fallback Edition');
-    console.log('🌐 Server running on port', PORT);
-    console.log('🔒 Security: JWT + HMAC-SHA256 enabled');
-    console.log('🔄 Retry Logic: Enabled (exponential backoff)');
-    console.log('🌍 Trust Proxy: Enabled (Render.com)');
-    console.log('⏰ Auto-sleep after 15 minutes of inactivity');
-    console.log('⚡ Pre-Wake: Ping endpoints ready for cold start optimization');
-    console.log('');
-    console.log('🏥 Health Endpoints (both work!):');
-    console.log('  GET  /health   ← Local/Debug');
-    console.log('  GET  /healthz  ← Render internal');
-    console.log('  GET  /ping     ← Pre-Wake cold start');
-    console.log('');
-    console.log('🤖 AI Engines:');
-    console.log('  • Gemini (1-3 keys with rotation)');
-    console.log('  • Mistral (fallback, w=0.8)');
-    console.log('');
-    console.log('🔍 Verification Engines:');
-    console.log('  • GDELT (news/web, w=0.9)');
-    console.log('  • CrossRef (DOI/journals, w=1.0)');
-    console.log('  • OpenAlex (papers/citations, w=1.0)');
-    console.log('  • Wikidata (knowledge graph, w=0.8)');
-    console.log('');
-    console.log('📋 API Endpoints:');
-    console.log('  POST /auth/token');
-    console.log('  POST /api/test-connection');
-    console.log('  POST /api/gemini');
-    console.log('  POST /api/mistral');
-    console.log('  POST /api/verify/gdelt');
-    console.log('  POST /api/verify/crossref');
-    console.log('  POST /api/verify/openalex');
-    console.log('  POST /api/verify/wikidata');
-    console.log('');
-});
+  if (!answer || !verificationSources || !apiKey) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-    console.log('📴 SIGTERM signal received: closing HTTP server');
-    server.close(() => {
-        console.log('✅ HTTP server closed');
+  const prompt = `다음 답변과 검증 소스의 일치도를 0~1로 평가하세요:
+
+답변: "${answer}"
+
+검증 소스:
+- GDELT: ${JSON.stringify(verificationSources.gdelt)}
+- CrossRef: ${JSON.stringify(verificationSources.crossref)}
+- OpenAlex: ${JSON.stringify(verificationSources.openalex)}
+- Wikidata: ${JSON.stringify(verificationSources.wikidata)}
+
+각 소스별 일치도를 JSON으로만 반환하세요 (다른 설명 없이):
+{"gdelt": 0.9, "crossref": 0.8, "openalex": 0.85, "wikidata": 0.7}`;
+
+  try {
+    const response = await retryRequest(() =>
+      axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
+        {
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 256
+          }
+        },
+        { timeout: 20000 }
+      )
+    );
+
+    const text = response.data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    const matchScores = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+
+    res.json({
+      success: true,
+      matchScores,
+      raw: text
     });
+  } catch (error) {
+    const status = error.response?.status || 500;
+    res.status(status).json({
+      success: false,
+      error: error.response?.data?.error?.message || error.message,
+      code: status === 429 ? 'RATE_LIMIT' : 'ERROR'
+    });
+  }
 });
 
-module.exports = app;
+// ========================
+// Mistral API - Failover
+// ========================
+app.post('/api/mistral', securityMiddleware, async (req, res) => {
+  const { prompt } = req.body;
+
+  if (!prompt) {
+    return res.status(400).json({ error: 'Missing prompt' });
+  }
+
+  try {
+    const response = await retryRequest(() =>
+      axios.post(
+        'https://api.llama-api.com/chat/completions',
+        {
+          model: 'mistral-7b-instruct',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 2048
+        },
+        { timeout: 30000 }
+      )
+    );
+
+    const text = response.data.choices?.[0]?.message?.content || '';
+    res.json({
+      success: true,
+      text,
+      model: 'mistral-7b-instruct',
+      fallback: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ========================
+// GDELT 검증
+// ========================
+app.post('/api/verify/gdelt', securityMiddleware, async (req, res) => {
+  const { query } = req.body;
+
+  if (!query) {
+    return res.status(400).json({ error: 'Missing query' });
+  }
+
+  try {
+    const response = await retryRequest(() =>
+      axios.get('https://api.gdeltproject.org/api/v2/doc/doc', {
+        params: {
+          query,
+          mode: 'artlist',
+          maxrecords: 10,
+          format: 'json'
+        },
+        timeout: 15000
+      })
+    );
+
+    const articles = response.data.articles || [];
+    const score = Math.min(articles.length / 10, 1);
+
+    res.json({
+      success: true,
+      engine: 'gdelt',
+      score,
+      count: articles.length,
+      sources: articles.slice(0, 3).map(a => ({
+        title: a.title,
+        url: a.url,
+        date: a.seendate
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      engine: 'gdelt',
+      error: error.message
+    });
+  }
+});
+
+// ========================
+// CrossRef 검증
+// ========================
+app.post('/api/verify/crossref', securityMiddleware, async (req, res) => {
+  const { query } = req.body;
+
+  if (!query) {
+    return res.status(400).json({ error: 'Missing query' });
+  }
+
+  try {
+    const response = await retryRequest(() =>
+      axios.get('https://api.crossref.org/works', {
+        params: {
+          query,
+          rows: 10
+        },
+        timeout: 15000
+      })
+    );
+
+    const items = response.data.message.items || [];
+    const score = Math.min(items.length / 10, 1);
+
+    res.json({
+      success: true,
+      engine: 'crossref',
+      score,
+      count: items.length,
+      sources: items.slice(0, 3).map(i => ({
+        title: i.title?.[0] || 'N/A',
+        doi: i.DOI,
+        publisher: i.publisher
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      engine: 'crossref',
+      error: error.message
+    });
+  }
+});
+
+// ========================
+// OpenAlex 검증
+// ========================
+app.post('/api/verify/openalex', securityMiddleware, async (req, res) => {
+  const { query } = req.body;
+
+  if (!query) {
+    return res.status(400).json({ error: 'Missing query' });
+  }
+
+  try {
+    const response = await retryRequest(() =>
+      axios.get('https://api.openalex.org/works', {
+        params: {
+          search: query,
+          per_page: 10
+        },
+        timeout: 15000
+      })
+    );
+
+    const results = response.data.results || [];
+    const score = Math.min(results.length / 10, 1);
+
+    res.json({
+      success: true,
+      engine: 'openalex',
+      score,
+      count: results.length,
+      sources: results.slice(0, 3).map(r => ({
+        title: r.title,
+        doi: r.doi,
+        citations: r.cited_by_count
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      engine: 'openalex',
+      error: error.message
+    });
+  }
+});
+
+// ========================
+// Wikidata 검증
+// ========================
+app.post('/api/verify/wikidata', securityMiddleware, async (req, res) => {
+  const { query } = req.body;
+
+  if (!query) {
+    return res.status(400).json({ error: 'Missing query' });
+  }
+
+  try {
+    const response = await retryRequest(() =>
+      axios.get('https://www.wikidata.org/w/api.php', {
+        params: {
+          action: 'wbsearchentities',
+          search: query,
+          language: 'en',
+          limit: 10,
+          format: 'json'
+        },
+        timeout: 15000
+      })
+    );
+
+    const results = response.data.search || [];
+    const score = Math.min(results.length / 10, 1);
+
+    res.json({
+      success: true,
+      engine: 'wikidata',
+      score,
+      count: results.length,
+      sources: results.slice(0, 3).map(r => ({
+        label: r.label,
+        description: r.description,
+        id: r.id
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      engine: 'wikidata',
+      error: error.message
+    });
+  }
+});
+
+// ========================
+// TruthScore 계산 (ECC 보정 포함)
+// ========================
+app.post('/api/verify/truthscore', securityMiddleware, async (req, res) => {
+  const { results, matchScores } = req.body;
+
+  if (!results) {
+    return res.status(400).json({ error: 'Missing results' });
+  }
+
+  // 초기 가중치
+  const weights = {
+    gdelt: 0.9,
+    crossref: 1.0,
+    openalex: 1.0,
+    wikidata: 0.8
+  };
+
+  // 활성 엔진 필터링
+  const activeEngines = Object.keys(results).filter(key => results[key]?.success);
+  
+  if (activeEngines.length === 0) {
+    return res.json({
+      truthScore: 0.0,
+      activeEngines: [],
+      backupUsed: true,
+      status: 'no_verification',
+      ecc: 0
+    });
+  }
+
+  // 가중치 정규화
+  const totalWeight = activeEngines.reduce((sum, key) => sum + weights[key], 0);
+  const normalizedWeights = {};
+  activeEngines.forEach(key => {
+    normalizedWeights[key] = weights[key] / totalWeight;
+  });
+
+  // TruthScore 계산
+  const lambda = 0.03;
+  const alpha = 0.5;
+  let rawScore = 0;
+
+  activeEngines.forEach(key => {
+    const R_i = matchScores?.[key] || 0.5; // 일치도 (기본값 0.5)
+    const Q_i = results[key].score || 0.5; // 검증 엔진 점수
+    const t = 0; // 시간 감쇠 (현재는 0)
+    
+    const score_i = R_i * Q_i * Math.exp(-lambda * t);
+    rawScore += normalizedWeights[key] * score_i;
+  });
+
+  // ECC 보정
+  const eccRatio = activeEngines.length / 4; // 전체 엔진 4개
+  const C_ecc = Math.pow(eccRatio, alpha);
+  const truthScore = Math.min(rawScore * C_ecc, 1.0);
+
+  res.json({
+    truthScore: parseFloat(truthScore.toFixed(3)),
+    rawScore: parseFloat(rawScore.toFixed(3)),
+    ecc: parseFloat(C_ecc.toFixed(3)),
+    activeEngines,
+    normalizedWeights,
+    backupUsed: activeEngines.length < 4,
+    status: activeEngines.length === 4 ? 'full_verification' : 'partial_verification'
+  });
+});
+
+// ========================
+// 서버 시작
+// ========================
+app.listen(PORT, () => {
+  console.log(`🚀 Cross-Verified AI Proxy v8.8.5 running on port ${PORT}`);
+  console.log(`📘 Health Check: http://localhost:${PORT}/health`);
+  console.log(`🔒 Security: JWT + HMAC-SHA256 enabled`);
+});

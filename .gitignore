@@ -1,0 +1,5 @@
+node_modules/ 
+*.backup 
+cd 
+git 
+main 
