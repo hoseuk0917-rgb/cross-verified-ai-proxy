@@ -279,7 +279,7 @@ function verifyHMAC(req, res, next) {
 
 // Gemini API Proxy (Key Rotation Support)
 app.post('/api/gemini', verifyJWT, verifyHMAC, async (req, res) => {
-    const { apiKey, prompt, model = 'gemini-1.5-flash-latest' } = req.body;
+    const { apiKey, prompt, model = 'gemini-flash-latest' } = req.body;
     
     console.log('📤 Gemini API request received');
     console.log('   Model:', model);
