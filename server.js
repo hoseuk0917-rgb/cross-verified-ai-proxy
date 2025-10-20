@@ -11,24 +11,119 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import axios from 'axios';
 import dotenv from 'dotenv';
+import pg from 'pg';
 
 dotenv.config();
 
+const { Pool } = pg;
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ==================== 환경변수 검증 ====================
+if (!process.env.JWT_SECRET) {
+  console.error('❌ ERROR: JWT_SECRET environment variable is required!');
+  process.exit(1);
+}
+
+if (!process.env.HMAC_SECRET) {
+  console.error('❌ ERROR: HMAC_SECRET environment variable is required!');
+  process.exit(1);
+}
+
+if (!process.env.ENCRYPTION_KEY) {
+  console.error('❌ ERROR: ENCRYPTION_KEY environment variable is required!');
+  console.error('   Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+  process.exit(1);
+}
+
 // ==================== 설정 ====================
 const config = {
-  jwtSecret: process.env.JWT_SECRET || 'dev-jwt-secret-key-2025',
-  hmacSecret: process.env.HMAC_SECRET || 'dev-hmac-secret-key-2025',
+  jwtSecret: process.env.JWT_SECRET,
+  hmacSecret: process.env.HMAC_SECRET,
+  encryptionKey: Buffer.from(process.env.ENCRYPTION_KEY, 'hex'),
+  databaseUrl: process.env.DATABASE_URL,
   geminiKeys: [
-    process.env.GEMINI_KEY_1 || 'test-key-1',
-    process.env.GEMINI_KEY_2 || 'test-key-2',
-    process.env.GEMINI_KEY_3 || 'test-key-3'
+    process.env.GEMINI_KEY_1,
+    process.env.GEMINI_KEY_2,
+    process.env.GEMINI_KEY_3
   ].filter(Boolean),
   geminiModel: 'gemini-1.5-flash-latest',
   dailyLimit: 1500
 };
+
+// ==================== PostgreSQL 연결 ====================
+let pool = null;
+
+if (config.databaseUrl) {
+  pool = new Pool({
+    connectionString: config.databaseUrl,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  });
+  
+  console.log('✅ PostgreSQL connection configured');
+} else {
+  console.warn('⚠️  DATABASE_URL not set. Keys will be stored in memory only.');
+}
+
+// ==================== 암호화/복호화 ====================
+function encryptData(text) {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-gcm', config.encryptionKey, iv);
+  
+  let encrypted = cipher.update(text, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  
+  const authTag = cipher.getAuthTag();
+  
+  return {
+    iv: iv.toString('hex'),
+    encryptedData: encrypted,
+    authTag: authTag.toString('hex')
+  };
+}
+
+function decryptData(encrypted) {
+  const decipher = crypto.createDecipheriv(
+    'aes-256-gcm',
+    config.encryptionKey,
+    Buffer.from(encrypted.iv, 'hex')
+  );
+  
+  decipher.setAuthTag(Buffer.from(encrypted.authTag, 'hex'));
+  
+  let decrypted = decipher.update(encrypted.encryptedData, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  
+  return decrypted;
+}
+
+// ==================== DB 초기화 ====================
+async function initializeDatabase() {
+  if (!pool) return;
+  
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_keys (
+        id SERIAL PRIMARY KEY,
+        client_id VARCHAR(255) UNIQUE NOT NULL,
+        encrypted_keys TEXT NOT NULL,
+        iv VARCHAR(64) NOT NULL,
+        auth_tag VARCHAR(64) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    console.log('✅ Database table initialized');
+  } catch (error) {
+    console.error('❌ Database initialization error:', error.message);
+  }
+}
+
+// 서버 시작 시 DB 초기화
+if (pool) {
+  initializeDatabase().catch(console.error);
+}
 
 // ==================== Gemini 키 관리자 ====================
 class KeyManager {
@@ -122,35 +217,129 @@ class KeyManager {
 const keyManager = new KeyManager();
 
 // ==================== 사용자별 키 관리 ====================
-// 메모리에 사용자별 키 저장 (세션 기반)
-const userKeys = new Map();
+// 메모리 캐시 (빠른 접근)
+const userKeysCache = new Map();
+
+// DB에 사용자 키 저장 (암호화)
+async function saveUserKeysToDb(clientId, keys) {
+  if (!pool) {
+    // DB 없으면 메모리만 사용
+    return;
+  }
+  
+  try {
+    const keysJson = JSON.stringify(keys);
+    const encrypted = encryptData(keysJson);
+    
+    await pool.query(`
+      INSERT INTO user_keys (client_id, encrypted_keys, iv, auth_tag, updated_at)
+      VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+      ON CONFLICT (client_id)
+      DO UPDATE SET
+        encrypted_keys = $2,
+        iv = $3,
+        auth_tag = $4,
+        updated_at = CURRENT_TIMESTAMP
+    `, [clientId, encrypted.encryptedData, encrypted.iv, encrypted.authTag]);
+    
+    console.log(`✅ Keys saved to DB for client: ${clientId}`);
+  } catch (error) {
+    console.error('❌ Error saving keys to DB:', error.message);
+    throw error;
+  }
+}
+
+// DB에서 사용자 키 불러오기 (복호화)
+async function loadUserKeysFromDb(clientId) {
+  if (!pool) {
+    return null;
+  }
+  
+  try {
+    const result = await pool.query(
+      'SELECT encrypted_keys, iv, auth_tag FROM user_keys WHERE client_id = $1',
+      [clientId]
+    );
+    
+    if (result.rows.length === 0) {
+      return null;
+    }
+    
+    const row = result.rows[0];
+    const decrypted = decryptData({
+      encryptedData: row.encrypted_keys,
+      iv: row.iv,
+      authTag: row.auth_tag
+    });
+    
+    const keys = JSON.parse(decrypted);
+    console.log(`✅ Keys loaded from DB for client: ${clientId}`);
+    return keys;
+  } catch (error) {
+    console.error('❌ Error loading keys from DB:', error.message);
+    return null;
+  }
+}
 
 // 사용자 키 설정
-function setUserKeys(clientId, keys) {
+async function setUserKeys(clientId, keys) {
   const validKeys = keys.filter(k => k && k.trim().length > 0);
   
   if (validKeys.length === 0) {
     throw new Error('At least one valid key is required');
   }
   
-  userKeys.set(clientId, {
+  const keyData = {
     keys: validKeys,
     currentIndex: 0,
     requestCounts: validKeys.map(() => 0),
     createdAt: Date.now()
-  });
+  };
+  
+  // 메모리 캐시에 저장
+  userKeysCache.set(clientId, keyData);
+  
+  // DB에 암호화해서 저장
+  try {
+    await saveUserKeysToDb(clientId, validKeys);
+  } catch (error) {
+    console.warn('⚠️  Failed to save to DB, using memory only');
+  }
   
   return validKeys.length;
 }
 
 // 사용자 키 가져오기
-function getUserKeys(clientId) {
-  return userKeys.get(clientId);
+async function getUserKeys(clientId) {
+  // 먼저 메모리 캐시 확인
+  let keyData = userKeysCache.get(clientId);
+  
+  if (keyData) {
+    return keyData;
+  }
+  
+  // 캐시에 없으면 DB에서 불러오기
+  const keysFromDb = await loadUserKeysFromDb(clientId);
+  
+  if (keysFromDb) {
+    keyData = {
+      keys: keysFromDb,
+      currentIndex: 0,
+      requestCounts: keysFromDb.map(() => 0),
+      createdAt: Date.now()
+    };
+    
+    // 캐시에 저장
+    userKeysCache.set(clientId, keyData);
+    return keyData;
+  }
+  
+  return null;
 }
 
 // 사용자 키로 Gemini 호출
 async function callGeminiWithUserKey(clientId, prompt) {
-  const userKeyData = getUserKeys(clientId);
+  const userKeyData = await getUserKeys(clientId);
   
   if (!userKeyData) {
     throw new Error('No keys configured. Please set your Gemini API keys first.');
@@ -164,7 +353,7 @@ async function callGeminiWithUserKey(clientId, prompt) {
     
     // 성공 시 카운트 증가
     requestCounts[currentIndex]++;
-    userKeys.set(clientId, { ...userKeyData, requestCounts });
+    userKeysCache.set(clientId, { ...userKeyData, requestCounts });
     
     return {
       success: true,
@@ -178,7 +367,7 @@ async function callGeminiWithUserKey(clientId, prompt) {
       
       // 다음 키로 전환
       const nextIndex = (currentIndex + 1) % keys.length;
-      userKeys.set(clientId, { ...userKeyData, currentIndex: nextIndex });
+      userKeysCache.set(clientId, { ...userKeyData, currentIndex: nextIndex });
       
       // 한 번 더 시도
       if (nextIndex !== currentIndex) {
@@ -603,7 +792,7 @@ app.post('/api/auth/token', (req, res) => {
 });
 
 // 사용자 Gemini 키 설정
-app.post('/api/config/keys', authenticateJWT, (req, res) => {
+app.post('/api/config/keys', authenticateJWT, async (req, res) => {
   try {
     const { keys } = req.body;
     const clientId = req.user.clientId;
@@ -615,12 +804,14 @@ app.post('/api/config/keys', authenticateJWT, (req, res) => {
       });
     }
     
-    const keyCount = setUserKeys(clientId, keys);
+    const keyCount = await setUserKeys(clientId, keys);
     
     res.json({
       success: true,
-      message: `${keyCount} key(s) configured successfully`,
-      keyCount
+      message: `${keyCount} key(s) configured and encrypted successfully`,
+      keyCount,
+      encrypted: true,
+      storage: pool ? 'database' : 'memory'
     });
   } catch (error) {
     res.status(500).json({
@@ -631,10 +822,10 @@ app.post('/api/config/keys', authenticateJWT, (req, res) => {
 });
 
 // 사용자 키 상태 조회
-app.get('/api/config/keys', authenticateJWT, (req, res) => {
+app.get('/api/config/keys', authenticateJWT, async (req, res) => {
   try {
     const clientId = req.user.clientId;
-    const userKeyData = getUserKeys(clientId);
+    const userKeyData = await getUserKeys(clientId);
     
     if (!userKeyData) {
       return res.json({
@@ -650,7 +841,9 @@ app.get('/api/config/keys', authenticateJWT, (req, res) => {
       keyCount: userKeyData.keys.length,
       currentIndex: userKeyData.currentIndex,
       requestCounts: userKeyData.requestCounts,
-      totalRequests: userKeyData.requestCounts.reduce((a, b) => a + b, 0)
+      totalRequests: userKeyData.requestCounts.reduce((a, b) => a + b, 0),
+      encrypted: true,
+      storage: pool ? 'database' : 'memory'
     });
   } catch (error) {
     res.status(500).json({
@@ -687,7 +880,7 @@ app.post('/api/gemini/generate', authenticateJWT, async (req, res) => {
     }
     
     // 사용자 키 확인
-    const userKeyData = getUserKeys(clientId);
+    const userKeyData = await getUserKeys(clientId);
     
     if (!userKeyData) {
       return res.status(400).json({
@@ -799,7 +992,7 @@ app.post('/api/verify/question', authenticateJWT, async (req, res) => {
     console.log('📝 Gemini 답변 생성 중...');
     let answerResult = { success: false };
     
-    const userKeyData = getUserKeys(clientId);
+    const userKeyData = await getUserKeys(clientId);
     
     if (userKeyData) {
       try {
@@ -921,10 +1114,12 @@ app.listen(PORT, () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════╗
 ║                                                       ║
-║   🚀 Cross-Verified AI Server v8.8.8                 ║
+║   🚀 Cross-Verified AI Server v8.8.9                 ║
 ║                                                       ║
 ║   🌐 Server running on port ${PORT}                     ║
-║   🔑 Gemini Keys: ${config.geminiKeys.length} loaded                    ║
+║   🔑 Gemini Keys: ${config.geminiKeys.length} loaded (server keys)         ║
+║   🔐 Encryption: AES-256-GCM Enabled                  ║
+║   💾 Database: ${pool ? 'PostgreSQL Connected' : 'Memory Only'}              ║
 ║   🛡️  Security: JWT + HMAC + Rate Limiter            ║
 ║                                                       ║
 ║   Endpoints:                                          ║
@@ -932,8 +1127,9 @@ app.listen(PORT, () => {
 ║   • GET  /healthz                                     ║
 ║   • GET  /status                                      ║
 ║   • POST /api/auth/token                              ║
+║   • POST /api/config/keys (User Keys - Encrypted)    ║
+║   • GET  /api/config/keys                             ║
 ║   • POST /api/verify/question                         ║
-║   • GET  /api/gemini/keys                             ║
 ║                                                       ║
 ╚═══════════════════════════════════════════════════════╝
   `);

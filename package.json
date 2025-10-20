@@ -1,13 +1,13 @@
 {
   "name": "cross-verified-ai",
-  "version": "8.8.8",
-  "description": "Cross-Verified AI Server - User Key Input Edition",
+  "version": "8.8.9",
+  "description": "Cross-Verified AI Server - Encrypted User Keys with PostgreSQL",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": ["ai", "verification", "gemini", "truthscore", "user-keys"],
+  "keywords": ["ai", "verification", "gemini", "truthscore", "user-keys", "encryption", "postgresql"],
   "author": "",
   "license": "MIT",
   "dependencies": {
@@ -17,6 +17,7 @@
     "express-rate-limit": "^7.1.5",
     "jsonwebtoken": "^9.0.2",
     "axios": "^1.6.5",
-    "dotenv": "^16.3.1"
+    "dotenv": "^16.3.1",
+    "pg": "^8.11.3"
   }
 }
