@@ -1,129 +1,484 @@
-// Cross-Verified AI Proxy Server v8.8.5 - Adaptive Reset Full Edition
-// Author: Claude + User
-// Date: 2025-10-30
-// Platform: Render.com Serverless
+/**
+ * Cross-Verified AI Server v8.8.8
+ * 단일 파일 버전 - 테스트 및 배포용
+ */
 
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const crypto = require('crypto');
-const axios = require('axios');
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import axios from 'axios';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Trust proxy for Render.com
-app.set('trust proxy', 1);
+// ==================== 설정 ====================
+const config = {
+  jwtSecret: process.env.JWT_SECRET || 'dev-jwt-secret-key-2025',
+  hmacSecret: process.env.HMAC_SECRET || 'dev-hmac-secret-key-2025',
+  geminiKeys: [
+    process.env.GEMINI_KEY_1 || 'test-key-1',
+    process.env.GEMINI_KEY_2 || 'test-key-2',
+    process.env.GEMINI_KEY_3 || 'test-key-3'
+  ].filter(Boolean),
+  geminiModel: 'gemini-1.5-flash-latest',
+  dailyLimit: 1500
+};
 
-// ========================
-// 환경 변수
-// ========================
-const JWT_SECRET = process.env.JWT_SECRET || 'your-jwt-secret-key';
-const HMAC_SECRET = process.env.HMAC_SECRET || 'your-hmac-secret-key';
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || '*';
+// ==================== Gemini 키 관리자 ====================
+class KeyManager {
+  constructor() {
+    this.keys = config.geminiKeys.map((key, index) => ({
+      id: index,
+      key: key,
+      requestCount: 0,
+      status: 'active', // active, limited, exhausted, waiting
+      lastResetTime: new Date().setUTCHours(0, 0, 0, 0),
+      nextRetryTime: null,
+      failCount: 0
+    }));
+    
+    this.currentIndex = 0;
+  }
+  
+  getCurrentKey() {
+    const key = this.keys[this.currentIndex];
+    
+    if (!key || key.status === 'exhausted' || key.status === 'waiting') {
+      this.rotateToNextKey();
+      return this.getCurrentKey();
+    }
+    
+    return key;
+  }
+  
+  rotateToNextKey() {
+    const startIndex = this.currentIndex;
+    
+    do {
+      this.currentIndex = (this.currentIndex + 1) % this.keys.length;
+      const key = this.keys[this.currentIndex];
+      
+      if (key.status === 'active') {
+        console.log(`🔁 Key ${this.currentIndex} 로 전환`);
+        return key;
+      }
+      
+      if (this.currentIndex === startIndex) {
+        console.warn('🚫 모든 Gemini 키 소진');
+        return null;
+      }
+    } while (true);
+  }
+  
+  recordSuccess(keyId) {
+    const key = this.keys[keyId];
+    if (key) {
+      key.requestCount++;
+      key.failCount = 0;
+      
+      const usage = key.requestCount / config.dailyLimit;
+      if (usage >= 0.9) key.status = 'limited';
+      if (usage >= 1.0) key.status = 'exhausted';
+    }
+  }
+  
+  recordFailure(keyId, errorType) {
+    const key = this.keys[keyId];
+    if (!key) return;
+    
+    key.failCount++;
+    
+    if (errorType === 429 || errorType === 403) {
+      key.status = 'exhausted';
+      console.warn(`⚠️ Key ${keyId} 제한 (${errorType})`);
+      this.rotateToNextKey();
+    }
+  }
+  
+  getAllKeysStatus() {
+    return this.keys.map(key => ({
+      id: key.id,
+      status: key.status,
+      requestCount: key.requestCount,
+      usage: (key.requestCount / config.dailyLimit * 100).toFixed(1) + '%',
+      remaining: Math.max(0, config.dailyLimit - key.requestCount),
+      failCount: key.failCount
+    }));
+  }
+  
+  isVerifyOnlyMode() {
+    return this.keys.every(key => 
+      key.status === 'exhausted' || key.status === 'waiting'
+    );
+  }
+}
 
-// ========================
-// 미들웨어
-// ========================
+const keyManager = new KeyManager();
+
+// ==================== TruthScore 계산기 ====================
+class TruthScoreCalculator {
+  constructor() {
+    this.weights = {
+      gdelt: 0.9,
+      crossref: 1.0,
+      openalex: 1.0,
+      wikidata: 0.8,
+      mistral: 0.1
+    };
+    this.lambda = 0.03;
+    
+    // 가중치 정규화
+    const engines = ['gdelt', 'crossref', 'openalex', 'wikidata'];
+    const sum = engines.reduce((acc, e) => acc + this.weights[e], 0);
+    this.normalizedWeights = {};
+    engines.forEach(e => {
+      this.normalizedWeights[e] = this.weights[e] / sum;
+    });
+  }
+  
+  calculate(results, hasGeminiResponse = true, mistralExist = false) {
+    let totalScore = 0;
+    const activeEngines = [];
+    
+    for (const [engine, result] of Object.entries(results)) {
+      if (!result.ok || !this.normalizedWeights[engine]) continue;
+      
+      const w = this.normalizedWeights[engine];
+      const Q = result.score || 0;
+      const R = result.reliability || 1.0;
+      const t = result.recency || 0;
+      
+      const timeDecay = Math.exp(-this.lambda * t);
+      
+      let contribution;
+      if (hasGeminiResponse) {
+        contribution = w * Q * R * timeDecay;
+      } else {
+        contribution = w * Q * timeDecay;
+      }
+      
+      totalScore += contribution;
+      activeEngines.push(engine);
+    }
+    
+    // Mistral Exist 보정
+    if (!hasGeminiResponse && mistralExist) {
+      totalScore += this.weights.mistral;
+    }
+    
+    // Clamping: 1.0 이하로 제한
+    const truthScore = Math.min(1.0, totalScore);
+    
+    return {
+      truthScore: parseFloat(truthScore.toFixed(3)),
+      truthScore_raw: parseFloat(totalScore.toFixed(3)),
+      truthScore_final: parseFloat(truthScore.toFixed(3)),
+      activeEngines,
+      mistralBoost: (!hasGeminiResponse && mistralExist) ? this.weights.mistral : 0,
+      mode: hasGeminiResponse ? 'normal' : 'verify_only'
+    };
+  }
+}
+
+const truthScoreCalculator = new TruthScoreCalculator();
+
+// ==================== 미들웨어 ====================
 app.use(helmet());
-app.use(cors({
-  origin: ALLOWED_ORIGINS === '*' ? '*' : ALLOWED_ORIGINS.split(','),
-  credentials: true
-}));
+app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 // Rate Limiter
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15분
-  max: 100, // 100 요청
-  message: { error: 'Too many requests, please try again later.' }
+  max: 100,
+  message: { success: false, error: 'Rate limit exceeded' }
 });
-app.use('/api/', limiter);
 
-// ========================
-// 유틸리티 함수
-// ========================
+app.use('/api', limiter);
 
-// JWT 생성
-function generateJWT(payload) {
-  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
-  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 15 * 60 * 1000 })).toString('base64url');
-  const signature = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
-  return `${header}.${body}.${signature}`;
+// 요청 로깅
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
+
+// ==================== JWT 유틸리티 ====================
+function generateToken(payload = {}) {
+  return jwt.sign(
+    {
+      ...payload,
+      iat: Math.floor(Date.now() / 1000),
+      version: '8.8.8'
+    },
+    config.jwtSecret,
+    { expiresIn: '15m' }
+  );
 }
 
-// JWT 검증
-function verifyJWT(token) {
+function verifyToken(token) {
   try {
-    const [header, payload, signature] = token.split('.');
-    const expectedSig = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest('base64url');
-    if (signature !== expectedSig) return null;
-    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString());
-    if (decoded.exp < Date.now()) return null;
-    return decoded;
-  } catch {
+    return jwt.verify(token, config.jwtSecret);
+  } catch (error) {
     return null;
   }
 }
 
-// HMAC 검증
-function verifyHMAC(body, timestamp, signature) {
-  const expectedSig = crypto.createHmac('sha256', HMAC_SECRET)
-    .update(JSON.stringify(body) + timestamp)
-    .digest('hex');
-  return signature === expectedSig;
-}
-
-// 재시도 로직 (Exponential Backoff)
-async function retryRequest(fn, maxRetries = 3) {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await fn();
-    } catch (error) {
-      if (i === maxRetries - 1) throw error;
-      await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
-    }
-  }
-}
-
-// ========================
-// 미들웨어 - 보안 검증
-// ========================
-function securityMiddleware(req, res, next) {
+// JWT 인증 미들웨어
+function authenticateJWT(req, res, next) {
   const authHeader = req.headers.authorization;
-  const signature = req.headers['x-app-signature'];
-  const timestamp = req.headers['x-timestamp'];
-
-  // JWT 검증
+  
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing or invalid JWT token' });
+    return res.status(401).json({
+      success: false,
+      error: 'Missing or invalid Authorization header'
+    });
   }
-  const token = authHeader.split(' ')[1];
-  const decoded = verifyJWT(token);
+  
+  const token = authHeader.substring(7);
+  const decoded = verifyToken(token);
+  
   if (!decoded) {
-    return res.status(401).json({ error: 'Invalid or expired JWT token' });
+    return res.status(401).json({
+      success: false,
+      error: 'Invalid or expired token'
+    });
   }
-
-  // HMAC 검증
-  if (!signature || !timestamp) {
-    return res.status(401).json({ error: 'Missing HMAC signature or timestamp' });
-  }
-  if (!verifyHMAC(req.body, timestamp, signature)) {
-    return res.status(401).json({ error: 'Invalid HMAC signature' });
-  }
-
+  
   req.user = decoded;
   next();
 }
 
-// ========================
-// Health Check (Pre-Wake Ping)
-// ========================
+// ==================== Gemini API ====================
+async function callGeminiAPI(apiKey, prompt) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.geminiModel}:generateContent?key=${apiKey}`;
+  
+  const response = await axios.post(
+    url,
+    {
+      contents: [{
+        parts: [{ text: prompt }]
+      }]
+    },
+    { timeout: 30000 }
+  );
+  
+  const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  
+  if (!text) {
+    throw new Error('Invalid Gemini API response');
+  }
+  
+  return text;
+}
+
+async function generateAnswer(question, maxRetries = 1) {
+  let lastError = null;
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const key = keyManager.getCurrentKey();
+      
+      if (!key) {
+        return {
+          success: false,
+          error: 'All Gemini keys exhausted',
+          mode: 'verify_only'
+        };
+      }
+      
+      const answer = await callGeminiAPI(key.key, question);
+      
+      keyManager.recordSuccess(key.id);
+      
+      return {
+        success: true,
+        answer,
+        keyId: key.id,
+        model: config.geminiModel
+      };
+      
+    } catch (error) {
+      lastError = error;
+      const key = keyManager.getCurrentKey();
+      
+      if (error.response) {
+        const status = error.response.status;
+        
+        if (status === 429 || status === 403) {
+          console.warn(`⚠️ Key ${key?.id} 에러 ${status}`);
+          keyManager.recordFailure(key?.id, status);
+          
+          if (attempt < maxRetries) continue;
+        }
+      }
+      
+      if (attempt < maxRetries) {
+        keyManager.rotateToNextKey();
+        continue;
+      }
+    }
+  }
+  
+  return {
+    success: false,
+    error: lastError?.message || 'Gemini API call failed',
+    statusCode: lastError?.response?.status
+  };
+}
+
+// ==================== 검증 엔진 ====================
+async function verifyWithGDELT(query) {
+  try {
+    const response = await axios.get('https://api.gdeltproject.org/api/v2/doc/doc', {
+      params: {
+        query: query,
+        mode: 'artlist',
+        maxrecords: 10,
+        format: 'json'
+      },
+      timeout: 10000
+    });
+    
+    const articles = response.data?.articles || [];
+    
+    if (articles.length === 0) {
+      return { ok: false, score: 0, sources: [] };
+    }
+    
+    const score = Math.min(1.0, articles.length / 10) * 0.9;
+    
+    return {
+      ok: true,
+      score: parseFloat(score.toFixed(3)),
+      sources: articles.slice(0, 3).map(a => ({
+        title: a.title,
+        url: a.url
+      })),
+      count: articles.length
+    };
+  } catch (error) {
+    console.error('❌ GDELT 에러:', error.message);
+    return { ok: false, score: 0, error: error.message };
+  }
+}
+
+async function verifyWithCrossRef(query) {
+  try {
+    const response = await axios.get('https://api.crossref.org/works', {
+      params: {
+        query: query,
+        rows: 10
+      },
+      timeout: 10000
+    });
+    
+    const items = response.data?.message?.items || [];
+    
+    if (items.length === 0) {
+      return { ok: false, score: 0, sources: [] };
+    }
+    
+    const score = Math.min(1.0, items.length / 10) * 1.0;
+    
+    return {
+      ok: true,
+      score: parseFloat(score.toFixed(3)),
+      sources: items.slice(0, 3).map(i => ({
+        doi: i.DOI,
+        title: i.title?.[0] || 'Untitled'
+      })),
+      count: items.length
+    };
+  } catch (error) {
+    console.error('❌ CrossRef 에러:', error.message);
+    return { ok: false, score: 0, error: error.message };
+  }
+}
+
+async function verifyWithOpenAlex(query) {
+  try {
+    const response = await axios.get('https://api.openalex.org/works', {
+      params: {
+        search: query,
+        per_page: 10
+      },
+      timeout: 10000
+    });
+    
+    const results = response.data?.results || [];
+    
+    if (results.length === 0) {
+      return { ok: false, score: 0, sources: [] };
+    }
+    
+    const score = Math.min(1.0, results.length / 10) * 1.0;
+    
+    return {
+      ok: true,
+      score: parseFloat(score.toFixed(3)),
+      sources: results.slice(0, 3).map(w => ({
+        id: w.id,
+        title: w.title || 'Untitled'
+      })),
+      count: results.length
+    };
+  } catch (error) {
+    console.error('❌ OpenAlex 에러:', error.message);
+    return { ok: false, score: 0, error: error.message };
+  }
+}
+
+async function verifyWithWikidata(query) {
+  try {
+    const response = await axios.get('https://www.wikidata.org/w/api.php', {
+      params: {
+        action: 'wbsearchentities',
+        search: query,
+        language: 'en',
+        limit: 10,
+        format: 'json',
+        origin: '*'
+      },
+      timeout: 10000
+    });
+    
+    const entities = response.data?.search || [];
+    
+    if (entities.length === 0) {
+      return { ok: false, score: 0, sources: [] };
+    }
+    
+    const score = Math.min(1.0, entities.length / 10) * 0.8;
+    
+    return {
+      ok: true,
+      score: parseFloat(score.toFixed(3)),
+      sources: entities.slice(0, 3).map(e => ({
+        id: e.id,
+        label: e.label || 'Unlabeled'
+      })),
+      count: entities.length
+    };
+  } catch (error) {
+    console.error('❌ Wikidata 에러:', error.message);
+    return { ok: false, score: 0, error: error.message };
+  }
+}
+
+// ==================== 라우트 ====================
+
+// Health Check
 app.get('/health', (req, res) => {
   res.json({
+    success: true,
     status: 'healthy',
-    version: '8.8.5',
+    version: '8.8.8',
     timestamp: new Date().toISOString(),
     uptime: process.uptime()
   });
@@ -131,417 +486,293 @@ app.get('/health', (req, res) => {
 
 app.get('/healthz', (req, res) => {
   res.json({
+    success: true,
     status: 'healthy',
-    version: '8.8.5',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    version: '8.8.8'
   });
 });
 
-// ========================
-// JWT 토큰 발급
-// ========================
-app.post('/auth/token', (req, res) => {
-  const { appId } = req.body;
-  if (!appId || appId !== 'cross-verified-ai') {
-    return res.status(400).json({ error: 'Invalid appId' });
-  }
-  const token = generateJWT({ appId, iat: Date.now() });
-  res.json({ token, expiresIn: '15m' });
-});
-
-// ========================
-// Gemini API - 답변 생성
-// ========================
-app.post('/api/gemini', securityMiddleware, async (req, res) => {
-  const { prompt, apiKey } = req.body;
-
-  if (!prompt || !apiKey) {
-    return res.status(400).json({ error: 'Missing prompt or apiKey' });
-  }
-
-  try {
-    const response = await retryRequest(() => 
-      axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
-        {
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 2048
-          }
-        },
-        { timeout: 30000 }
-      )
-    );
-
-    const text = response.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    res.json({ 
-      success: true, 
-      text,
-      model: 'gemini-flash-latest'
-    });
-  } catch (error) {
-    const status = error.response?.status || 500;
-    const message = error.response?.data?.error?.message || error.message;
-    
-    res.status(status).json({
-      success: false,
-      error: message,
-      code: status === 429 ? 'RATE_LIMIT' : status === 403 ? 'FORBIDDEN' : 'ERROR'
-    });
-  }
-});
-
-// ========================
-// Gemini API - 일치도 평가
-// ========================
-app.post('/api/gemini/evaluate', securityMiddleware, async (req, res) => {
-  const { answer, verificationSources, apiKey } = req.body;
-
-  if (!answer || !verificationSources || !apiKey) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-
-  const prompt = `다음 답변과 검증 소스의 일치도를 0~1로 평가하세요:
-
-답변: "${answer}"
-
-검증 소스:
-- GDELT: ${JSON.stringify(verificationSources.gdelt)}
-- CrossRef: ${JSON.stringify(verificationSources.crossref)}
-- OpenAlex: ${JSON.stringify(verificationSources.openalex)}
-- Wikidata: ${JSON.stringify(verificationSources.wikidata)}
-
-각 소스별 일치도를 JSON으로만 반환하세요 (다른 설명 없이):
-{"gdelt": 0.9, "crossref": 0.8, "openalex": 0.85, "wikidata": 0.7}`;
-
-  try {
-    const response = await retryRequest(() =>
-      axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
-        {
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 256
-          }
-        },
-        { timeout: 20000 }
-      )
-    );
-
-    const text = response.data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    const matchScores = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
-
-    res.json({
-      success: true,
-      matchScores,
-      raw: text
-    });
-  } catch (error) {
-    const status = error.response?.status || 500;
-    res.status(status).json({
-      success: false,
-      error: error.response?.data?.error?.message || error.message,
-      code: status === 429 ? 'RATE_LIMIT' : 'ERROR'
-    });
-  }
-});
-
-// ========================
-// Mistral API - Failover
-// ========================
-app.post('/api/mistral', securityMiddleware, async (req, res) => {
-  const { prompt } = req.body;
-
-  if (!prompt) {
-    return res.status(400).json({ error: 'Missing prompt' });
-  }
-
-  try {
-    const response = await retryRequest(() =>
-      axios.post(
-        'https://api.llama-api.com/chat/completions',
-        {
-          model: 'mistral-7b-instruct',
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 2048
-        },
-        { timeout: 30000 }
-      )
-    );
-
-    const text = response.data.choices?.[0]?.message?.content || '';
-    res.json({
-      success: true,
-      text,
-      model: 'mistral-7b-instruct',
-      fallback: true
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// ========================
-// GDELT 검증
-// ========================
-app.post('/api/verify/gdelt', securityMiddleware, async (req, res) => {
-  const { query } = req.body;
-
-  if (!query) {
-    return res.status(400).json({ error: 'Missing query' });
-  }
-
-  try {
-    const response = await retryRequest(() =>
-      axios.get('https://api.gdeltproject.org/api/v2/doc/doc', {
-        params: {
-          query,
-          mode: 'artlist',
-          maxrecords: 10,
-          format: 'json'
-        },
-        timeout: 15000
-      })
-    );
-
-    const articles = response.data.articles || [];
-    const score = Math.min(articles.length / 10, 1);
-
-    res.json({
-      success: true,
-      engine: 'gdelt',
-      score,
-      count: articles.length,
-      sources: articles.slice(0, 3).map(a => ({
-        title: a.title,
-        url: a.url,
-        date: a.seendate
-      }))
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      engine: 'gdelt',
-      error: error.message
-    });
-  }
-});
-
-// ========================
-// CrossRef 검증
-// ========================
-app.post('/api/verify/crossref', securityMiddleware, async (req, res) => {
-  const { query } = req.body;
-
-  if (!query) {
-    return res.status(400).json({ error: 'Missing query' });
-  }
-
-  try {
-    const response = await retryRequest(() =>
-      axios.get('https://api.crossref.org/works', {
-        params: {
-          query,
-          rows: 10
-        },
-        timeout: 15000
-      })
-    );
-
-    const items = response.data.message.items || [];
-    const score = Math.min(items.length / 10, 1);
-
-    res.json({
-      success: true,
-      engine: 'crossref',
-      score,
-      count: items.length,
-      sources: items.slice(0, 3).map(i => ({
-        title: i.title?.[0] || 'N/A',
-        doi: i.DOI,
-        publisher: i.publisher
-      }))
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      engine: 'crossref',
-      error: error.message
-    });
-  }
-});
-
-// ========================
-// OpenAlex 검증
-// ========================
-app.post('/api/verify/openalex', securityMiddleware, async (req, res) => {
-  const { query } = req.body;
-
-  if (!query) {
-    return res.status(400).json({ error: 'Missing query' });
-  }
-
-  try {
-    const response = await retryRequest(() =>
-      axios.get('https://api.openalex.org/works', {
-        params: {
-          search: query,
-          per_page: 10
-        },
-        timeout: 15000
-      })
-    );
-
-    const results = response.data.results || [];
-    const score = Math.min(results.length / 10, 1);
-
-    res.json({
-      success: true,
-      engine: 'openalex',
-      score,
-      count: results.length,
-      sources: results.slice(0, 3).map(r => ({
-        title: r.title,
-        doi: r.doi,
-        citations: r.cited_by_count
-      }))
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      engine: 'openalex',
-      error: error.message
-    });
-  }
-});
-
-// ========================
-// Wikidata 검증
-// ========================
-app.post('/api/verify/wikidata', securityMiddleware, async (req, res) => {
-  const { query } = req.body;
-
-  if (!query) {
-    return res.status(400).json({ error: 'Missing query' });
-  }
-
-  try {
-    const response = await retryRequest(() =>
-      axios.get('https://www.wikidata.org/w/api.php', {
-        params: {
-          action: 'wbsearchentities',
-          search: query,
-          language: 'en',
-          limit: 10,
-          format: 'json'
-        },
-        timeout: 15000
-      })
-    );
-
-    const results = response.data.search || [];
-    const score = Math.min(results.length / 10, 1);
-
-    res.json({
-      success: true,
-      engine: 'wikidata',
-      score,
-      count: results.length,
-      sources: results.slice(0, 3).map(r => ({
-        label: r.label,
-        description: r.description,
-        id: r.id
-      }))
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      engine: 'wikidata',
-      error: error.message
-    });
-  }
-});
-
-// ========================
-// TruthScore 계산 (ECC 보정 포함)
-// ========================
-app.post('/api/verify/truthscore', securityMiddleware, async (req, res) => {
-  const { results, matchScores } = req.body;
-
-  if (!results) {
-    return res.status(400).json({ error: 'Missing results' });
-  }
-
-  // 초기 가중치
-  const weights = {
-    gdelt: 0.9,
-    crossref: 1.0,
-    openalex: 1.0,
-    wikidata: 0.8
-  };
-
-  // 활성 엔진 필터링
-  const activeEngines = Object.keys(results).filter(key => results[key]?.success);
+// 상태 정보
+app.get('/status', (req, res) => {
+  const keysStatus = keyManager.getAllKeysStatus();
+  const verifyOnlyMode = keyManager.isVerifyOnlyMode();
   
-  if (activeEngines.length === 0) {
-    return res.json({
-      truthScore: 0.0,
-      activeEngines: [],
-      backupUsed: true,
-      status: 'no_verification',
-      ecc: 0
+  res.json({
+    success: true,
+    version: '8.8.8',
+    server: {
+      uptime: process.uptime(),
+      memory: process.memoryUsage()
+    },
+    gemini: {
+      keys: keysStatus,
+      verifyOnlyMode
+    }
+  });
+});
+
+// JWT 토큰 발급
+app.post('/api/auth/token', (req, res) => {
+  try {
+    const { clientId } = req.body;
+    
+    const token = generateToken({
+      clientId: clientId || 'anonymous'
+    });
+    
+    res.json({
+      success: true,
+      token,
+      expiresIn: '15m'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
+});
 
-  // 가중치 정규화
-  const totalWeight = activeEngines.reduce((sum, key) => sum + weights[key], 0);
-  const normalizedWeights = {};
-  activeEngines.forEach(key => {
-    normalizedWeights[key] = weights[key] / totalWeight;
-  });
-
-  // TruthScore 계산
-  const lambda = 0.03;
-  const alpha = 0.5;
-  let rawScore = 0;
-
-  activeEngines.forEach(key => {
-    const R_i = matchScores?.[key] || 0.5; // 일치도 (기본값 0.5)
-    const Q_i = results[key].score || 0.5; // 검증 엔진 점수
-    const t = 0; // 시간 감쇠 (현재는 0)
-    
-    const score_i = R_i * Q_i * Math.exp(-lambda * t);
-    rawScore += normalizedWeights[key] * score_i;
-  });
-
-  // ECC 보정
-  const eccRatio = activeEngines.length / 4; // 전체 엔진 4개
-  const C_ecc = Math.pow(eccRatio, alpha);
-  const truthScore = Math.min(rawScore * C_ecc, 1.0);
-
+// Gemini 키 상태
+app.get('/api/gemini/keys', (req, res) => {
+  const keysStatus = keyManager.getAllKeysStatus();
+  const verifyOnlyMode = keyManager.isVerifyOnlyMode();
+  
   res.json({
-    truthScore: parseFloat(truthScore.toFixed(3)),
-    rawScore: parseFloat(rawScore.toFixed(3)),
-    ecc: parseFloat(C_ecc.toFixed(3)),
-    activeEngines,
-    normalizedWeights,
-    backupUsed: activeEngines.length < 4,
-    status: activeEngines.length === 4 ? 'full_verification' : 'partial_verification'
+    success: true,
+    keys: keysStatus,
+    verifyOnlyMode,
+    currentIndex: keyManager.currentIndex
   });
 });
 
-// ========================
-// 서버 시작
-// ========================
-app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v8.8.5 running on port ${PORT}`);
-  console.log(`📘 Health Check: http://localhost:${PORT}/health`);
-  console.log(`🔒 Security: JWT + HMAC-SHA256 enabled`);
+// Gemini 답변 생성
+app.post('/api/gemini/generate', authenticateJWT, async (req, res) => {
+  try {
+    const { question } = req.body;
+    
+    if (!question) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing question'
+      });
+    }
+    
+    const result = await generateAnswer(question);
+    res.json(result);
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
+
+// 검증 엔진 실행
+app.post('/api/verify/engines', async (req, res) => {
+  try {
+    const { query } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing query'
+      });
+    }
+    
+    const [gdeltResult, crossrefResult, openalexResult, wikidataResult] = await Promise.all([
+      verifyWithGDELT(query),
+      verifyWithCrossRef(query),
+      verifyWithOpenAlex(query),
+      verifyWithWikidata(query)
+    ]);
+    
+    res.json({
+      success: true,
+      results: {
+        gdelt: gdeltResult,
+        crossref: crossrefResult,
+        openalex: openalexResult,
+        wikidata: wikidataResult
+      }
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// TruthScore 계산
+app.post('/api/verify/truthscore', async (req, res) => {
+  try {
+    const { results, mistralExist } = req.body;
+    
+    if (!results) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing results'
+      });
+    }
+    
+    const truthScoreResult = truthScoreCalculator.calculate(
+      results,
+      true,
+      mistralExist || false
+    );
+    
+    res.json({
+      success: true,
+      ...truthScoreResult
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 전체 검증 프로세스
+app.post('/api/verify/question', authenticateJWT, async (req, res) => {
+  try {
+    const { question } = req.body;
+    
+    if (!question) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing question'
+      });
+    }
+    
+    console.log(`\n🔍 새 질문: "${question}"`);
+    
+    // 1. Gemini 답변 생성
+    console.log('📝 Gemini 답변 생성 중...');
+    const answerResult = await generateAnswer(question);
+    
+    // 2. 병렬 검증
+    console.log('🔎 검증 엔진 실행 중...');
+    const [gdeltResult, crossrefResult, openalexResult, wikidataResult] = await Promise.all([
+      verifyWithGDELT(question),
+      verifyWithCrossRef(question),
+      verifyWithOpenAlex(question),
+      verifyWithWikidata(question)
+    ]);
+    
+    const verificationResults = {
+      gdelt: gdeltResult,
+      crossref: crossrefResult,
+      openalex: openalexResult,
+      wikidata: wikidataResult
+    };
+    
+    // 3. TruthScore 계산
+    console.log('📊 TruthScore 계산 중...');
+    const truthScoreResult = truthScoreCalculator.calculate(
+      verificationResults,
+      answerResult.success,
+      false
+    );
+    
+    // 4. 응답 생성
+    const response = {
+      success: true,
+      question,
+      answer: answerResult.success ? answerResult.answer : null,
+      gemini: {
+        success: answerResult.success,
+        keyId: answerResult.keyId,
+        model: answerResult.model,
+        error: answerResult.error
+      },
+      verification: {
+        gdelt: {
+          ok: gdeltResult.ok,
+          score: gdeltResult.score,
+          count: gdeltResult.count,
+          sources: gdeltResult.sources?.slice(0, 3)
+        },
+        crossref: {
+          ok: crossrefResult.ok,
+          score: crossrefResult.score,
+          count: crossrefResult.count,
+          sources: crossrefResult.sources?.slice(0, 3)
+        },
+        openalex: {
+          ok: openalexResult.ok,
+          score: openalexResult.score,
+          count: openalexResult.count,
+          sources: openalexResult.sources?.slice(0, 3)
+        },
+        wikidata: {
+          ok: wikidataResult.ok,
+          score: wikidataResult.score,
+          count: wikidataResult.count,
+          sources: wikidataResult.sources?.slice(0, 3)
+        }
+      },
+      truthScore: truthScoreResult.truthScore_final,
+      truthScoreDetails: truthScoreResult,
+      keys: keyManager.getAllKeysStatus(),
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log(`✅ 완료! TruthScore: ${truthScoreResult.truthScore_final}`);
+    
+    res.json(response);
+    
+  } catch (error) {
+    console.error('❌ Verify 에러:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 404 핸들러
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Not Found'
+  });
+});
+
+// 에러 핸들러
+app.use((err, req, res, next) => {
+  console.error('❌ Error:', err);
+  res.status(err.status || 500).json({
+    success: false,
+    error: err.message || 'Internal Server Error'
+  });
+});
+
+// 서버 시작
+app.listen(PORT, () => {
+  console.log(`
+╔═══════════════════════════════════════════════════════╗
+║                                                       ║
+║   🚀 Cross-Verified AI Server v8.8.8                 ║
+║                                                       ║
+║   🌐 Server running on port ${PORT}                     ║
+║   🔑 Gemini Keys: ${config.geminiKeys.length} loaded                    ║
+║   🛡️  Security: JWT + HMAC + Rate Limiter            ║
+║                                                       ║
+║   Endpoints:                                          ║
+║   • GET  /health                                      ║
+║   • GET  /healthz                                     ║
+║   • GET  /status                                      ║
+║   • POST /api/auth/token                              ║
+║   • POST /api/verify/question                         ║
+║   • GET  /api/gemini/keys                             ║
+║                                                       ║
+╚═══════════════════════════════════════════════════════╝
+  `);
+});
+
+export default app;
