@@ -121,6 +121,75 @@ class KeyManager {
 
 const keyManager = new KeyManager();
 
+// ==================== 사용자별 키 관리 ====================
+// 메모리에 사용자별 키 저장 (세션 기반)
+const userKeys = new Map();
+
+// 사용자 키 설정
+function setUserKeys(clientId, keys) {
+  const validKeys = keys.filter(k => k && k.trim().length > 0);
+  
+  if (validKeys.length === 0) {
+    throw new Error('At least one valid key is required');
+  }
+  
+  userKeys.set(clientId, {
+    keys: validKeys,
+    currentIndex: 0,
+    requestCounts: validKeys.map(() => 0),
+    createdAt: Date.now()
+  });
+  
+  return validKeys.length;
+}
+
+// 사용자 키 가져오기
+function getUserKeys(clientId) {
+  return userKeys.get(clientId);
+}
+
+// 사용자 키로 Gemini 호출
+async function callGeminiWithUserKey(clientId, prompt) {
+  const userKeyData = getUserKeys(clientId);
+  
+  if (!userKeyData) {
+    throw new Error('No keys configured. Please set your Gemini API keys first.');
+  }
+  
+  const { keys, currentIndex, requestCounts } = userKeyData;
+  const apiKey = keys[currentIndex];
+  
+  try {
+    const answer = await callGeminiAPI(apiKey, prompt);
+    
+    // 성공 시 카운트 증가
+    requestCounts[currentIndex]++;
+    userKeys.set(clientId, { ...userKeyData, requestCounts });
+    
+    return {
+      success: true,
+      answer,
+      keyIndex: currentIndex
+    };
+  } catch (error) {
+    // 실패 시 다음 키로 로테이션
+    if (error.response && (error.response.status === 429 || error.response.status === 403)) {
+      console.warn(`⚠️ User ${clientId} Key ${currentIndex} failed with ${error.response.status}`);
+      
+      // 다음 키로 전환
+      const nextIndex = (currentIndex + 1) % keys.length;
+      userKeys.set(clientId, { ...userKeyData, currentIndex: nextIndex });
+      
+      // 한 번 더 시도
+      if (nextIndex !== currentIndex) {
+        return callGeminiWithUserKey(clientId, prompt);
+      }
+    }
+    
+    throw error;
+  }
+}
+
 // ==================== TruthScore 계산기 ====================
 class TruthScoreCalculator {
   constructor() {
@@ -533,6 +602,64 @@ app.post('/api/auth/token', (req, res) => {
   }
 });
 
+// 사용자 Gemini 키 설정
+app.post('/api/config/keys', authenticateJWT, (req, res) => {
+  try {
+    const { keys } = req.body;
+    const clientId = req.user.clientId;
+    
+    if (!keys || !Array.isArray(keys)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Keys must be an array'
+      });
+    }
+    
+    const keyCount = setUserKeys(clientId, keys);
+    
+    res.json({
+      success: true,
+      message: `${keyCount} key(s) configured successfully`,
+      keyCount
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 사용자 키 상태 조회
+app.get('/api/config/keys', authenticateJWT, (req, res) => {
+  try {
+    const clientId = req.user.clientId;
+    const userKeyData = getUserKeys(clientId);
+    
+    if (!userKeyData) {
+      return res.json({
+        success: true,
+        configured: false,
+        message: 'No keys configured'
+      });
+    }
+    
+    res.json({
+      success: true,
+      configured: true,
+      keyCount: userKeyData.keys.length,
+      currentIndex: userKeyData.currentIndex,
+      requestCounts: userKeyData.requestCounts,
+      totalRequests: userKeyData.requestCounts.reduce((a, b) => a + b, 0)
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Gemini 키 상태
 app.get('/api/gemini/keys', (req, res) => {
   const keysStatus = keyManager.getAllKeysStatus();
@@ -550,6 +677,7 @@ app.get('/api/gemini/keys', (req, res) => {
 app.post('/api/gemini/generate', authenticateJWT, async (req, res) => {
   try {
     const { question } = req.body;
+    const clientId = req.user.clientId;
     
     if (!question) {
       return res.status(400).json({
@@ -558,8 +686,23 @@ app.post('/api/gemini/generate', authenticateJWT, async (req, res) => {
       });
     }
     
-    const result = await generateAnswer(question);
-    res.json(result);
+    // 사용자 키 확인
+    const userKeyData = getUserKeys(clientId);
+    
+    if (!userKeyData) {
+      return res.status(400).json({
+        success: false,
+        error: 'No Gemini API keys configured. Please set your keys first.',
+        needsConfig: true
+      });
+    }
+    
+    const result = await callGeminiWithUserKey(clientId, question);
+    
+    res.json({
+      ...result,
+      model: config.geminiModel
+    });
     
   } catch (error) {
     res.status(500).json({
@@ -641,6 +784,7 @@ app.post('/api/verify/truthscore', async (req, res) => {
 app.post('/api/verify/question', authenticateJWT, async (req, res) => {
   try {
     const { question } = req.body;
+    const clientId = req.user.clientId;
     
     if (!question) {
       return res.status(400).json({
@@ -649,11 +793,31 @@ app.post('/api/verify/question', authenticateJWT, async (req, res) => {
       });
     }
     
-    console.log(`\n🔍 새 질문: "${question}"`);
+    console.log(`\n🔍 새 질문 (User: ${clientId}): "${question}"`);
     
-    // 1. Gemini 답변 생성
+    // 1. Gemini 답변 생성 (사용자 키 사용)
     console.log('📝 Gemini 답변 생성 중...');
-    const answerResult = await generateAnswer(question);
+    let answerResult = { success: false };
+    
+    const userKeyData = getUserKeys(clientId);
+    
+    if (userKeyData) {
+      try {
+        answerResult = await callGeminiWithUserKey(clientId, question);
+      } catch (error) {
+        console.warn('⚠️ Gemini 호출 실패:', error.message);
+        answerResult = {
+          success: false,
+          error: error.message
+        };
+      }
+    } else {
+      answerResult = {
+        success: false,
+        error: 'No Gemini API keys configured',
+        needsConfig: true
+      };
+    }
     
     // 2. 병렬 검증
     console.log('🔎 검증 엔진 실행 중...');
@@ -686,9 +850,10 @@ app.post('/api/verify/question', authenticateJWT, async (req, res) => {
       answer: answerResult.success ? answerResult.answer : null,
       gemini: {
         success: answerResult.success,
-        keyId: answerResult.keyId,
-        model: answerResult.model,
-        error: answerResult.error
+        keyIndex: answerResult.keyIndex,
+        model: config.geminiModel,
+        error: answerResult.error,
+        needsConfig: answerResult.needsConfig
       },
       verification: {
         gdelt: {
@@ -718,7 +883,6 @@ app.post('/api/verify/question', authenticateJWT, async (req, res) => {
       },
       truthScore: truthScoreResult.truthScore_final,
       truthScoreDetails: truthScoreResult,
-      keys: keyManager.getAllKeysStatus(),
       timestamp: new Date().toISOString()
     };
     

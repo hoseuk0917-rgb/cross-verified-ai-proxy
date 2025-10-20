@@ -1,13 +1,13 @@
 {
   "name": "cross-verified-ai",
   "version": "8.8.8",
-  "description": "Cross-Verified AI Server - Simple Single File Edition",
+  "description": "Cross-Verified AI Server - User Key Input Edition",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": ["ai", "verification", "gemini"],
+  "keywords": ["ai", "verification", "gemini", "truthscore", "user-keys"],
   "author": "",
   "license": "MIT",
   "dependencies": {

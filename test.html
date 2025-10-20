@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cross-Verified AI v8.8.8 테스트</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+    
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    
+    .header {
+      background: white;
+      padding: 30px;
+      border-radius: 15px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    
+    .header h1 {
+      color: #667eea;
+      font-size: 2.5em;
+      margin-bottom: 10px;
+    }
+    
+    .status-bar {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      margin-top: 15px;
+    }
+    
+    .badge {
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    
+    .badge-success {
+      background: #10b981;
+      color: white;
+    }
+    
+    .badge-error {
+      background: #ef4444;
+      color: white;
+    }
+    
+    .badge-warning {
+      background: #f59e0b;
+      color: white;
+    }
+    
+    .badge-info {
+      background: #3b82f6;
+      color: white;
+    }
+    
+    .panel {
+      background: white;
+      padding: 25px;
+      border-radius: 15px;
+      box-shadow: 0 5px 20px rgba(0,0,0,0.15);
+      margin-bottom: 20px;
+    }
+    
+    .panel h2 {
+      color: #667eea;
+      margin-bottom: 20px;
+      font-size: 1.5em;
+      border-bottom: 2px solid #667eea;
+      padding-bottom: 10px;
+    }
+    
+    .form-group {
+      margin-bottom: 15px;
+    }
+    
+    .form-group label {
+      display: block;
+      margin-bottom: 5px;
+      color: #333;
+      font-weight: 600;
+    }
+    
+    .form-group input,
+    .form-group textarea {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    
+    .form-group input:focus,
+    .form-group textarea:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    
+    .form-group textarea {
+      resize: vertical;
+      min-height: 100px;
+      font-family: inherit;
+    }
+    
+    .btn {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 600;
+      transition: transform 0.2s;
+      margin-right: 10px;
+      margin-bottom: 10px;
+    }
+    
+    .btn:hover {
+      transform: translateY(-2px);
+    }
+    
+    .btn:active {
+      transform: translateY(0);
+    }
+    
+    .btn-sm {
+      padding: 8px 20px;
+      font-size: 14px;
+    }
+    
+    .btn-success {
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    }
+    
+    .output {
+      background: #f5f5f5;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 15px;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      max-height: 400px;
+      overflow-y: auto;
+      border: 2px solid #ddd;
+    }
+    
+    .output pre {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      margin: 0;
+    }
+    
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+      gap: 20px;
+    }
+    
+    .progress-bar {
+      width: 100%;
+      height: 30px;
+      background: #e0e0e0;
+      border-radius: 15px;
+      overflow: hidden;
+      margin-top: 10px;
+    }
+    
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #10b981 0%, #34d399 100%);
+      transition: width 0.5s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    
+    .loading {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(255,255,255,.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 1s ease-in-out infinite;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    
+    .key-status {
+      display: flex;
+      align-items: center;
+      padding: 12px;
+      background: #f9f9f9;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      border: 2px solid #e0e0e0;
+    }
+    
+    .key-indicator {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      margin-right: 12px;
+    }
+    
+    .key-indicator.active {
+      background: #10b981;
+    }
+    
+    .key-indicator.limited {
+      background: #f59e0b;
+    }
+    
+    .key-indicator.exhausted {
+      background: #ef4444;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <h1>🚀 Cross-Verified AI v8.8.8</h1>
+      <p>Gemini + Multi-Engine Verification + TruthScore</p>
+      <div class="status-bar">
+        <div class="badge badge-info" id="server-status">⏳ 연결 대기</div>
+        <div class="badge badge-info" id="token-status">🔑 토큰 없음</div>
+      </div>
+    </div>
+
+    <!-- Grid Layout -->
+    <div class="grid">
+      <!-- 1. Gemini 키 설정 (NEW!) -->
+      <div class="panel">
+        <h2>🔑 Gemini API 키 설정</h2>
+        
+        <div class="form-group">
+          <label>Gemini API Key 1 (필수)</label>
+          <input type="password" id="gemini-key-1" placeholder="AIzaSyC..." />
+        </div>
+        
+        <div class="form-group">
+          <label>Gemini API Key 2 (선택)</label>
+          <input type="password" id="gemini-key-2" placeholder="AIzaSyC..." />
+        </div>
+        
+        <div class="form-group">
+          <label>Gemini API Key 3 (선택)</label>
+          <input type="password" id="gemini-key-3" placeholder="AIzaSyC..." />
+        </div>
+        
+        <button class="btn btn-success" onclick="saveGeminiKeys()">🔐 키 저장 & 테스트</button>
+        <button class="btn btn-sm" onclick="checkKeyStatus()">📊 키 상태 확인</button>
+        
+        <div id="key-config-status" style="margin-top: 15px;">
+          <!-- 키 설정 상태가 표시됩니다 -->
+        </div>
+        
+        <div class="output" id="key-config-output">
+          <pre>여기에 결과가 표시됩니다...</pre>
+        </div>
+        
+        <div style="margin-top: 15px; padding: 12px; background: #e3f2fd; border-radius: 8px; font-size: 13px;">
+          <strong>💡 API 키 발급:</strong><br>
+          <a href="https://aistudio.google.com/app/apikey" target="_blank">https://aistudio.google.com/app/apikey</a>
+        </div>
+      </div>
+      
+      <!-- 2. 서버 & 인증 -->
+      <div class="panel">
+        <h2>🔐 서버 & 인증</h2>
+        
+        <div class="form-group">
+          <label>서버 URL</label>
+          <input type="text" id="server-url" value="http://localhost:3000" />
+        </div>
+        
+        <button class="btn btn-sm" onclick="checkHealth()">Health Check</button>
+        <button class="btn btn-success btn-sm" onclick="getToken()">토큰 발급</button>
+        
+        <div class="output" id="auth-output">
+          <pre>여기에 결과가 표시됩니다...</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Grid Layout 2 -->
+    <div class="grid">
+      <!-- OLD: Gemini 키 상태 → NEW: 시스템 상태 -->
+      <div class="panel">
+        <h2>📊 시스템 상태</h2>
+        
+        <button class="btn btn-sm" onclick="getSystemStatus()">시스템 상태 조회</button>
+        
+        <div id="system-status-display" style="margin-top: 15px;">
+          <!-- 시스템 상태가 표시됩니다 -->
+        </div>
+        
+        <div class="output" id="system-output">
+          <pre>시스템 상태를 조회하세요...</pre>
+        </div>
+      </div>
+
+      <!-- 3. 검증 엔진 미리보기 -->
+      <div class="panel">
+        <h2>🔍 검증 엔진 미리보기</h2>
+        
+        <div class="form-group">
+          <label>검색 쿼리</label>
+          <input type="text" id="verify-query" value="artificial intelligence" />
+        </div>
+        
+        <button class="btn btn-sm" onclick="testEngines()">검증 엔진 실행</button>
+        
+        <div class="output" id="engines-output">
+          <pre>검증 엔진 결과가 표시됩니다...</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. 전체 검증 -->
+    <div class="panel">
+      <h2>💬 전체 검증 프로세스</h2>
+      
+      <div class="form-group">
+        <label>질문을 입력하세요</label>
+        <textarea id="question-input" placeholder="예: What is quantum computing?">What is quantum computing?</textarea>
+      </div>
+      
+      <button class="btn" onclick="generateAnswer()">답변 생성만 (Gemini)</button>
+      <button class="btn btn-success" onclick="fullVerification()">🚀 전체 검증 실행</button>
+      
+      <div id="result-display" style="margin-top: 20px;">
+        <!-- 결과가 여기에 표시됩니다 -->
+      </div>
+    </div>
+
+    <!-- Grid Layout 2 -->
+    <div class="grid">
+      <!-- 4. 검증 엔진 -->
+      <div class="panel">
+        <h2>🔍 검증 엔진</h2>
+        
+        <div class="form-group">
+          <label>검색 쿼리</label>
+          <input type="text" id="verify-query" value="artificial intelligence" />
+        </div>
+        
+        <button class="btn btn-sm" onclick="testEngines()">검증 엔진 실행</button>
+        
+        <div class="output" id="engines-output">
+          <pre>검증 엔진 결과가 표시됩니다...</pre>
+        </div>
+      </div>
+
+      <!-- 5. TruthScore -->
+      <div class="panel">
+        <h2>📊 TruthScore 계산</h2>
+        
+        <div style="background: #e3f2fd; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+          <strong>TruthScore 공식:</strong><br>
+          일반: Σ(w × Q × R × e^(-λt))<br>
+          검증전용: Σ(w × Q × e^(-λt)) + w_mistral<br>
+          최종: min(1.0, score)
+        </div>
+        
+        <button class="btn btn-sm" onclick="calculateTruthScore()">TruthScore 계산</button>
+        
+        <div id="truthscore-display" style="margin-top: 15px;">
+          <!-- TruthScore가 표시됩니다 -->
+        </div>
+        
+        <div class="output" id="truthscore-output">
+          <pre>TruthScore 결과가 표시됩니다...</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Global State
+    let serverUrl = 'http://localhost:3000';
+    let jwtToken = null;
+    let lastVerificationResult = null;
+
+    // Update server URL
+    document.getElementById('server-url').addEventListener('change', (e) => {
+      serverUrl = e.target.value;
+    });
+
+    // API Call Helper
+    async function apiCall(endpoint, method = 'GET', body = null, requiresAuth = false) {
+      const url = `${serverUrl}${endpoint}`;
+      
+      const headers = {
+        'Content-Type': 'application/json'
+      };
+      
+      if (requiresAuth && jwtToken) {
+        headers['Authorization'] = `Bearer ${jwtToken}`;
+      }
+      
+      const options = {
+        method,
+        headers
+      };
+      
+      if (body) {
+        options.body = JSON.stringify(body);
+      }
+      
+      try {
+        const response = await fetch(url, options);
+        const data = await response.json();
+        return data;
+      } catch (error) {
+        return {
+          success: false,
+          error: error.message
+        };
+      }
+    }
+
+    // Update Output
+    function updateOutput(elementId, data, isSuccess) {
+      const element = document.getElementById(elementId);
+      
+      if (typeof data === 'string') {
+        element.innerHTML = data;
+      } else {
+        element.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+      }
+    }
+
+    // NEW: Save Gemini Keys
+    async function saveGeminiKeys() {
+      const key1 = document.getElementById('gemini-key-1').value.trim();
+      const key2 = document.getElementById('gemini-key-2').value.trim();
+      const key3 = document.getElementById('gemini-key-3').value.trim();
+      
+      if (!key1) {
+        alert('최소 1개의 Gemini API 키를 입력하세요!');
+        return;
+      }
+      
+      if (!jwtToken) {
+        alert('먼저 토큰을 발급하세요!');
+        return;
+      }
+      
+      const keys = [key1, key2, key3].filter(k => k.length > 0);
+      
+      updateOutput('key-config-output', '<span class="loading"></span> 키 저장 중...');
+      
+      const result = await apiCall('/api/config/keys', 'POST', { keys }, true);
+      
+      if (result.success) {
+        document.getElementById('key-config-status').innerHTML = `
+          <div style="padding: 15px; background: #d1fae5; border-radius: 8px;">
+            <strong>✅ ${result.keyCount}개 키 저장 완료!</strong><br>
+            <small>이제 답변 생성을 사용할 수 있습니다.</small>
+          </div>
+        `;
+        updateOutput('key-config-output', result, true);
+        
+        // 키 테스트
+        setTimeout(checkKeyStatus, 1000);
+      } else {
+        document.getElementById('key-config-status').innerHTML = `
+          <div style="padding: 15px; background: #fee2e2; border-radius: 8px;">
+            <strong>❌ 키 저장 실패</strong><br>
+            ${result.error}
+          </div>
+        `;
+        updateOutput('key-config-output', result, false);
+      }
+    }
+
+    // NEW: Check Key Status
+    async function checkKeyStatus() {
+      if (!jwtToken) {
+        alert('먼저 토큰을 발급하세요!');
+        return;
+      }
+      
+      updateOutput('key-config-output', '<span class="loading"></span> 키 상태 확인 중...');
+      
+      const result = await apiCall('/api/config/keys', 'GET', null, true);
+      
+      if (result.success && result.configured) {
+        document.getElementById('key-config-status').innerHTML = `
+          <div class="key-status">
+            <div class="key-indicator active"></div>
+            <div style="flex: 1;">
+              <strong>${result.keyCount}개 키 활성화</strong><br>
+              <small>총 요청: ${result.totalRequests}회 | 현재 키: #${result.currentIndex}</small>
+            </div>
+          </div>
+        `;
+        updateOutput('key-config-output', result, true);
+      } else {
+        document.getElementById('key-config-status').innerHTML = `
+          <div style="padding: 15px; background: #fef3c7; border-radius: 8px;">
+            <strong>⚠️ 키 미설정</strong><br>
+            <small>위에서 Gemini API 키를 입력하세요.</small>
+          </div>
+        `;
+        updateOutput('key-config-output', result, false);
+      }
+    }
+
+    // NEW: Get System Status
+    async function getSystemStatus() {
+      updateOutput('system-output', '<span class="loading"></span> 시스템 상태 조회 중...');
+      
+      const result = await apiCall('/status');
+      
+      if (result.success) {
+        const uptime = Math.floor(result.server.uptime);
+        const hours = Math.floor(uptime / 3600);
+        const minutes = Math.floor((uptime % 3600) / 60);
+        
+        document.getElementById('system-status-display').innerHTML = `
+          <div style="padding: 15px; background: #d1fae5; border-radius: 8px; margin-bottom: 10px;">
+            <strong>✅ 서버 정상 작동</strong><br>
+            <small>가동 시간: ${hours}시간 ${minutes}분</small>
+          </div>
+        `;
+        updateOutput('system-output', result, true);
+      } else {
+        updateOutput('system-output', result, false);
+      }
+    }
+
+    // 1. Health Check
+    async function checkHealth() {
+      updateOutput('auth-output', '<span class="loading"></span> Health Check 중...');
+      
+      const result = await apiCall('/health');
+      
+      if (result.success) {
+        document.getElementById('server-status').className = 'badge badge-success';
+        document.getElementById('server-status').textContent = '✅ 서버 연결';
+        updateOutput('auth-output', result, true);
+      } else {
+        document.getElementById('server-status').className = 'badge badge-error';
+        document.getElementById('server-status').textContent = '❌ 서버 오류';
+        updateOutput('auth-output', result, false);
+      }
+    }
+
+    // 2. Get Token
+    async function getToken() {
+      updateOutput('auth-output', '<span class="loading"></span> 토큰 발급 중...');
+      
+      const result = await apiCall('/api/auth/token', 'POST', {
+        clientId: 'test-client'
+      });
+      
+      if (result.success) {
+        jwtToken = result.token;
+        document.getElementById('token-status').className = 'badge badge-success';
+        document.getElementById('token-status').textContent = '✅ 토큰 유효';
+        updateOutput('auth-output', {
+          ...result,
+          token: result.token.substring(0, 50) + '...'
+        }, true);
+      } else {
+        updateOutput('auth-output', result, false);
+      }
+    }
+
+    // 7. Full Verification
+    async function fullVerification() {
+      const question = document.getElementById('question-input').value;
+      
+      if (!question) {
+        alert('질문을 입력하세요!');
+        return;
+      }
+      
+      if (!jwtToken) {
+        alert('먼저 토큰을 발급하세요!');
+        return;
+      }
+      
+      document.getElementById('result-display').innerHTML = `
+        <div style="padding: 20px; background: #e3f2fd; border-radius: 8px;">
+          <span class="loading"></span> 전체 검증 실행 중...<br>
+          <small>답변 생성 → 검증 → TruthScore 계산</small>
+        </div>
+      `;
+      
+      const result = await apiCall('/api/verify/question', 'POST', { question }, true);
+      
+      if (result.success) {
+        displayFullVerification(result);
+      } else {
+        document.getElementById('result-display').innerHTML = `
+          <div style="padding: 20px; background: #fee2e2; border-radius: 8px;">
+            <strong>❌ 검증 실패</strong><br>
+            ${result.error}
+          </div>
+        `;
+      }
+    }
+
+    // 5. Test Engines
+    async function testEngines() {
+      const query = document.getElementById('verify-query').value;
+      
+      if (!query) {
+        alert('검색 쿼리를 입력하세요!');
+        return;
+      }
+      
+      updateOutput('engines-output', '<span class="loading"></span> 검증 엔진 실행 중...');
+      
+      const result = await apiCall('/api/verify/engines', 'POST', { query });
+      
+      if (result.success) {
+        lastVerificationResult = result.results;
+        
+        let summary = '검증 결과 요약:\n\n';
+        for (const [engine, data] of Object.entries(result.results)) {
+          summary += `${engine.toUpperCase()}: ${data.ok ? '✅' : '❌'} (Score: ${data.score})\n`;
+        }
+        
+        updateOutput('engines-output', {
+          summary,
+          ...result
+        }, true);
+      } else {
+        updateOutput('engines-output', result, false);
+      }
+    }
+
+    // 6. Calculate TruthScore
+    async function calculateTruthScore() {
+      if (!lastVerificationResult) {
+        alert('먼저 검증 엔진을 실행하세요!');
+        return;
+      }
+      
+      updateOutput('truthscore-output', '<span class="loading"></span> TruthScore 계산 중...');
+      
+      const result = await apiCall('/api/verify/truthscore', 'POST', {
+        results: lastVerificationResult,
+        mistralExist: false
+      });
+      
+      if (result.success) {
+        displayTruthScore(result);
+        updateOutput('truthscore-output', result, true);
+      } else {
+        updateOutput('truthscore-output', result, false);
+      }
+    }
+
+    // Display TruthScore
+    function displayTruthScore(result) {
+      const container = document.getElementById('truthscore-display');
+      
+      const percentage = (result.truthScore_final * 100).toFixed(1);
+      
+      container.innerHTML = `
+        <div style="padding: 15px; background: #d1fae5; border-radius: 8px; margin-bottom: 10px;">
+          <strong>TruthScore: ${result.truthScore_final}</strong> (${percentage}%)
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: ${percentage}%">
+            ${percentage}%
+          </div>
+        </div>
+        <div style="margin-top: 10px;">
+          <small>
+            모드: ${result.mode}<br>
+            활성 엔진: ${result.activeEngines.join(', ')}
+          </small>
+        </div>
+      `;
+    }
+
+    // Display Full Verification
+    function displayFullVerification(result) {
+      const percentage = (result.truthScore * 100).toFixed(1);
+      
+      let html = '';
+      
+      // Gemini 키 미설정 경고
+      if (result.gemini.needsConfig) {
+        html += `
+          <div style="padding: 20px; background: #fef3c7; border-radius: 8px; margin-bottom: 15px;">
+            <strong>⚠️ Gemini API 키 미설정</strong><br>
+            답변 생성은 실패했지만 검증은 계속됩니다.<br><br>
+            <button class="btn btn-sm" onclick="document.querySelector('#gemini-key-1').scrollIntoView({behavior: 'smooth'})">
+              키 설정하러 가기 ↑
+            </button>
+          </div>
+        `;
+      } else {
+        html += `
+          <div style="padding: 20px; background: #d1fae5; border-radius: 8px; margin-bottom: 15px;">
+            <strong>✅ 전체 검증 완료!</strong><br>
+            TruthScore: ${result.truthScore}
+          </div>
+        `;
+      }
+      
+      // TruthScore Progress Bar
+      html += `
+        <div class="progress-bar" style="margin-bottom: 20px;">
+          <div class="progress-fill" style="width: ${percentage}%">
+            ${percentage}%
+          </div>
+        </div>
+      `;
+      
+      // Answer
+      if (result.answer) {
+        html += `
+          <div style="margin-bottom: 20px;">
+            <h3>💬 답변</h3>
+            <div class="output">
+              <pre>${result.answer}</pre>
+            </div>
+          </div>
+        `;
+      }
+      
+      // Verification Results
+      html += `<div style="margin-bottom: 20px;"><h3>🔍 검증 결과</h3>`;
+      
+      for (const [engine, data] of Object.entries(result.verification)) {
+        html += `
+          <div class="key-status">
+            <div class="key-indicator ${data.ok ? 'active' : 'exhausted'}"></div>
+            <div style="flex: 1;">
+              <strong>${engine.toUpperCase()}</strong> - ${data.ok ? '✅' : '❌'}<br>
+              <small>Score: ${data.score} | Count: ${data.count || 0}</small>
+            </div>
+          </div>
+        `;
+      }
+      
+      html += `</div>`;
+      
+      document.getElementById('result-display').innerHTML = html;
+    }
+
+    // Auto Health Check
+    window.addEventListener('load', () => {
+      setTimeout(checkHealth, 500);
+    });
+  </script>
+</body>
+</html>
