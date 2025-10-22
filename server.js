@@ -665,6 +665,16 @@ app.get('/api/delta-logs', (req, res) => {
   });
 });
 
+// GET /healthz - Render.com Health Check
+app.get('/healthz', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    version: 'v9.7.4 Rev D',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
 // ============================================================================
 // 9. 서버 시작
 // ============================================================================
@@ -685,7 +695,8 @@ app.listen(PORT, () => {
 ║  ├─ POST /api/generate          - 답변 생성               ║
 ║  ├─ POST /api/verify/complete   - 전체 검증               ║
 ║  ├─ GET  /api/status            - 서버 상태               ║
-║  └─ GET  /api/delta-logs        - Δwᵢ 로그               ║
+║  ├─ GET  /api/delta-logs        - Δwᵢ 로그               ║
+║  └─ GET  /healthz               - Health Check (Render)  ║
 ║                                                            ║
 ║  명세서: Cross-Verified AI v9.7.4 Rev D                   ║
 ╚════════════════════════════════════════════════════════════╝
