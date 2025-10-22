@@ -20,7 +20,7 @@ const PORT = process.env.PORT || 10000;
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static(__dirname)); // 현재 디렉토리의 정적 파일 서빙
 
 // ============================================================================
 // 1. 상수 정의 (명세서 § 3.3, § 5.1.1)
@@ -627,18 +627,24 @@ app.post('/api/verify/complete', async (req, res) => {
 // 8. 기타 엔드포인트
 // ============================================================================
 
-// GET / - 서버 상태
+// GET / - 서버 상태 또는 메인 페이지
 app.get('/', (req, res) => {
-  res.json({
-    name: 'Cross-Verified AI',
-    version: 'v9.7.4 Rev D',
-    status: 'running',
-    timestamp: new Date().toISOString(),
-    configured: {
-      gemini: !!store.apiKeys.gemini,
-      github: !!store.apiKeys.github
-    }
-  });
+  // API 요청인 경우 (Accept: application/json)
+  if (req.accepts('json') && !req.accepts('html')) {
+    return res.json({
+      name: 'Cross-Verified AI',
+      version: 'v9.7.4 Rev D',
+      status: 'running',
+      timestamp: new Date().toISOString(),
+      configured: {
+        gemini: !!store.apiKeys.gemini,
+        github: !!store.apiKeys.github
+      }
+    });
+  }
+  
+  // 브라우저 요청인 경우 index.html 서빙
+  res.sendFile(__dirname + '/index.html');
 });
 
 // GET /api/status - 서버 상태 확인
