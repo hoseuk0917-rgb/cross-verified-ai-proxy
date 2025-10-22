@@ -321,7 +321,7 @@ app.get('/api/modes', (req, res) => {
   });
 });
 
-// 헬스 체크
+// 헬스 체크 (상세 정보)
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'healthy',
@@ -330,9 +330,23 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Render health check용 (로그 최소화)
+app.get('/healthz', (req, res) => {
+  res.status(200).send('OK');
+});
+
 // 루트 경로
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+// 404 처리
+app.use((req, res) => {
+  res.status(404).json({ 
+    success: false, 
+    error: 'Not Found',
+    path: req.path 
+  });
 });
 
 // 서버 시작
