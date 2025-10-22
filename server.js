@@ -149,34 +149,63 @@ app.get('/api/config/keys', (req, res) => {
 // POST /api/config/test - API Key 연결 테스트
 app.post('/api/config/test', async (req, res) => {
   const results = {
-    gemini: false,
-    github: false
+    gemini: { success: false, message: '' },
+    github: { success: false, message: '' }
   };
 
   try {
     // Gemini 테스트
     if (store.apiKeys.gemini) {
-      const geminiKey = decryptKey(store.apiKeys.gemini);
-      const testResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: 'test' }] }]
-          })
+      try {
+        const geminiKey = decryptKey(store.apiKeys.gemini);
+        const testResponse = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: 'Hello' }] }]
+            })
+          }
+        );
+        
+        if (testResponse.ok) {
+          results.gemini = { success: true, message: '연결 성공' };
+        } else {
+          const errorData = await testResponse.json().catch(() => ({}));
+          results.gemini = { 
+            success: false, 
+            message: `오류 ${testResponse.status}: ${errorData.error?.message || '인증 실패'}` 
+          };
         }
-      );
-      results.gemini = testResponse.ok;
+      } catch (error) {
+        results.gemini = { success: false, message: `네트워크 오류: ${error.message}` };
+      }
+    } else {
+      results.gemini = { success: false, message: 'API Key 미설정' };
     }
 
     // GitHub 테스트
     if (store.apiKeys.github) {
-      const githubKey = decryptKey(store.apiKeys.github);
-      const testResponse = await fetch('https://api.github.com/user', {
-        headers: { 'Authorization': `token ${githubKey}` }
-      });
-      results.github = testResponse.ok;
+      try {
+        const githubKey = decryptKey(store.apiKeys.github);
+        const testResponse = await fetch('https://api.github.com/user', {
+          headers: { 'Authorization': `token ${githubKey}` }
+        });
+        
+        if (testResponse.ok) {
+          results.github = { success: true, message: '연결 성공' };
+        } else {
+          results.github = { 
+            success: false, 
+            message: `오류 ${testResponse.status}: 인증 실패` 
+          };
+        }
+      } catch (error) {
+        results.github = { success: false, message: `네트워크 오류: ${error.message}` };
+      }
+    } else {
+      results.github = { success: false, message: 'API Key 미설정' };
     }
 
     res.json({ success: true, results });

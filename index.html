@@ -363,12 +363,15 @@
                 const data = await response.json();
                 
                 if (data.success) {
+                    const geminiResult = data.results.gemini;
+                    const githubResult = data.results.github;
+                    
                     statusDiv.innerHTML = `
-                        <div class="status ${data.results.gemini ? 'success' : 'error'}" style="margin-top: 12px;">
-                            ${data.results.gemini ? '✅' : '❌'} Gemini: ${data.results.gemini ? '연결 성공' : '연결 실패'}
+                        <div class="status ${geminiResult.success ? 'success' : 'error'}" style="margin-top: 12px;">
+                            ${geminiResult.success ? '✅' : '❌'} Gemini: ${geminiResult.message}
                         </div>
-                        <div class="status ${data.results.github ? 'success' : 'error'}" style="margin-top: 8px;">
-                            ${data.results.github ? '✅' : '❌'} GitHub: ${data.results.github ? '연결 성공' : '미설정/실패'}
+                        <div class="status ${githubResult.success ? 'success' : 'error'}" style="margin-top: 8px;">
+                            ${githubResult.success ? '✅' : '❌'} GitHub: ${githubResult.message}
                         </div>
                     `;
                 } else {
@@ -381,7 +384,7 @@
             } catch (error) {
                 statusDiv.innerHTML = `
                     <div class="status error" style="margin-top: 12px;">
-                        ❌ 오류: ${error.message}
+                        ❌ 네트워크 오류: ${error.message}
                     </div>
                 `;
             }
