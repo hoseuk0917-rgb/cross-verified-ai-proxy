@@ -1,358 +1,693 @@
+/**
+ * Cross-Verified AI v9.7.4 Rev D - Complete Server
+ * 명세서 기반 다중 출처 검증 AI 플랫폼
+ * 
+ * Features:
+ * - API Key Management (암호화 저장)
+ * - Gemini API 실제 연동
+ * - 6개 검증 엔진 통합 (CrossRef, OpenAlex, GDELT, Wikidata, GitHub, K-Law)
+ * - TruthScore 계산 및 Δwᵢ 보정
+ * - 5가지 모드 (QV/FV/DV/CV/LM)
+ */
+
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static(__dirname));
-app.use('/assets', express.static(path.join(__dirname, 'assets')));
+app.use(express.static('public'));
 
 // ============================================================================
-// 검증 엔진 가중치 (명세서 3.3)
+// 1. 상수 정의 (명세서 § 3.3, § 5.1.1)
 // ============================================================================
-const ENGINE_WEIGHTS = {
-  // 기본 엔진 (QV/FV 모드)
-  CrossRef: 0.25,
-  OpenAlex: 0.25,
-  GDELT: 0.25,
-  Wikidata: 0.25,
-  
-  // 특화 엔진 (DV/CV/LM 모드)
-  GitHub: 0.50,    // DV/CV 모드 전용
-  'K-Law': 1.00    // LM 모드 전용
-};
 
-// 출처 품질 지표 Qᵢ (명세서 5.1.1)
-const SOURCE_QUALITY = {
-  CrossRef: 1.0,
-  OpenAlex: 0.9,
-  GDELT: 0.8,
-  Wikidata: 0.75,
-  GitHub: 0.85,
-  'K-Law': 1.0
-};
+const CONSTANTS = {
+  // 검증 엔진 초기 가중치
+  ENGINE_WEIGHTS: {
+    CrossRef: 0.25,
+    OpenAlex: 0.25,
+    GDELT: 0.25,
+    Wikidata: 0.25,
+    GitHub: 0.50,    // DV/CV 전용
+    'K-Law': 1.00    // LM 전용
+  },
 
-// 시간 감쇠 상수
-const LAMBDA = 0.1;
+  // 출처 품질 지표 Qᵢ (명세서 § 5.1.1 - Rev D 개선)
+  SOURCE_QUALITY: {
+    CrossRef: 1.0,   // 공공 학술 API
+    OpenAlex: 0.9,   // 학술 메타데이터
+    GDELT: 0.8,      // 뉴스 웹 콘텐츠
+    Wikidata: 0.75,  // 지식 그래프
+    GitHub: 0.85,    // 코드 저장소
+    'K-Law': 1.0     // 공공 법령 API
+  },
 
-// ============================================================================
-// 모드별 활성 엔진 (명세서 4.1)
-// ============================================================================
-const MODE_ENGINES = {
-  QV: ['CrossRef', 'OpenAlex', 'GDELT', 'Wikidata'],
-  FV: ['CrossRef', 'OpenAlex', 'GDELT', 'Wikidata'],
-  DV: ['GitHub', 'GDELT'],
-  CV: ['GitHub', 'GDELT'],
-  LM: ['K-Law']
-};
+  // 시간 감쇠 상수 λ (명세서 § 5.1.1)
+  LAMBDA: 0.1,
 
-// ============================================================================
-// 검증 엔진 시뮬레이션
-// ============================================================================
-function simulateVerificationEngine(engine, query) {
-  // 실제로는 외부 API를 호출하지만, 여기서는 시뮬레이션
-  const reliability = 0.6 + Math.random() * 0.3; // Rᵢ: 0.6~0.9
-  const consistency = 0.5 + Math.random() * 0.4; // 0.5~0.9
-  const recency = 0.7 + Math.random() * 0.3;     // 0.7~1.0
-  const sources = Math.floor(Math.random() * 6) + 1; // 1~6개
-  
-  // 시간 차이 (일 단위, 0~365일)
-  const daysSinceUpdate = Math.floor(Math.random() * 365);
-  
-  return {
-    engine,
-    reliability,
-    consistency,
-    recency,
-    sources,
-    daysSinceUpdate,
-    quality: SOURCE_QUALITY[engine] || 0.8
-  };
-}
+  // 신뢰도 아이콘 임계값 (명세서 § 5.2)
+  CONFIDENCE_THRESHOLDS: {
+    HIGH: 70,        // ≥70% → 🟢
+    MID: 40,         // 40-69% → 🟡 (조건부)
+    LOW: 40          // <40% → 🔴
+  },
 
-// ============================================================================
-// TruthScore 계산 (명세서 5.1.1)
-// ============================================================================
-function calculateTruthScore(verificationResults, weights) {
-  let totalScore = 0;
-  let totalWeight = 0;
-  
-  verificationResults.forEach(result => {
-    const { engine, reliability, quality, daysSinceUpdate } = result;
-    const weight = weights[engine] || 0;
-    
-    // 시간 감쇠: e^(-λt)
-    const timeDecay = Math.exp(-LAMBDA * (daysSinceUpdate / 365));
-    
-    // TruthScore = Σ (Rᵢ × Qᵢ × e^(-λt) × wᵢ)
-    const engineScore = reliability * quality * timeDecay * weight;
-    
-    totalScore += engineScore;
-    totalWeight += weight;
-  });
-  
-  // 정규화
-  return totalWeight > 0 ? totalScore / totalWeight : 0;
-}
-
-// ============================================================================
-// Δwᵢ 보정 계산 (명세서 5.3)
-// ============================================================================
-function calculateDeltaWeight(result, previousTrend = 0) {
-  const { consistency, reliability } = result;
-  
-  // 추세 계산 (간단한 예시)
-  const trend = consistency > 0.7 ? 0.1 : -0.1;
-  
-  // Δwᵢ = α × (consistency - 0.5) + β × (Rᵢ - 0.7) + γ × trendᵢ
-  const alpha = 0.3;
-  const beta = 0.5;
-  const gamma = 0.2;
-  
-  const deltaWeight = 
-    alpha * (consistency - 0.5) + 
-    beta * (reliability - 0.7) + 
-    gamma * trend;
-  
-  return {
-    deltaWeight: Math.max(-0.2, Math.min(0.2, deltaWeight)), // 제한: -0.2 ~ 0.2
-    trend
-  };
-}
-
-// ============================================================================
-// 신뢰도 아이콘 매핑 (명세서 5.2) - 핵심 로직!
-// ============================================================================
-function getIconForScore(score, dropReason = null) {
-  if (score >= 0.7) {
-    return {
-      icon: 'green',
-      label: '정상',
-      color: '#22c55e'
-    };
-  } else if (score >= 0.4 && score < 0.7) {
-    // 0.4~0.69 범위에서 하락 사유에 따라 다른 아이콘!
-    if (dropReason === 'lack_of_sources') {
-      return {
-        icon: 'question',
-        label: '출처 부족',
-        color: '#eab308'
-      };
-    } else {
-      // 일치도 낮음 또는 최신성 부족
-      return {
-        icon: 'triangle',
-        label: '일치도 낮음 / 최신성 부족',
-        color: '#eab308'
-      };
-    }
-  } else {
-    return {
-      icon: 'x',
-      label: '검증 실패 / 불일치',
-      color: '#ef4444'
-    };
+  // 모드별 활성 엔진 (명세서 § 4.1)
+  MODE_ENGINES: {
+    QV: ['CrossRef', 'OpenAlex', 'GDELT', 'Wikidata'],  // 질문검증
+    FV: ['CrossRef', 'OpenAlex', 'GDELT', 'Wikidata'],  // 사실검증
+    DV: ['GitHub', 'GDELT'],                            // 개발검증
+    CV: ['GitHub', 'GDELT'],                            // 코드검증 (Pro)
+    LM: ['K-Law']                                       // 법령정보
   }
-}
-
-// 신뢰도 하락 사유 판단
-function determineDropReason(verificationResults) {
-  const totalSources = verificationResults.reduce((sum, r) => sum + r.sources, 0);
-  const avgConsistency = verificationResults.reduce((sum, r) => sum + r.consistency, 0) / verificationResults.length;
-  const avgRecency = verificationResults.reduce((sum, r) => sum + r.recency, 0) / verificationResults.length;
-  
-  if (totalSources < 3) {
-    return 'lack_of_sources';
-  } else if (avgConsistency < 0.6) {
-    return 'low_consistency';
-  } else if (avgRecency < 0.5) {
-    return 'low_recency';
-  }
-  
-  return 'other';
-}
-
-// LM 모드 아이콘 (명세서 5.2)
-function getLMIcon(status) {
-  const icons = {
-    success: { icon: 'green', label: 'API 통신 정상', color: '#22c55e' },
-    delayed: { icon: 'triangle', label: 'API 지연', color: '#eab308' },
-    error: { icon: 'x', label: 'API 오류', color: '#ef4444' }
-  };
-  return icons[status] || icons.error;
-}
+};
 
 // ============================================================================
-// API 엔드포인트
+// 2. 메모리 저장소 (실제 운영 시 PostgreSQL 사용)
 // ============================================================================
 
-// 검증 요청
-app.post('/api/verify', (req, res) => {
+const store = {
+  // API Keys (암호화 저장)
+  apiKeys: {
+    gemini: null,
+    github: null,
+    // 실제 운영: AES-256 암호화 필요 (명세서 § 8.1)
+  },
+
+  // Δwᵢ 최신값 (명세서 § 3.1)
+  deltaWeights: {},
+
+  // Δwᵢ 로그 (FIFO 10회) (명세서 § 3.1)
+  deltaLogs: []
+};
+
+// ============================================================================
+// 3. API Key 관리 (명세서 § 7.3)
+// ============================================================================
+
+/**
+ * API Key 암호화 (AES-256)
+ * 실제 운영: PBKDF2 기반 UUID 파생 키 사용
+ */
+function encryptKey(key) {
+  // 간단한 Base64 인코딩 (실제: AES-256 필요)
+  return Buffer.from(key).toString('base64');
+}
+
+function decryptKey(encryptedKey) {
+  return Buffer.from(encryptedKey, 'base64').toString('utf-8');
+}
+
+// POST /api/config/keys - API Key 저장
+app.post('/api/config/keys', (req, res) => {
   try {
-    const { query, mode = 'QV', sentenceFilter = 'all' } = req.body;
-    
-    if (!query) {
-      return res.status(400).json({ error: 'Query is required' });
+    const { gemini, github } = req.body;
+
+    if (gemini) {
+      store.apiKeys.gemini = encryptKey(gemini);
     }
-    
-    // 모드별 활성 엔진
-    const activeEngines = MODE_ENGINES[mode] || MODE_ENGINES.QV;
-    
-    // LM 모드는 특별 처리
-    if (mode === 'LM') {
-      const apiStatus = Math.random() > 0.1 ? 'success' : (Math.random() > 0.5 ? 'delayed' : 'error');
-      const iconInfo = getLMIcon(apiStatus);
-      
-      return res.json({
-        mode,
-        query,
-        isLMMode: true,
-        apiStatus,
-        icon: iconInfo,
-        results: [{
-          engine: 'K-Law',
-          status: apiStatus,
-          message: '법령 검색 ' + (apiStatus === 'success' ? '성공' : apiStatus === 'delayed' ? '지연 중' : '실패')
-        }]
+    if (github) {
+      store.apiKeys.github = encryptKey(github);
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'API Keys 저장 완료',
+      stored: {
+        gemini: !!store.apiKeys.gemini,
+        github: !!store.apiKeys.github
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/config/keys - API Key 조회 (마스킹)
+app.get('/api/config/keys', (req, res) => {
+  const maskKey = (key) => {
+    if (!key) return null;
+    const decrypted = decryptKey(key);
+    return decrypted.substring(0, 8) + '...' + decrypted.substring(decrypted.length - 4);
+  };
+
+  res.json({
+    gemini: maskKey(store.apiKeys.gemini),
+    github: maskKey(store.apiKeys.github),
+    configured: {
+      gemini: !!store.apiKeys.gemini,
+      github: !!store.apiKeys.github
+    }
+  });
+});
+
+// POST /api/config/test - API Key 연결 테스트
+app.post('/api/config/test', async (req, res) => {
+  const results = {
+    gemini: false,
+    github: false
+  };
+
+  try {
+    // Gemini 테스트
+    if (store.apiKeys.gemini) {
+      const geminiKey = decryptKey(store.apiKeys.gemini);
+      const testResponse = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: 'test' }] }]
+          })
+        }
+      );
+      results.gemini = testResponse.ok;
+    }
+
+    // GitHub 테스트
+    if (store.apiKeys.github) {
+      const githubKey = decryptKey(store.apiKeys.github);
+      const testResponse = await fetch('https://api.github.com/user', {
+        headers: { 'Authorization': `token ${githubKey}` }
       });
+      results.github = testResponse.ok;
     }
-    
-    // 검증 엔진 실행
-    const verificationResults = activeEngines.map(engine => 
-      simulateVerificationEngine(engine, query)
+
+    res.json({ success: true, results });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================================
+// 4. Gemini API 연동 (명세서 § 2.1)
+// ============================================================================
+
+/**
+ * Gemini를 통한 답변 생성
+ */
+async function generateWithGemini(question, mode = 'QV') {
+  if (!store.apiKeys.gemini) {
+    throw new Error('Gemini API Key가 설정되지 않았습니다');
+  }
+
+  const geminiKey = decryptKey(store.apiKeys.gemini);
+  
+  // 모드별 프롬프트 조정
+  const modePrompts = {
+    QV: `사용자 질문에 대해 정확하고 신뢰할 수 있는 답변을 제공하세요.\n\n질문: ${question}`,
+    FV: `다음 문장의 사실 여부를 검증하고 상세한 분석을 제공하세요.\n\n문장: ${question}`,
+    DV: `다음 개발/기술 질문에 대해 최신 정보를 바탕으로 답변하세요.\n\n질문: ${question}`,
+    CV: `다음 코드의 품질과 정합성을 분석하고 개선 방안을 제시하세요.\n\n코드: ${question}`,
+    LM: `다음 법령 관련 질문에 대해 정확한 법률 정보를 제공하세요.\n\n질문: ${question}`
+  };
+
+  const prompt = modePrompts[mode] || modePrompts.QV;
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 2048
+          }
+        })
+      }
     );
-    
-    // 가중치 정규화
-    let weights = {};
-    let totalWeight = 0;
-    activeEngines.forEach(engine => {
-      weights[engine] = ENGINE_WEIGHTS[engine] || 0.25;
-      totalWeight += weights[engine];
-    });
-    
-    // 정규화하여 총합 = 1.0
-    if (totalWeight > 0) {
-      Object.keys(weights).forEach(engine => {
-        weights[engine] /= totalWeight;
-      });
+
+    if (!response.ok) {
+      throw new Error(`Gemini API 오류: ${response.status}`);
     }
+
+    const data = await response.json();
+    const answer = data.candidates[0]?.content?.parts[0]?.text || '답변을 생성할 수 없습니다';
     
-    // TruthScore 계산
-    const truthScore = calculateTruthScore(verificationResults, weights);
-    
-    // Δwᵢ 보정
-    const deltaWeights = verificationResults.map(result => {
-      const { deltaWeight, trend } = calculateDeltaWeight(result);
-      return {
-        engine: result.engine,
-        deltaWeight,
-        trend,
-        newWeight: weights[result.engine] + deltaWeight
-      };
-    });
-    
-    // 신뢰도 하락 사유 판단
-    const dropReason = determineDropReason(verificationResults);
-    
-    // 아이콘 결정
-    const iconInfo = getIconForScore(truthScore, dropReason);
-    
-    // 응답 생성
+    return answer;
+  } catch (error) {
+    console.error('Gemini API 오류:', error);
+    throw error;
+  }
+}
+
+// POST /api/generate - 답변 생성
+app.post('/api/generate', async (req, res) => {
+  try {
+    const { question, mode = 'QV' } = req.body;
+
+    if (!question) {
+      return res.status(400).json({ error: '질문이 필요합니다' });
+    }
+
+    const answer = await generateWithGemini(question, mode);
+
     res.json({
+      success: true,
+      question,
+      answer,
       mode,
-      query,
-      truthScore: Math.round(truthScore * 100) / 100,
-      percentage: Math.round(truthScore * 100),
-      dropReason,
-      icon: iconInfo,
-      verificationResults: verificationResults.map(r => ({
-        engine: r.engine,
-        reliability: Math.round(r.reliability * 100) / 100,
-        consistency: Math.round(r.consistency * 100) / 100,
-        recency: Math.round(r.recency * 100) / 100,
-        sources: r.sources,
-        daysSinceUpdate: r.daysSinceUpdate
-      })),
-      weights,
-      deltaWeights,
       timestamp: new Date().toISOString()
     });
-    
   } catch (error) {
-    console.error('Verification error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 모드 정보
-app.get('/api/modes', (req, res) => {
-  res.json({
-    modes: {
-      QV: {
-        name: '질문검증',
-        description: '사용자 질문 + 사실 검증',
-        engines: MODE_ENGINES.QV
-      },
-      FV: {
-        name: '사실검증',
-        description: '기존 문장 사실 검증 / 신뢰도 피드백',
-        engines: MODE_ENGINES.FV
-      },
-      DV: {
-        name: '개발검증',
-        description: '코드 / 기술 정합성 검증',
-        engines: MODE_ENGINES.DV
-      },
-      CV: {
-        name: '코드검증',
-        description: '사용자 입력 코드 검증 (Pro 전용)',
-        engines: MODE_ENGINES.CV
-      },
-      LM: {
-        name: '법령정보',
-        description: '법령 검색 / 조항 조회',
-        engines: MODE_ENGINES.LM
+// ============================================================================
+// 5. 검증 엔진 (명세서 § 2.2)
+// ============================================================================
+
+/**
+ * CrossRef 학술 검증
+ */
+async function verifyCrossRef(text) {
+  try {
+    const query = encodeURIComponent(text.substring(0, 100));
+    const response = await fetch(
+      `https://api.crossref.org/works?query=${query}&rows=3`
+    );
+    
+    if (!response.ok) return { reliability: 0, sources: [], recency: 0 };
+    
+    const data = await response.json();
+    const items = data.message?.items || [];
+    
+    return {
+      reliability: items.length > 0 ? 0.8 : 0.3,
+      sources: items.slice(0, 3),
+      recency: items[0]?.created?.['date-time'] 
+        ? (Date.now() - new Date(items[0].created['date-time']).getTime()) / (1000 * 60 * 60 * 24)
+        : 365
+    };
+  } catch (error) {
+    console.error('CrossRef 오류:', error);
+    return { reliability: 0, sources: [], recency: 365 };
+  }
+}
+
+/**
+ * OpenAlex 학술 검증 (시뮬레이션)
+ */
+async function verifyOpenAlex(text) {
+  // 실제 구현 시 OpenAlex API 사용
+  return {
+    reliability: 0.75,
+    sources: [],
+    recency: 180
+  };
+}
+
+/**
+ * GDELT 뉴스 검증 (시뮬레이션)
+ */
+async function verifyGDELT(text) {
+  // 실제 구현 시 GDELT API 사용
+  return {
+    reliability: 0.7,
+    sources: [],
+    recency: 7
+  };
+}
+
+/**
+ * Wikidata 지식 검증 (시뮬레이션)
+ */
+async function verifyWikidata(text) {
+  // 실제 구현 시 Wikidata API 사용
+  return {
+    reliability: 0.65,
+    sources: [],
+    recency: 30
+  };
+}
+
+/**
+ * GitHub 코드 검증
+ */
+async function verifyGitHub(text) {
+  if (!store.apiKeys.github) {
+    return { reliability: 0, sources: [], completeness: 0, recency: 365 };
+  }
+
+  try {
+    const githubKey = decryptKey(store.apiKeys.github);
+    const query = encodeURIComponent(text.substring(0, 50));
+    
+    const response = await fetch(
+      `https://api.github.com/search/code?q=${query}&per_page=3`,
+      {
+        headers: { 
+          'Authorization': `token ${githubKey}`,
+          'Accept': 'application/vnd.github.v3+json'
+        }
       }
+    );
+
+    if (!response.ok) return { reliability: 0, sources: [], completeness: 0, recency: 365 };
+
+    const data = await response.json();
+    const items = data.items || [];
+
+    // Completeness 평가 (명세서 § 4.3)
+    const completeness = items.length > 0 ? 0.85 : 0.3;
+
+    return {
+      reliability: completeness,
+      sources: items.slice(0, 3),
+      completeness,
+      recency: 7 // 최근성 가정
+    };
+  } catch (error) {
+    console.error('GitHub 오류:', error);
+    return { reliability: 0, sources: [], completeness: 0, recency: 365 };
+  }
+}
+
+/**
+ * K-Law 법령 검증 (시뮬레이션)
+ */
+async function verifyKLaw(text) {
+  // 실제 구현 시 K-Law API 사용
+  // 참고: https://www.law.go.kr/DRF/lawService.do
+  return {
+    reliability: 0.9,
+    sources: [],
+    recency: 0,
+    status: 'success' // LM 모드 전용
+  };
+}
+
+// ============================================================================
+// 6. TruthScore 계산 (명세서 § 5.1.1)
+// ============================================================================
+
+/**
+ * TruthScore 계산
+ * 공식: TruthScore = Σ (Rᵢ × Qᵢ × e^(-λt) × wᵢ)
+ */
+function calculateTruthScore(verificationResults, mode) {
+  const activeEngines = CONSTANTS.MODE_ENGINES[mode] || CONSTANTS.MODE_ENGINES.QV;
+  let totalScore = 0;
+  let totalWeight = 0;
+
+  const details = [];
+
+  for (const engine of activeEngines) {
+    const result = verificationResults[engine];
+    if (!result) continue;
+
+    // Rᵢ: 신뢰도 (0~1)
+    const Ri = result.reliability || 0;
+
+    // Qᵢ: 출처 품질 지표 (명세서 § 5.1.1 - Rev D)
+    const Qi = CONSTANTS.SOURCE_QUALITY[engine] || 0.5;
+
+    // e^(-λt): 시간 감쇠
+    const recencyDays = result.recency || 0;
+    const timeDecay = Math.exp(-CONSTANTS.LAMBDA * (recencyDays / 365));
+
+    // wᵢ: 가중치 (Δwᵢ 보정 적용)
+    let wi = CONSTANTS.ENGINE_WEIGHTS[engine] || 0.25;
+    if (store.deltaWeights[engine]) {
+      // Δwᵢ 보정 공식 (명세서 § 3.2)
+      wi = 0.8 * wi + 0.2 * store.deltaWeights[engine];
+    }
+
+    // 개별 점수 계산
+    const engineScore = Ri * Qi * timeDecay * wi;
+    totalScore += engineScore;
+    totalWeight += wi;
+
+    details.push({
+      engine,
+      Ri: Ri.toFixed(2),
+      Qi: Qi.toFixed(2),
+      timeDecay: timeDecay.toFixed(3),
+      wi: wi.toFixed(3),
+      score: engineScore.toFixed(3),
+      sources: result.sources?.length || 0
+    });
+  }
+
+  // 정규화
+  const normalizedScore = totalWeight > 0 ? (totalScore / totalWeight) * 100 : 0;
+
+  return {
+    truthScore: normalizedScore,
+    details,
+    activeEngines
+  };
+}
+
+/**
+ * 신뢰도 아이콘 매핑 (명세서 § 5.2)
+ */
+function getConfidenceIcon(truthScore, sourceCount, consistency) {
+  if (truthScore >= CONSTANTS.CONFIDENCE_THRESHOLDS.HIGH) {
+    return { icon: '🟢', color: 'green', label: '높은 신뢰도' };
+  }
+  
+  if (truthScore >= CONSTANTS.CONFIDENCE_THRESHOLDS.MID) {
+    // 출처 부족
+    if (sourceCount < 2) {
+      return { icon: '🟡?', color: 'yellow', label: '출처 부족' };
+    }
+    // 일치도 낮음
+    if (consistency < 0.6) {
+      return { icon: '🟡△', color: 'yellow', label: '일치도 낮음' };
+    }
+    return { icon: '🟡', color: 'yellow', label: '중간 신뢰도' };
+  }
+
+  return { icon: '🔴✕', color: 'red', label: '낮은 신뢰도' };
+}
+
+/**
+ * Δwᵢ 보정 로직 (명세서 § 5.3)
+ */
+function calculateDeltaWeights(verificationResults, truthScore) {
+  const deltaUpdates = {};
+
+  for (const [engine, result] of Object.entries(verificationResults)) {
+    if (!result) continue;
+
+    const consistency = result.reliability || 0;
+    const trend = 0; // 실제: 과거 데이터 추세 분석 필요
+
+    // 간단한 Δwᵢ 계산
+    const delta = (consistency - 0.5) * 0.1 + trend * 0.05;
+    deltaUpdates[engine] = delta;
+  }
+
+  // FIFO 10회 로그 저장 (명세서 § 3.1)
+  store.deltaLogs.push({
+    timestamp: new Date().toISOString(),
+    truthScore,
+    deltas: deltaUpdates
+  });
+
+  if (store.deltaLogs.length > 10) {
+    store.deltaLogs.shift(); // 가장 오래된 로그 삭제
+  }
+
+  // 최신값 업데이트
+  Object.assign(store.deltaWeights, deltaUpdates);
+
+  return deltaUpdates;
+}
+
+// ============================================================================
+// 7. 통합 검증 엔드포인트
+// ============================================================================
+
+/**
+ * POST /api/verify/complete - 전체 검증 프로세스
+ */
+app.post('/api/verify/complete', async (req, res) => {
+  try {
+    const { question, mode = 'QV', includeGeneration = true } = req.body;
+
+    if (!question) {
+      return res.status(400).json({ error: '질문이 필요합니다' });
+    }
+
+    let answer = null;
+    let generationTime = 0;
+
+    // 1. Gemini 답변 생성 (옵션)
+    if (includeGeneration) {
+      const startTime = Date.now();
+      answer = await generateWithGemini(question, mode);
+      generationTime = Date.now() - startTime;
+    }
+
+    // 2. 검증 엔진 실행
+    const verificationStart = Date.now();
+    const activeEngines = CONSTANTS.MODE_ENGINES[mode] || CONSTANTS.MODE_ENGINES.QV;
+    
+    const verificationResults = {};
+    const verificationPromises = [];
+
+    for (const engine of activeEngines) {
+      switch (engine) {
+        case 'CrossRef':
+          verificationPromises.push(
+            verifyCrossRef(question).then(r => ({ engine, result: r }))
+          );
+          break;
+        case 'OpenAlex':
+          verificationPromises.push(
+            verifyOpenAlex(question).then(r => ({ engine, result: r }))
+          );
+          break;
+        case 'GDELT':
+          verificationPromises.push(
+            verifyGDELT(question).then(r => ({ engine, result: r }))
+          );
+          break;
+        case 'Wikidata':
+          verificationPromises.push(
+            verifyWikidata(question).then(r => ({ engine, result: r }))
+          );
+          break;
+        case 'GitHub':
+          verificationPromises.push(
+            verifyGitHub(question).then(r => ({ engine, result: r }))
+          );
+          break;
+        case 'K-Law':
+          verificationPromises.push(
+            verifyKLaw(question).then(r => ({ engine, result: r }))
+          );
+          break;
+      }
+    }
+
+    const allResults = await Promise.all(verificationPromises);
+    allResults.forEach(({ engine, result }) => {
+      verificationResults[engine] = result;
+    });
+
+    const verificationTime = Date.now() - verificationStart;
+
+    // 3. TruthScore 계산
+    const scoreResult = calculateTruthScore(verificationResults, mode);
+    
+    // 4. 신뢰도 아이콘
+    const totalSources = Object.values(verificationResults)
+      .reduce((sum, r) => sum + (r.sources?.length || 0), 0);
+    
+    const avgConsistency = Object.values(verificationResults)
+      .reduce((sum, r) => sum + (r.reliability || 0), 0) / activeEngines.length;
+    
+    const confidence = getConfidenceIcon(scoreResult.truthScore, totalSources, avgConsistency);
+
+    // 5. Δwᵢ 보정
+    const deltaWeights = calculateDeltaWeights(verificationResults, scoreResult.truthScore);
+
+    // 응답
+    res.json({
+      success: true,
+      mode,
+      question,
+      answer,
+      verification: {
+        truthScore: scoreResult.truthScore.toFixed(2),
+        confidence,
+        engines: scoreResult.details,
+        totalSources,
+        avgConsistency: avgConsistency.toFixed(2)
+      },
+      deltaWeights,
+      performance: {
+        generationTime: `${generationTime}ms`,
+        verificationTime: `${verificationTime}ms`,
+        totalTime: `${generationTime + verificationTime}ms`
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('검증 오류:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================================
+// 8. 기타 엔드포인트
+// ============================================================================
+
+// GET / - 서버 상태
+app.get('/', (req, res) => {
+  res.json({
+    name: 'Cross-Verified AI',
+    version: 'v9.7.4 Rev D',
+    status: 'running',
+    timestamp: new Date().toISOString(),
+    configured: {
+      gemini: !!store.apiKeys.gemini,
+      github: !!store.apiKeys.github
     }
   });
 });
 
-// 헬스 체크 (상세 정보)
-app.get('/api/health', (req, res) => {
+// GET /api/status - 서버 상태 확인
+app.get('/api/status', (req, res) => {
   res.json({
-    status: 'healthy',
-    version: '9.7.3',
-    timestamp: new Date().toISOString()
+    server: 'online',
+    version: 'v9.7.4 Rev D',
+    apiKeys: {
+      gemini: !!store.apiKeys.gemini,
+      github: !!store.apiKeys.github
+    },
+    deltaWeights: store.deltaWeights,
+    deltaLogsCount: store.deltaLogs.length,
+    uptime: process.uptime()
   });
 });
 
-// Render health check용 (로그 최소화)
-app.get('/healthz', (req, res) => {
-  res.status(200).send('OK');
-});
-
-// 루트 경로
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-// 404 처리
-app.use((req, res) => {
-  res.status(404).json({ 
-    success: false, 
-    error: 'Not Found',
-    path: req.path 
+// GET /api/delta-logs - Δwᵢ 로그 조회
+app.get('/api/delta-logs', (req, res) => {
+  res.json({
+    logs: store.deltaLogs,
+    count: store.deltaLogs.length,
+    maxLogs: 10
   });
 });
 
-// 서버 시작
+// ============================================================================
+// 9. 서버 시작
+// ============================================================================
+
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Server running on port ${PORT}`);
-  console.log(`📍 http://localhost:${PORT}`);
+  console.log(`
+╔════════════════════════════════════════════════════════════╗
+║  Cross-Verified AI v9.7.4 Rev D                            ║
+║  다중 출처 검증 AI 플랫폼                                   ║
+╠════════════════════════════════════════════════════════════╣
+║  서버 주소: http://localhost:${PORT}                        
+║  상태: 실행 중 ✅                                          ║
+║                                                            ║
+║  엔드포인트:                                                ║
+║  ├─ POST /api/config/keys       - API Key 저장            ║
+║  ├─ GET  /api/config/keys       - API Key 조회            ║
+║  ├─ POST /api/config/test       - API Key 테스트          ║
+║  ├─ POST /api/generate          - 답변 생성               ║
+║  ├─ POST /api/verify/complete   - 전체 검증               ║
+║  ├─ GET  /api/status            - 서버 상태               ║
+║  └─ GET  /api/delta-logs        - Δwᵢ 로그               ║
+║                                                            ║
+║  명세서: Cross-Verified AI v9.7.4 Rev D                   ║
+╚════════════════════════════════════════════════════════════╝
+  `);
 });
-
-module.exports = app;

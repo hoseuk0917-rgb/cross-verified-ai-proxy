@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cross-Verified AI - Multi-Source Verification Platform</title>
+    <title>Cross-Verified AI v9.7.4 Rev D - 테스트</title>
     <style>
         * {
             margin: 0;
@@ -19,291 +19,201 @@
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 900px;
             margin: 0 auto;
         }
 
         .header {
             background: white;
-            border-radius: 15px;
             padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
             margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            text-align: center;
         }
 
-        h1 {
+        .header h1 {
             color: #667eea;
-            font-size: 2.5em;
-            margin-bottom: 10px;
+            font-size: 28px;
+            margin-bottom: 8px;
         }
 
-        .subtitle {
+        .header p {
             color: #666;
-            font-size: 1.1em;
+            font-size: 14px;
         }
 
-        .version {
-            display: inline-block;
-            background: #667eea;
-            color: white;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-size: 0.9em;
-            margin-left: 15px;
-        }
-
-        .mode-selector {
+        .card {
             background: white;
-            border-radius: 15px;
-            padding: 25px;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
             margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
         }
 
-        .mode-buttons {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
-            margin-top: 15px;
-        }
-
-        .mode-btn {
-            padding: 15px 20px;
-            border: 2px solid #e2e8f0;
-            background: white;
-            border-radius: 10px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            font-size: 1em;
-            font-weight: 600;
-        }
-
-        .mode-btn:hover {
-            border-color: #667eea;
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102,126,234,0.3);
-        }
-
-        .mode-btn.active {
-            background: #667eea;
-            color: white;
-            border-color: #667eea;
-        }
-
-        .mode-info {
-            margin-top: 15px;
-            padding: 15px;
-            background: #f7fafc;
-            border-radius: 10px;
-            font-size: 0.95em;
-            color: #4a5568;
-        }
-
-        .input-section {
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
+        .card h2 {
+            color: #333;
+            font-size: 20px;
             margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
 
         .input-group {
-            display: flex;
-            gap: 15px;
-            align-items: flex-start;
+            margin-bottom: 16px;
         }
 
-        #queryInput {
-            flex: 1;
-            padding: 15px;
-            border: 2px solid #e2e8f0;
-            border-radius: 10px;
-            font-size: 1em;
-            min-height: 80px;
-            resize: vertical;
-            font-family: inherit;
+        .input-group label {
+            display: block;
+            color: #555;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 8px;
         }
 
-        #queryInput:focus {
+        .input-group input,
+        .input-group textarea,
+        .input-group select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .input-group input:focus,
+        .input-group textarea:focus,
+        .input-group select:focus {
             outline: none;
             border-color: #667eea;
         }
 
-        .verify-btn {
-            padding: 15px 40px;
-            background: #667eea;
+        .input-group textarea {
+            resize: vertical;
+            min-height: 100px;
+            font-family: inherit;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
-            border-radius: 10px;
-            font-size: 1.1em;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-right: 10px;
         }
 
-        .verify-btn:hover {
-            background: #5568d3;
+        .btn:hover {
             transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102,126,234,0.4);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
         }
 
-        .verify-btn:active {
+        .btn:active {
             transform: translateY(0);
         }
 
-        .verify-btn:disabled {
-            background: #cbd5e0;
-            cursor: not-allowed;
-            transform: none;
+        .btn-secondary {
+            background: #6c757d;
         }
 
-        .results-section {
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .result {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+            border-left: 4px solid #667eea;
+        }
+
+        .result h3 {
+            color: #333;
+            font-size: 16px;
+            margin-bottom: 12px;
+        }
+
+        .result-item {
             background: white;
-            border-radius: 15px;
-            padding: 25px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            display: none;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 10px;
         }
 
-        .results-section.show {
-            display: block;
-            animation: fadeIn 0.5s ease;
+        .result-item:last-child {
+            margin-bottom: 0;
         }
 
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        .truthscore-display {
-            text-align: center;
-            padding: 40px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 15px;
-            margin-bottom: 25px;
-            color: white;
-        }
-
-        .truthscore-value {
-            font-size: 4em;
-            font-weight: bold;
-            margin: 20px 0;
-        }
-
-        .confidence-icon {
-            width: 80px;
-            height: 80px;
-            margin: 0 auto 20px;
-        }
-
-        .confidence-icon img {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-        }
-
-        .drop-reason {
-            font-size: 1.2em;
-            margin-top: 10px;
-            opacity: 0.9;
-        }
-
-        .engine-results {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 15px;
-            margin-top: 25px;
-        }
-
-        .engine-card {
-            border: 2px solid #e2e8f0;
-            border-radius: 10px;
-            padding: 20px;
-            background: #f7fafc;
-        }
-
-        .engine-header {
+        .result-label {
+            font-size: 12px;
+            color: #666;
             font-weight: 600;
-            font-size: 1.1em;
-            color: #2d3748;
-            margin-bottom: 15px;
-            display: flex;
-            justify-content: space-between;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .result-value {
+            font-size: 14px;
+            color: #333;
+        }
+
+        .confidence-badge {
+            display: inline-flex;
             align-items: center;
-        }
-
-        .metric {
-            display: flex;
-            justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid #e2e8f0;
-        }
-
-        .metric:last-child {
-            border-bottom: none;
-        }
-
-        .metric-label {
-            color: #718096;
-            font-size: 0.9em;
-        }
-
-        .metric-value {
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 16px;
             font-weight: 600;
-            color: #2d3748;
+            margin: 10px 0;
         }
 
-        .weights-section {
-            margin-top: 25px;
-            padding: 20px;
-            background: #f7fafc;
-            border-radius: 10px;
+        .confidence-badge.green {
+            background: #d4edda;
+            color: #155724;
         }
 
-        .weight-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 10px 0;
-            border-bottom: 1px solid #e2e8f0;
+        .confidence-badge.yellow {
+            background: #fff3cd;
+            color: #856404;
         }
 
-        .weight-item:last-child {
-            border-bottom: none;
-        }
-
-        .weight-bar {
-            flex: 1;
-            height: 8px;
-            background: #e2e8f0;
-            border-radius: 4px;
-            margin: 0 15px;
-            overflow: hidden;
-        }
-
-        .weight-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-            border-radius: 4px;
-            transition: width 0.5s ease;
+        .confidence-badge.red {
+            background: #f8d7da;
+            color: #721c24;
         }
 
         .loading {
-            text-align: center;
-            padding: 40px;
-            font-size: 1.2em;
-            color: #718096;
-        }
-
-        .spinner {
-            border: 4px solid #f3f4f6;
-            border-top: 4px solid #667eea;
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
             border-radius: 50%;
-            width: 50px;
-            height: 50px;
             animation: spin 1s linear infinite;
-            margin: 20px auto;
         }
 
         @keyframes spin {
@@ -311,52 +221,40 @@
             100% { transform: rotate(360deg); }
         }
 
-        .legend {
+        .engine-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+        }
+
+        .engine-card {
             background: white;
-            border-radius: 15px;
-            padding: 25px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }
-
-        .legend h3 {
-            color: #2d3748;
-            margin-bottom: 20px;
-        }
-
-        .legend-item {
-            display: flex;
-            align-items: center;
+            border: 2px solid #e0e0e0;
             padding: 12px;
-            margin-bottom: 10px;
             border-radius: 8px;
-            background: #f7fafc;
         }
 
-        .legend-icon {
-            width: 40px;
-            height: 40px;
-            margin-right: 15px;
-        }
-
-        .legend-icon img {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-        }
-
-        .legend-text {
-            flex: 1;
-        }
-
-        .legend-label {
+        .engine-name {
             font-weight: 600;
-            color: #2d3748;
-            margin-bottom: 3px;
+            color: #667eea;
+            margin-bottom: 8px;
         }
 
-        .legend-desc {
-            font-size: 0.9em;
-            color: #718096;
+        .engine-stat {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+
+        .engine-stat-label {
+            color: #666;
+        }
+
+        .engine-stat-value {
+            color: #333;
+            font-weight: 600;
         }
     </style>
 </head>
@@ -364,322 +262,256 @@
     <div class="container">
         <!-- Header -->
         <div class="header">
-            <h1>
-                Cross-Verified AI
-                <span class="version">v9.7.3 Rev C</span>
-            </h1>
-            <p class="subtitle">다중 출처 검증 (Multi-Source Verification) AI 플랫폼</p>
+            <h1>🔍 Cross-Verified AI v9.7.4 Rev D</h1>
+            <p>다중 출처 검증 AI 플랫폼 테스트 페이지</p>
         </div>
 
-        <!-- Mode Selector -->
-        <div class="mode-selector">
-            <h2>검증 모드 선택</h2>
-            <div class="mode-buttons">
-                <button class="mode-btn active" data-mode="QV">
-                    🔍 질문검증 (QV)
-                </button>
-                <button class="mode-btn" data-mode="FV">
-                    ✓ 사실검증 (FV)
-                </button>
-                <button class="mode-btn" data-mode="DV">
-                    💻 개발검증 (DV)
-                </button>
-                <button class="mode-btn" data-mode="CV">
-                    📝 코드검증 (CV)
-                </button>
-                <button class="mode-btn" data-mode="LM">
-                    ⚖️ 법령정보 (LM)
-                </button>
-            </div>
-            <div class="mode-info" id="modeInfo">
-                <strong>질문검증 (QV):</strong> 사용자 질문 + 사실 검증<br>
-                <strong>활성 엔진:</strong> CrossRef, OpenAlex, GDELT, Wikidata
-            </div>
-        </div>
-
-        <!-- Input Section -->
-        <div class="input-section">
-            <h2 style="margin-bottom: 15px;">검증할 질문 또는 문장 입력</h2>
+        <!-- API Key Configuration -->
+        <div class="card">
+            <h2>🔑 API Key 설정</h2>
             <div class="input-group">
-                <textarea 
-                    id="queryInput" 
-                    placeholder="검증하고 싶은 질문이나 문장을 입력하세요...&#10;예: 기후 변화가 북극곰 개체수에 미치는 영향은?"
-                ></textarea>
-                <button class="verify-btn" id="verifyBtn">검증 시작</button>
+                <label for="geminiKey">Gemini API Key</label>
+                <input type="password" id="geminiKey" placeholder="AIzaSy...">
             </div>
+            <div class="input-group">
+                <label for="githubKey">GitHub API Key (선택)</label>
+                <input type="password" id="githubKey" placeholder="ghp_...">
+            </div>
+            <button class="btn" onclick="saveKeys()">저장</button>
+            <button class="btn btn-secondary" onclick="testKeys()">연결 테스트</button>
+            <div id="keyStatus"></div>
         </div>
 
-        <!-- Loading -->
-        <div class="results-section" id="loadingSection">
-            <div class="loading">
-                <div class="spinner"></div>
-                검증 엔진 실행 중...
+        <!-- Question & Verification -->
+        <div class="card">
+            <h2>💬 질문 및 검증</h2>
+            <div class="input-group">
+                <label for="mode">모드 선택</label>
+                <select id="mode">
+                    <option value="QV">QV - 질문 검증</option>
+                    <option value="FV">FV - 사실 검증</option>
+                    <option value="DV">DV - 개발 검증</option>
+                    <option value="CV">CV - 코드 검증 (Pro)</option>
+                    <option value="LM">LM - 법령 정보</option>
+                </select>
             </div>
-        </div>
-
-        <!-- Results Section -->
-        <div class="results-section" id="resultsSection">
-            <h2 style="margin-bottom: 25px;">검증 결과</h2>
-            
-            <!-- TruthScore Display -->
-            <div class="truthscore-display">
-                <div>TruthScore</div>
-                <div class="confidence-icon" id="confidenceIcon">
-                    <!-- 아이콘이 여기에 표시됨 -->
-                </div>
-                <div class="truthscore-value" id="truthScoreValue">--</div>
-                <div class="drop-reason" id="dropReasonText">--</div>
+            <div class="input-group">
+                <label for="question">질문</label>
+                <textarea id="question" placeholder="질문을 입력하세요...">양자컴퓨터의 원리를 설명해주세요.</textarea>
             </div>
-
-            <!-- Engine Results -->
-            <h3 style="margin-bottom: 15px;">검증 엔진 상세 결과</h3>
-            <div class="engine-results" id="engineResults">
-                <!-- 엔진 결과 카드가 여기에 표시됨 -->
-            </div>
-
-            <!-- Weights -->
-            <div class="weights-section">
-                <h3 style="margin-bottom: 15px;">엔진별 가중치 및 Δwᵢ 보정</h3>
-                <div id="weightsDisplay">
-                    <!-- 가중치가 여기에 표시됨 -->
-                </div>
-            </div>
-        </div>
-
-        <!-- Legend -->
-        <div class="legend">
-            <h3>신뢰도 아이콘 범례 (명세서 5.2)</h3>
-            <div class="legend-item">
-                <div class="legend-icon">
-                    <img src="assets/icon_confidence_green.png" alt="정상">
-                </div>
-                <div class="legend-text">
-                    <div class="legend-label">🟢 정상 (≥ 0.7)</div>
-                    <div class="legend-desc">검증 완료 / 높은 신뢰도</div>
-                </div>
-            </div>
-            <div class="legend-item">
-                <div class="legend-icon">
-                    <img src="assets/icon_confidence_question_png.png" alt="출처 부족">
-                </div>
-                <div class="legend-text">
-                    <div class="legend-label">🟡 ? 출처 부족 (0.4~0.69)</div>
-                    <div class="legend-desc">신뢰도 하락 사유: 출처 없음 또는 부족</div>
-                </div>
-            </div>
-            <div class="legend-item">
-                <div class="legend-icon">
-                    <img src="assets/icon_confidence_triangle.png" alt="일치도 낮음">
-                </div>
-                <div class="legend-text">
-                    <div class="legend-label">🟡 △ 일치도 낮음 / 최신성 부족 (0.4~0.69)</div>
-                    <div class="legend-desc">신뢰도 하락 사유: 일치도 낮음 또는 최신성 부족</div>
-                </div>
-            </div>
-            <div class="legend-item">
-                <div class="legend-icon">
-                    <img src="assets/icon_confidence_x.png" alt="검증 실패">
-                </div>
-                <div class="legend-text">
-                    <div class="legend-label">🔴 ✕ 검증 실패 (< 0.4)</div>
-                    <div class="legend-desc">검증 실패 / 불일치</div>
-                </div>
-            </div>
+            <button class="btn" onclick="verifyComplete()">검증 시작</button>
+            <div id="verifyResult"></div>
         </div>
     </div>
 
     <script>
-        let currentMode = 'QV';
+        const API_BASE = window.location.origin;
 
-        const modeDescriptions = {
-            QV: {
-                name: '질문검증',
-                desc: '사용자 질문 + 사실 검증',
-                engines: 'CrossRef, OpenAlex, GDELT, Wikidata'
-            },
-            FV: {
-                name: '사실검증',
-                desc: '기존 문장 사실 검증 / 신뢰도 피드백',
-                engines: 'CrossRef, OpenAlex, GDELT, Wikidata'
-            },
-            DV: {
-                name: '개발검증',
-                desc: '코드 / 기술 정합성 검증',
-                engines: 'GitHub, GDELT'
-            },
-            CV: {
-                name: '코드검증',
-                desc: '사용자 입력 코드 검증 (Pro 전용)',
-                engines: 'GitHub, GDELT'
-            },
-            LM: {
-                name: '법령정보',
-                desc: '법령 검색 / 조항 조회',
-                engines: 'K-Law API'
-            }
-        };
+        // API Key 저장
+        async function saveKeys() {
+            const gemini = document.getElementById('geminiKey').value;
+            const github = document.getElementById('githubKey').value;
 
-        // 모드 버튼 이벤트
-        document.querySelectorAll('.mode-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                currentMode = btn.dataset.mode;
-                
-                const info = modeDescriptions[currentMode];
-                document.getElementById('modeInfo').innerHTML = `
-                    <strong>${info.name} (${currentMode}):</strong> ${info.desc}<br>
-                    <strong>활성 엔진:</strong> ${info.engines}
-                `;
-            });
-        });
-
-        // 검증 버튼 이벤트
-        document.getElementById('verifyBtn').addEventListener('click', async () => {
-            const query = document.getElementById('queryInput').value.trim();
-            
-            if (!query) {
-                alert('검증할 질문이나 문장을 입력해주세요.');
+            if (!gemini) {
+                alert('Gemini API Key를 입력해주세요');
                 return;
             }
 
-            // UI 상태 변경
-            document.getElementById('verifyBtn').disabled = true;
-            document.getElementById('resultsSection').classList.remove('show');
-            document.getElementById('loadingSection').classList.add('show');
-
             try {
-                const response = await fetch('/api/verify', {
+                const response = await fetch(`${API_BASE}/api/config/keys`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        query,
-                        mode: currentMode
-                    })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ gemini, github })
                 });
 
                 const data = await response.json();
-                displayResults(data);
-
+                
+                const statusDiv = document.getElementById('keyStatus');
+                if (data.success) {
+                    statusDiv.innerHTML = `
+                        <div class="status success" style="margin-top: 12px;">
+                            ✅ API Keys 저장 완료
+                        </div>
+                    `;
+                } else {
+                    statusDiv.innerHTML = `
+                        <div class="status error" style="margin-top: 12px;">
+                            ❌ 오류: ${data.error}
+                        </div>
+                    `;
+                }
             } catch (error) {
-                console.error('Error:', error);
-                alert('검증 중 오류가 발생했습니다.');
-            } finally {
-                document.getElementById('verifyBtn').disabled = false;
-                document.getElementById('loadingSection').classList.remove('show');
+                alert('오류: ' + error.message);
             }
-        });
+        }
 
-        function displayResults(data) {
-            // TruthScore 표시
-            const percentage = data.percentage || Math.round(data.truthScore * 100);
-            document.getElementById('truthScoreValue').textContent = percentage + '%';
-            
-            // 아이콘 표시
-            const iconMap = {
-                'green': 'icon_confidence_green.png',
-                'question': 'icon_confidence_question_png.png',
-                'triangle': 'icon_confidence_triangle.png',
-                'x': 'icon_confidence_x.png'
-            };
-            
-            const iconFile = iconMap[data.icon.icon] || 'icon_confidence_question_png.png';
-            document.getElementById('confidenceIcon').innerHTML = `
-                <img src="assets/${iconFile}" alt="${data.icon.label}">
+        // API Key 테스트
+        async function testKeys() {
+            const statusDiv = document.getElementById('keyStatus');
+            statusDiv.innerHTML = `
+                <div style="margin-top: 12px;">
+                    <span class="loading"></span> 연결 테스트 중...
+                </div>
             `;
-            
-            // 하락 사유 표시
-            document.getElementById('dropReasonText').textContent = data.icon.label;
 
-            // LM 모드 특별 처리
-            if (data.isLMMode) {
-                document.getElementById('engineResults').innerHTML = `
-                    <div class="engine-card">
-                        <div class="engine-header">
-                            <span>K-Law API</span>
-                            <span style="color: ${data.icon.color};">●</span>
+            try {
+                const response = await fetch(`${API_BASE}/api/config/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    statusDiv.innerHTML = `
+                        <div class="status ${data.results.gemini ? 'success' : 'error'}" style="margin-top: 12px;">
+                            ${data.results.gemini ? '✅' : '❌'} Gemini: ${data.results.gemini ? '연결 성공' : '연결 실패'}
                         </div>
-                        <div class="metric">
-                            <span class="metric-label">상태</span>
-                            <span class="metric-value">${data.apiStatus}</span>
+                        <div class="status ${data.results.github ? 'success' : 'error'}" style="margin-top: 8px;">
+                            ${data.results.github ? '✅' : '❌'} GitHub: ${data.results.github ? '연결 성공' : '미설정/실패'}
                         </div>
-                        <div class="metric">
-                            <span class="metric-label">메시지</span>
-                            <span class="metric-value">${data.results[0].message}</span>
+                    `;
+                } else {
+                    statusDiv.innerHTML = `
+                        <div class="status error" style="margin-top: 12px;">
+                            ❌ 오류: ${data.error}
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `
+                    <div class="status error" style="margin-top: 12px;">
+                        ❌ 오류: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        // 전체 검증
+        async function verifyComplete() {
+            const question = document.getElementById('question').value;
+            const mode = document.getElementById('mode').value;
+            const resultDiv = document.getElementById('verifyResult');
+
+            if (!question) {
+                alert('질문을 입력해주세요');
+                return;
+            }
+
+            resultDiv.innerHTML = `
+                <div class="result">
+                    <span class="loading"></span> 답변 생성 및 검증 중...
+                </div>
+            `;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/verify/complete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question, mode, includeGeneration: true })
+                });
+
+                const data = await response.json();
+                
+                if (!data.success) {
+                    resultDiv.innerHTML = `
+                        <div class="result">
+                            <div class="status error">❌ 오류: ${data.error}</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // 결과 표시
+                const confidence = data.verification.confidence;
+                const confidenceClass = confidence.color;
+                
+                let enginesHtml = '';
+                data.verification.engines.forEach(engine => {
+                    enginesHtml += `
+                        <div class="engine-card">
+                            <div class="engine-name">${engine.engine}</div>
+                            <div class="engine-stat">
+                                <span class="engine-stat-label">신뢰도 (Rᵢ):</span>
+                                <span class="engine-stat-value">${engine.Ri}</span>
+                            </div>
+                            <div class="engine-stat">
+                                <span class="engine-stat-label">품질 (Qᵢ):</span>
+                                <span class="engine-stat-value">${engine.Qi}</span>
+                            </div>
+                            <div class="engine-stat">
+                                <span class="engine-stat-label">시간감쇠:</span>
+                                <span class="engine-stat-value">${engine.timeDecay}</span>
+                            </div>
+                            <div class="engine-stat">
+                                <span class="engine-stat-label">가중치 (wᵢ):</span>
+                                <span class="engine-stat-value">${engine.wi}</span>
+                            </div>
+                            <div class="engine-stat">
+                                <span class="engine-stat-label">출처:</span>
+                                <span class="engine-stat-value">${engine.sources}개</span>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                resultDiv.innerHTML = `
+                    <div class="result">
+                        <h3>📊 검증 결과</h3>
+                        
+                        <div class="result-item">
+                            <div class="result-label">TruthScore (신뢰도 점수)</div>
+                            <div class="result-value" style="font-size: 32px; font-weight: 700; color: #667eea;">
+                                ${data.verification.truthScore}%
+                            </div>
+                            <div class="confidence-badge ${confidenceClass}">
+                                ${confidence.icon} ${confidence.label}
+                            </div>
+                        </div>
+
+                        ${data.answer ? `
+                        <div class="result-item">
+                            <div class="result-label">Gemini 답변</div>
+                            <div class="result-value" style="line-height: 1.6;">${data.answer}</div>
+                        </div>
+                        ` : ''}
+
+                        <div class="result-item">
+                            <div class="result-label">검증 엔진 상세</div>
+                            <div class="engine-details">
+                                ${enginesHtml}
+                            </div>
+                        </div>
+
+                        <div class="result-item">
+                            <div class="result-label">통계</div>
+                            <div class="result-value">
+                                <strong>활성 엔진:</strong> ${data.verification.engines.length}개<br>
+                                <strong>총 출처:</strong> ${data.verification.totalSources}개<br>
+                                <strong>평균 일치도:</strong> ${data.verification.avgConsistency}<br>
+                                <strong>처리 시간:</strong> ${data.performance.totalTime}
+                            </div>
                         </div>
                     </div>
                 `;
-                document.getElementById('weightsDisplay').innerHTML = '<p>LM 모드에서는 TruthScore 및 가중치 계산이 비활성화됩니다.</p>';
-            } else {
-                // 엔진 결과 표시
-                let engineHTML = '';
-                data.verificationResults.forEach(result => {
-                    engineHTML += `
-                        <div class="engine-card">
-                            <div class="engine-header">
-                                <span>${result.engine}</span>
-                                <span style="color: #667eea;">●</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">신뢰도 (Rᵢ)</span>
-                                <span class="metric-value">${(result.reliability * 100).toFixed(0)}%</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">일치도</span>
-                                <span class="metric-value">${(result.consistency * 100).toFixed(0)}%</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">최신성</span>
-                                <span class="metric-value">${(result.recency * 100).toFixed(0)}%</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">출처 수</span>
-                                <span class="metric-value">${result.sources}개</span>
-                            </div>
-                            <div class="metric">
-                                <span class="metric-label">갱신 후</span>
-                                <span class="metric-value">${result.daysSinceUpdate}일</span>
-                            </div>
-                        </div>
-                    `;
-                });
-                document.getElementById('engineResults').innerHTML = engineHTML;
-
-                // 가중치 표시
-                let weightsHTML = '';
-                data.deltaWeights.forEach(item => {
-                    const currentWeight = (data.weights[item.engine] * 100).toFixed(1);
-                    const newWeight = (item.newWeight * 100).toFixed(1);
-                    const delta = item.deltaWeight >= 0 ? '+' + (item.deltaWeight * 100).toFixed(1) : (item.deltaWeight * 100).toFixed(1);
-                    
-                    weightsHTML += `
-                        <div class="weight-item">
-                            <span style="width: 120px; font-weight: 600;">${item.engine}</span>
-                            <div class="weight-bar">
-                                <div class="weight-fill" style="width: ${currentWeight}%"></div>
-                            </div>
-                            <span style="width: 150px; text-align: right;">
-                                ${currentWeight}% 
-                                <span style="color: ${item.deltaWeight >= 0 ? '#22c55e' : '#ef4444'};">
-                                    (${delta}%)
-                                </span>
-                            </span>
-                        </div>
-                    `;
-                });
-                document.getElementById('weightsDisplay').innerHTML = weightsHTML;
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div class="result">
+                        <div class="status error">❌ 오류: ${error.message}</div>
+                    </div>
+                `;
             }
-
-            // 결과 섹션 표시
-            document.getElementById('resultsSection').classList.add('show');
         }
 
-        // 샘플 데이터로 자동 테스트
-        window.addEventListener('load', () => {
-            console.log('Cross-Verified AI v9.7.3 Rev C 로드 완료');
-            console.log('명세서 5.2 신뢰도 아이콘 매핑 규칙 구현됨');
+        // 페이지 로드 시 서버 상태 확인
+        window.addEventListener('load', async () => {
+            try {
+                const response = await fetch(`${API_BASE}/api/status`);
+                const data = await response.json();
+                console.log('서버 상태:', data);
+            } catch (error) {
+                console.error('서버 연결 오류:', error);
+            }
         });
     </script>
 </body>
