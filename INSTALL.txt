@@ -1,0 +1,30 @@
+Cross-Verified AI Proxy Server - 설치 가이드
+============================================
+
+1. Node.js 설치 확인
+   node --version  (v16 이상 필요)
+   npm --version   (v7 이상 필요)
+
+2. 의존성 설치
+   npm install
+
+3. 환경 설정
+   .env.template 파일을 복사하여 .env 파일 생성
+   cp .env.template .env
+   
+   .env 파일을 열어서 필요한 값 설정:
+   - PORT=3000
+   - MASTER_PASSWORD=your-secure-password
+
+4. 서버 실행
+   npm start           (프로덕션)
+   npm run dev         (개발 모드 - nodemon 필요)
+
+5. 테스트
+   # 다른 터미널에서
+   node test.js
+
+6. 서버 확인
+   브라우저에서 http://localhost:3000/ping 접속
+
+더 자세한 내용은 README.md 파일을 참고하세요.
