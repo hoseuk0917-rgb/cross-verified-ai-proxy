@@ -1,50 +1,28 @@
-/**
- * Cross-Verified AI Proxy Server (Full Integrated Version)
- * Features:
- *  - Google OAuth 2.0 Authentication
- *  - Gemini 2.5 Flash/Pro API
- *  - TruthScore Engine
- *  - Cross Verification (CrossRef, OpenAlex, GDELT, Wikidata, Naver, K-Law, GitHub)
- *  - PostgreSQL Database Integration
- *  - CORS & Secure Session Handling
- */
-
 require("dotenv").config();
 const express = require("express");
 const session = require("express-session");
 const passport = require("passport");
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
-const axios = require("axios");
+const jwt = require("jsonwebtoken");
 const cors = require("cors");
-const { Pool } = require("pg");
-
-// 엔진 로드
-const geminiEngine = require("./engine/gemini");
-const truthscoreEngine = require("./engine/truthscore");
-const verificationEngine = require("./engine/verification");
-
-// DB 연결
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL_INTERNAL,
-  ssl: { rejectUnauthorized: false },
-});
 
 const app = express();
 app.use(express.json());
 app.use(cors({ origin: "*", credentials: true }));
 
-// 세션 설정
+// ✅ 세션 설정
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || "cross-verified-ai",
+    secret: process.env.SESSION_SECRET || "cross-verified-session",
     resave: false,
-    saveUninitialized: true,
+    saveUninitialized: false,
   })
 );
+
 app.use(passport.initialize());
 app.use(passport.session());
 
-// --- GOOGLE OAUTH 설정 ---
+// ✅ Google OAuth Strategy
 passport.use(
   new GoogleStrategy(
     {
@@ -52,99 +30,70 @@ passport.use(
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
       callbackURL: process.env.GOOGLE_CALLBACK_URL,
     },
-    (accessToken, refreshToken, profile, done) => done(null, profile)
+    (accessToken, refreshToken, profile, done) => {
+      return done(null, profile);
+    }
   )
 );
 
 passport.serializeUser((user, done) => done(null, user));
-passport.deserializeUser((obj, done) => done(null, obj));
+passport.deserializeUser((user, done) => done(null, user));
 
+// ✅ 기본 페이지
+app.get("/", (req, res) => {
+  res.json({ message: "Cross-Verified AI Proxy Server v10.0 Ready ✅" });
+});
+
+// ✅ Google 로그인 시작
 app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
 
+// ✅ 로그인 성공 콜백 → JWT 발급
 app.get(
   "/auth/google/callback",
-  passport.authenticate("google", {
-    failureRedirect: "/auth/failure",
-    successRedirect: "/auth/success",
-  })
+  passport.authenticate("google", { failureRedirect: "/auth/failure" }),
+  (req, res) => {
+    const user = req.user;
+    const token = jwt.sign(
+      {
+        email: user.emails[0].value,
+        name: user.displayName,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "2h" }
+    );
+
+    res.json({
+      success: true,
+      message: "Google login successful ✅",
+      user: {
+        displayName: user.displayName,
+        email: user.emails[0].value,
+      },
+      token,
+    });
+  }
 );
 
-app.get("/auth/success", (req, res) => {
-  if (!req.user) return res.status(401).json({ success: false, message: "No user session" });
-  res.json({
-    success: true,
-    user: {
-      displayName: req.user.displayName,
-      email: req.user.emails?.[0]?.value || "unknown",
-    },
-  });
+// ✅ 로그인 실패 시
+app.get("/auth/failure", (req, res) => {
+  res.status(401).json({ success: false, message: "Google login failed ❌" });
 });
 
-app.get("/auth/failure", (req, res) =>
-  res.status(401).json({ success: false, message: "Google login failed" })
-);
+// ✅ 토큰 검증용 엔드포인트
+app.get("/auth/verify", (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: "Missing Authorization header" });
 
-// --- HEALTH CHECK ---
-app.get(["/ping", "/health"], (req, res) => {
-  res.json({
-    success: true,
-    status: "healthy",
-    version: "9.8.4",
-    timestamp: new Date().toISOString(),
-  });
-});
-
-// --- GEMINI 엔진 ---
-app.post("/api/gemini/generate", async (req, res) => {
+  const token = authHeader.split(" ")[1];
   try {
-    const { apiKey, model, prompt } = req.body;
-    const result = await geminiEngine.callGemini({ apiKey, model, prompt });
-    res.json(result);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    res.json({ success: true, user: decoded });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(403).json({ success: false, error: "Invalid or expired token" });
   }
 });
 
-// --- TRUTHSCORE 계산 ---
-app.post("/api/truthscore/calculate", async (req, res) => {
-  try {
-    const { scores, weights } = req.body;
-    const result = truthscoreEngine.calculate(scores, weights);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// --- 검증 엔진별 호출 ---
-app.post("/api/verify/:engine", async (req, res) => {
-  try {
-    const { engine } = req.params;
-    const { query } = req.body;
-    const result = await verificationEngine.callEngine(engine, query);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// --- 다중 병렬 검증 ---
-app.post("/api/verify/all", async (req, res) => {
-  try {
-    const { query } = req.body;
-    const result = await verificationEngine.callAll(query);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// --- 기본 404 처리 ---
-app.use((req, res) => {
-  res.status(404).json({ error: "Endpoint not found" });
-});
-
-// --- 서버 실행 ---
+// ✅ 서버 시작
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
