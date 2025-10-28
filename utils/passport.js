@@ -10,14 +10,12 @@ passport.use(
       callbackURL: process.env.GOOGLE_REDIRECT_URI,
     },
     (accessToken, refreshToken, profile, done) => {
-      // DB에 사용자 기록하거나 반환
       console.log("[OAuth] Google login success:", profile.displayName);
       return done(null, profile);
     }
   )
 );
 
-// 직렬화/역직렬화
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((obj, done) => done(null, obj));
 
