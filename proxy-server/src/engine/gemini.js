@@ -63,4 +63,7 @@ module.exports = {
       return { success: true, valid };
     } catch (error) {
       console.error("[Gemini Engine] API key validation failed:", error.response?.data || error.message);
-      return { success: false, valid: false, error: error.message }
+      return { success: false, valid: false, error: error.message };
+    }
+  }
+};
