@@ -5,9 +5,9 @@ const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 // 모듈 import
-const geminiEngine = require('./engine/gemini');
-const verificationEngine = require('./engine/verification');
-const truthScoreEngine = require('./engine/truthscore');
+const geminiEngine = require('./proxy-server/src/engine/gemini');
+const verificationEngine = require('./proxy-server/src/engine/verification');
+const truthScoreEngine = require('./proxy-server/src/engine/truthscore');
 const cryptoUtils = require('./utils/crypto');
 
 const app = express();
