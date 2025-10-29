@@ -1,278 +1,191 @@
-// ============================================================
-// Cross-Verified AI Proxy Server
-// Google OAuth2 + JWT + Login Logs + Auto Cleanup + Admin Dashboard
-// ============================================================
-
-require("dotenv").config();
+// server.js — Cross-Verified AI Proxy Server v9.9.0 (Web + App 통합 OAuth)
 const express = require("express");
 const session = require("express-session");
 const passport = require("passport");
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
 const jwt = require("jsonwebtoken");
-const { Pool } = require("pg");
-const cron = require("node-cron");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const axios = require("axios");
+require("dotenv").config();
 
 const app = express();
-app.use(express.json());
-app.use(cors());
+const PORT = process.env.PORT || 3000;
 
-// ============================================================
-// 1️⃣ Database Connection
-// ============================================================
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+// ==============================
+// 기본 미들웨어
+// ==============================
+app.use(helmet());
+app.use(cors({ origin: "*", credentials: true }));
+app.use(express.json({ limit: "10mb" }));
 
-// ============================================================
-// 2️⃣ Session Config
-// ============================================================
+// Rate Limiting
 app.use(
-  session({
-    secret: process.env.SESSION_SECRET || "cross-verified-jwt-key-2025",
-    resave: false,
-    saveUninitialized: true,
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 200,
   })
 );
 
-// ============================================================
-// 3️⃣ Google OAuth Setup
-// ============================================================
+// ==============================
+// 세션 및 패스포트 설정
+// ==============================
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "crossverified_secret",
+    resave: false,
+    saveUninitialized: false,
+  })
+);
+app.use(passport.initialize());
+app.use(passport.session());
+
+// ==============================
+// Google OAuth Strategy (웹용)
+// ==============================
 passport.use(
   new GoogleStrategy(
     {
       clientID: process.env.GOOGLE_CLIENT_ID,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      callbackURL: process.env.GOOGLE_CALLBACK_URL,
+      callbackURL:
+        process.env.GOOGLE_CALLBACK_URL ||
+        "https://cross-verified-ai-proxy.onrender.com/auth/google/callback",
     },
-    async (accessToken, refreshToken, profile, done) => {
-      done(null, profile);
+    (accessToken, refreshToken, profile, done) => {
+      const user = {
+        id: profile.id,
+        displayName: profile.displayName,
+        email: profile.emails[0].value,
+      };
+      return done(null, user);
     }
   )
 );
 
 passport.serializeUser((user, done) => done(null, user));
-passport.deserializeUser((obj, done) => done(null, obj));
+passport.deserializeUser((user, done) => done(null, user));
 
-app.use(passport.initialize());
-app.use(passport.session());
+// ==============================
+// Health Check
+// ==============================
+app.get("/health", (req, res) => {
+  res.json({
+    success: true,
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    version: "9.9.0",
+  });
+});
 
-// ============================================================
-// 4️⃣ OAuth Routes
-// ============================================================
+// ==============================
+// Google OAuth Routes (Web)
+// ==============================
 app.get(
   "/auth/google",
   passport.authenticate("google", { scope: ["profile", "email"] })
 );
 
 app.get(
-  "/auth/callback",
-  passport.authenticate("google", { failureRedirect: "/auth/fail" }),
-  async (req, res) => {
-    try {
-      const profile = req.user;
-      const token = jwt.sign(
-        {
-          email: profile.emails[0].value,
-          name: profile.displayName,
-        },
-        process.env.JWT_SECRET || "cross-verified-jwt-key-2025",
-        { expiresIn: "2h" }
-      );
-
-      await pool.query(
-        "INSERT INTO login_logs (email, name, ip_address) VALUES ($1, $2, $3)",
-        [profile.emails[0].value, profile.displayName, req.ip]
-      );
-
-      res.json({
-        success: true,
-        user: {
-          displayName: profile.displayName,
-          email: profile.emails[0].value,
-        },
-        token,
-      });
-    } catch (err) {
-      console.error("❌ OAuth callback error:", err.message);
-      res.status(500).json({ success: false, error: err.message });
-    }
+  "/auth/google/callback",
+  passport.authenticate("google", { failureRedirect: "/auth/failure" }),
+  (req, res) => {
+    const token = jwt.sign(
+      { email: req.user.email, name: req.user.displayName },
+      process.env.JWT_SECRET || "jwt_secret",
+      { expiresIn: "2h" }
+    );
+    res.json({
+      success: true,
+      message: "Google login successful ✅",
+      user: req.user,
+      token,
+    });
   }
 );
 
-app.get("/auth/fail", (_, res) =>
-  res.status(401).json({ success: false, error: "OAuth failed" })
-);
-
-app.get("/auth/verify", async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader)
-      return res.status(401).json({ success: false, error: "Missing token" });
-
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "cross-verified-jwt-key-2025"
-    );
-    res.json({ success: true, user: decoded });
-  } catch (err) {
-    res.status(401).json({ success: false, error: "Invalid or expired token" });
-  }
+app.get("/auth/failure", (req, res) => {
+  res.status(401).json({ success: false, error: "Google login failed" });
 });
 
-// ============================================================
-// 5️⃣ DB Setup
-// ============================================================
-(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS login_logs (
-        id SERIAL PRIMARY KEY,
-        email VARCHAR(255) NOT NULL,
-        name VARCHAR(100),
-        login_time TIMESTAMP DEFAULT NOW(),
-        ip_address VARCHAR(50)
-      );
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_login_logs_email ON login_logs(email);
-    `);
-    console.log("✅ login_logs table ready");
-  } catch (err) {
-    console.error("❌ DB setup error:", err.message);
+// ==============================
+// Google OAuth (App / 모바일용)
+// ==============================
+app.post("/auth/google/app", async (req, res) => {
+  const { idToken } = req.body;
+  if (!idToken) {
+    return res
+      .status(400)
+      .json({ success: false, error: "idToken is required" });
   }
-})();
 
-// ============================================================
-// 6️⃣ Auto Cleanup (every midnight)
-// ============================================================
-cron.schedule("0 0 * * *", async () => {
   try {
-    const result = await pool.query(
-      "DELETE FROM login_logs WHERE login_time < NOW() - INTERVAL '7 days';"
+    const response = await axios.get(
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`
     );
-    console.log(`🧹 ${result.rowCount} old logs deleted (older than 7 days)`);
-  } catch (err) {
-    console.error("❌ Log cleanup failed:", err.message);
-  }
-});
+    const data = response.data;
 
-// ============================================================
-// 7️⃣ Admin API (JSON)
-// ============================================================
-app.get("/admin/logs", async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader)
-      return res.status(401).json({ success: false, error: "Missing token" });
+    if (!data.email) throw new Error("Invalid Google token");
 
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "cross-verified-jwt-key-2025"
+    const token = jwt.sign(
+      { email: data.email, name: data.name },
+      process.env.JWT_SECRET || "jwt_secret",
+      { expiresIn: "2h" }
     );
-
-    const result = await pool.query(`
-      SELECT email, name, ip_address, login_time 
-      FROM login_logs
-      ORDER BY login_time DESC
-      LIMIT 10;
-    `);
 
     res.json({
       success: true,
-      user: decoded.email,
-      logs: result.rows,
-    });
-  } catch (err) {
-    console.error("❌ /admin/logs error:", err.message);
-    res.status(401).json({ success: false, error: "Invalid or expired token" });
-  }
-});
-
-// ============================================================
-// 8️⃣ Admin Dashboard (HTML Table View)
-// ============================================================
-app.get("/admin/logs/view", async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader)
-      return res
-        .status(401)
-        .send("<h3 style='color:red'>Unauthorized: Missing token</h3>");
-
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(
+      message: "App login successful ✅",
+      user: { email: data.email, name: data.name },
       token,
-      process.env.JWT_SECRET || "cross-verified-jwt-key-2025"
-    );
-
-    const result = await pool.query(`
-      SELECT email, name, ip_address, login_time 
-      FROM login_logs
-      ORDER BY login_time DESC
-      LIMIT 10;
-    `);
-
-    const tableRows = result.rows
-      .map(
-        (r) => `
-        <tr>
-          <td>${r.email}</td>
-          <td>${r.name || "-"}</td>
-          <td>${r.ip_address || "-"}</td>
-          <td>${new Date(r.login_time).toLocaleString()}</td>
-        </tr>`
-      )
-      .join("");
-
-    const html = `
-      <html>
-        <head>
-          <title>Admin Login Logs</title>
-          <style>
-            body { font-family: Arial; background-color: #f7f7f7; padding: 20px; }
-            h1 { color: #333; }
-            table { border-collapse: collapse; width: 100%; background: white; }
-            th, td { border: 1px solid #ccc; padding: 10px; text-align: left; }
-            th { background-color: #eee; }
-          </style>
-        </head>
-        <body>
-          <h1>Recent Login Logs (Admin View)</h1>
-          <p><b>User:</b> ${decoded.email}</p>
-          <table>
-            <tr><th>Email</th><th>Name</th><th>IP Address</th><th>Login Time</th></tr>
-            ${tableRows}
-          </table>
-        </body>
-      </html>
-    `;
-
-    res.send(html);
-  } catch (err) {
-    console.error("❌ /admin/logs/view error:", err.message);
-    res.status(401).send("<h3 style='color:red'>Invalid or expired token</h3>");
+    });
+  } catch (error) {
+    console.error("App OAuth error:", error.message);
+    res.status(400).json({ success: false, error: error.message });
   }
 });
 
-// ============================================================
-// 9️⃣ Health Check
-// ============================================================
-app.get("/health", (_, res) =>
-  res.json({
-    status: "ok",
-    version: "10.3.0",
-    timestamp: new Date().toISOString(),
-  })
-);
+// ==============================
+// JWT Verify
+// ==============================
+app.get("/auth/verify", (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader)
+    return res.status(401).json({ success: false, error: "Missing token" });
 
-// ============================================================
-// 🔟 Start Server
-// ============================================================
-const PORT = process.env.PORT || 3000;
+  const token = authHeader.split(" ")[1];
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "jwt_secret");
+    res.json({ success: true, user: decoded });
+  } catch {
+    res.status(401).json({ success: false, error: "Invalid token" });
+  }
+});
+
+// ==============================
+// Logout (Web 세션)
+–==============================
+app.get("/auth/logout", (req, res) => {
+  req.logout(() => {
+    res.json({ success: true, message: "Logged out successfully" });
+  });
+});
+
+// ==============================
+// 404 핸들러
+// ==============================
+app.use((req, res) => {
+  res.status(404).json({ error: "Endpoint not found" });
+});
+
+// ==============================
+// 서버 시작
+// ==============================
 app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`
+✅ Cross-Verified AI Proxy Server v9.9.0
+🚀 Web + App 통합 Google OAuth 활성화
+🌐 Running on port ${PORT}
+  `);
 });
