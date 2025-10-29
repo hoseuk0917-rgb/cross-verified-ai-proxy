@@ -1,4 +1,4 @@
-// server.js — Cross-Verified AI Proxy Server v9.9.0 (Web + App 통합 OAuth)
+// server.js — Cross-Verified AI Proxy Server v9.9.1 (Web + App 통합 OAuth 안정버전)
 const express = require("express");
 const session = require("express-session");
 const passport = require("passport");
@@ -14,22 +14,22 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ==============================
-// 기본 미들웨어
+// 미들웨어 설정
 // ==============================
 app.use(helmet());
 app.use(cors({ origin: "*", credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 
-// Rate Limiting
+// 요청 제한
 app.use(
   rateLimit({
-    windowMs: 15 * 60 * 1000,
+    windowMs: 15 * 60 * 1000, // 15분
     max: 200,
   })
 );
 
 // ==============================
-// 세션 및 패스포트 설정
+// 세션 및 Passport 설정
 // ==============================
 app.use(
   session({
@@ -42,7 +42,7 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // ==============================
-// Google OAuth Strategy (웹용)
+// Google OAuth Strategy (웹 로그인용)
 // ==============================
 passport.use(
   new GoogleStrategy(
@@ -75,12 +75,12 @@ app.get("/health", (req, res) => {
     success: true,
     status: "healthy",
     timestamp: new Date().toISOString(),
-    version: "9.9.0",
+    version: "9.9.1",
   });
 });
 
 // ==============================
-// Google OAuth Routes (Web)
+// Google OAuth Routes (웹 로그인용)
 // ==============================
 app.get(
   "/auth/google",
@@ -98,7 +98,7 @@ app.get(
     );
     res.json({
       success: true,
-      message: "Google login successful ✅",
+      message: "✅ Google login successful",
       user: req.user,
       token,
     });
@@ -136,7 +136,7 @@ app.post("/auth/google/app", async (req, res) => {
 
     res.json({
       success: true,
-      message: "App login successful ✅",
+      message: "✅ App login successful",
       user: { email: data.email, name: data.name },
       token,
     });
@@ -165,7 +165,7 @@ app.get("/auth/verify", (req, res) => {
 
 // ==============================
 // Logout (Web 세션)
-–==============================
+// ==============================
 app.get("/auth/logout", (req, res) => {
   req.logout(() => {
     res.json({ success: true, message: "Logged out successfully" });
@@ -184,7 +184,7 @@ app.use((req, res) => {
 // ==============================
 app.listen(PORT, () => {
   console.log(`
-✅ Cross-Verified AI Proxy Server v9.9.0
+✅ Cross-Verified AI Proxy Server v9.9.1
 🚀 Web + App 통합 Google OAuth 활성화
 🌐 Running on port ${PORT}
   `);
