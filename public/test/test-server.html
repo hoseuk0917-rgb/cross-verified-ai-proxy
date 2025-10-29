@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cross-Verified AI Proxy Test Console (Live Mode)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background-color: #f7fafc; font-family: 'Segoe UI', sans-serif; }
+    textarea, input { border-radius: 6px; padding: 6px; width: 100%; }
+    .section { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }
+    pre { background: #1e1e1e; color: #00ffcc; padding: 10px; border-radius: 6px; overflow-x: auto; }
+  </style>
+</head>
+<body class="p-6">
+  <h1 class="text-2xl font-bold mb-4 text-blue-700">🚀 Cross-Verified AI Proxy (Live Console)</h1>
+
+  <!-- 🔑 Key 입력 -->
+  <div class="section">
+    <h2 class="text-xl font-semibold mb-2">🔑 API Key 설정</h2>
+    <textarea id="geminiKeys" rows="3" placeholder="Gemini Key (줄바꿈으로 여러개)"></textarea>
+    <div id="geminiStatus" class="text-sm text-gray-700 mt-1">상태: <span id="activeKey">-</span></div>
+
+    <div class="grid grid-cols-2 gap-3 mt-3">
+      <input id="githubToken" placeholder="GitHub Token" />
+      <input id="klawUserId" placeholder="K-Law User ID" />
+      <input id="naverClientId" placeholder="Naver Client ID" />
+      <input id="naverClientSecret" placeholder="Naver Client Secret" />
+    </div>
+
+    <div class="flex mt-3 gap-2">
+      <button class="bg-blue-600 text-white px-3 py-2 rounded" onclick="saveKeys()">💾 저장</button>
+      <button class="bg-gray-600 text-white px-3 py-2 rounded" onclick="loadKeys()">🔄 불러오기</button>
+      <button class="bg-red-600 text-white px-3 py-2 rounded" onclick="clearKeys()">🗑️ 초기화</button>
+      <button class="bg-green-600 text-white px-3 py-2 rounded" onclick="validateKeys()">🔍 유효성 검사</button>
+    </div>
+    <pre id="keyCheckOutput" class="mt-3"></pre>
+  </div>
+
+  <!-- 🤖 Gemini 테스트 -->
+  <div class="section">
+    <h2 class="text-xl font-semibold mb-2">🤖 Gemini API 테스트 (Fail-Grace Rotation)</h2>
+    <textarea id="geminiPrompt" rows="2" placeholder="예: 오늘 서울 날씨 어때요?"></textarea>
+    <button class="bg-green-600 text-white px-4 py-2 rounded mt-2" onclick="testGemini()">Gemini 호출</button>
+    <pre id="geminiOutput" class="mt-3"></pre>
+  </div>
+
+  <!-- ⚖️ 병렬 검증 -->
+  <div class="section">
+    <h2 class="text-xl font-semibold mb-2">⚖️ 다중 엔진 병렬 검증</h2>
+    <textarea id="queryInput" rows="2" placeholder="예: UAM national strategy"></textarea>
+    <button class="bg-purple-600 text-white px-4 py-2 rounded mt-2" onclick="runVerifyAll()">검증 실행</button>
+    <pre id="verifyOutput" class="mt-3"></pre>
+  </div>
+
+  <!-- 📈 TruthScore 계산 -->
+  <div class="section">
+    <h2 class="text-xl font-semibold mb-2">📈 TruthScore 계산기</h2>
+    <div id="truthInputs" class="grid grid-cols-3 gap-2 mb-2">
+      <input id="crossref" placeholder="CrossRef" />
+      <input id="openalex" placeholder="OpenAlex" />
+      <input id="gdelt" placeholder="GDELT" />
+      <input id="wikidata" placeholder="Wikidata" />
+      <input id="github" placeholder="GitHub" />
+      <input id="naver" placeholder="Naver" />
+    </div>
+    <button class="bg-indigo-600 text-white px-4 py-2 rounded" onclick="calculateTruthScore()">계산</button>
+    <pre id="truthOutput" class="mt-3"></pre>
+  </div>
+
+  <script>
+    const API_BASE = "https://cross-verified-ai-proxy.onrender.com";
+    let keyIndex = 0, validKeys = [], failCount = 0;
+
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    const getKeys = () => ({
+      geminiKeys: document.getElementById("geminiKeys").value.split("\n").filter(v => v.trim() !== ""),
+      githubToken: document.getElementById("githubToken").value.trim(),
+      klawUserId: document.getElementById("klawUserId").value.trim(),
+      naverClientId: document.getElementById("naverClientId").value.trim(),
+      naverClientSecret: document.getElementById("naverClientSecret").value.trim()
+    });
+
+    function saveKeys() {
+      localStorage.setItem("crossVerifiedKeys", JSON.stringify(getKeys()));
+      alert("🔐 Key 저장 완료!");
+    }
+    function loadKeys() {
+      const data = localStorage.getItem("crossVerifiedKeys");
+      if (data) {
+        const keys = JSON.parse(data);
+        document.getElementById("geminiKeys").value = (keys.geminiKeys || []).join("\n");
+        document.getElementById("githubToken").value = keys.githubToken || "";
+        document.getElementById("klawUserId").value = keys.klawUserId || "";
+        document.getElementById("naverClientId").value = keys.naverClientId || "";
+        document.getElementById("naverClientSecret").value = keys.naverClientSecret || "";
+      }
+      alert("✅ 불러오기 완료!");
+    }
+    function clearKeys() {
+      localStorage.removeItem("crossVerifiedKeys");
+      alert("🗑️ Key 초기화 완료!");
+    }
+
+    // ─── Gemini Fail-Grace 회전 ───
+    async function callGeminiWithRotation(prompt) {
+      const keys = getKeys().geminiKeys;
+      const output = document.getElementById("geminiOutput");
+      if (!keys.length) throw new Error("Gemini Key가 없습니다.");
+
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[keyIndex];
+        document.getElementById("activeKey").textContent = `#${keyIndex + 1} (${key.slice(0, 8)}...)`;
+        try {
+          const res = await fetch(`${API_BASE}/api/gemini/generate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ apiKey: key, model: "gemini-2.5-flash", prompt })
+          });
+          const data = await res.json();
+          if (data.success) return data;
+          throw new Error(data.error || "Unknown");
+        } catch (err) {
+          failCount++;
+          keyIndex = (keyIndex + 1) % keys.length;
+          if (failCount >= keys.length) throw new Error("모든 키 실패 (Fail-Hard)");
+          await sleep(500);
+        }
+      }
+    }
+
+    async function testGemini() {
+      const prompt = document.getElementById("geminiPrompt").value.trim();
+      const output = document.getElementById("geminiOutput");
+      output.textContent = "⏳ 요청 중...";
+      try {
+        const res = await callGeminiWithRotation(prompt);
+        output.textContent = JSON.stringify(res, null, 2);
+        failCount = 0;
+      } catch (err) {
+        output.textContent = `❌ ${err.message}`;
+      }
+    }
+
+    async function validateKeys() {
+      const keys = getKeys().geminiKeys;
+      const out = document.getElementById("keyCheckOutput");
+      out.textContent = "🔍 유효성 검사 중...";
+      let valid = [];
+
+      for (let k of keys) {
+        try {
+          const res = await fetch(`${API_BASE}/api/gemini/generate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ apiKey: k, model: "gemini-2.5-flash", prompt: "ping" })
+          });
+          const data = await res.json();
+          if (data.success) valid.push({ key: k, status: "🟢 OK" });
+          else valid.push({ key: k, status: "🔴 FAIL" });
+        } catch {
+          valid.push({ key: k, status: "🔴 Error" });
+        }
+        await sleep(300);
+      }
+
+      out.textContent = valid.map(v => `${v.status} ${v.key.slice(0, 12)}...`).join("\n");
+    }
+
+    async function runVerifyAll() {
+      const query = document.getElementById("queryInput").value.trim();
+      const keys = getKeys();
+      const output = document.getElementById("verifyOutput");
+      output.textContent = "⏳ 검증 중...";
+      const res = await fetch(`${API_BASE}/api/verify/all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, keys })
+      });
+      output.textContent = JSON.stringify(await res.json(), null, 2);
+    }
+
+    async function calculateTruthScore() {
+      const scores = {
+        crossref: parseFloat(document.getElementById("crossref").value) || 0,
+        openalex: parseFloat(document.getElementById("openalex").value) || 0,
+        gdelt: parseFloat(document.getElementById("gdelt").value) || 0,
+        wikidata: parseFloat(document.getElementById("wikidata").value) || 0,
+        github: parseFloat(document.getElementById("github").value) || 0,
+        naver: parseFloat(document.getElementById("naver").value) || 0
+      };
+      const res = await fetch(`${API_BASE}/api/truthscore/calculate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scores })
+      });
+      document.getElementById("truthOutput").textContent = JSON.stringify(await res.json(), null, 2);
+    }
+  </script>
+</body>
+</html>
