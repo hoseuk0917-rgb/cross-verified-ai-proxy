@@ -1,61 +1,42 @@
-// engine/verification.js
+/**
+ * engine/verification.js
+ * v10.3.0 — 사용자 입력형 API 키 구조
+ * - req.body.keys.* 값이 우선
+ * - fallback으로 process.env.* 사용
+ */
+
 const axios = require("axios");
 
-// ✅ 개별 엔진 검증
-async function verifySingleEngine(engine, query) {
-  const name = engine.toLowerCase();
-  console.log(`[Verification] Called engine=${name}, query="${query}"`);
-
-  switch (name) {
-    case "crossref":
-      return { engine: "CrossRef", hits: Math.floor(Math.random() * 20) + 1 };
-
-    case "openalex":
-      return { engine: "OpenAlex", hits: Math.floor(Math.random() * 15) + 1 };
-
-    case "gdelt":
-      return { engine: "GDELT", hits: Math.floor(Math.random() * 10) + 1 };
-
-    case "wikidata":
-      return { engine: "Wikidata", hits: Math.floor(Math.random() * 8) + 1 };
-
-    // ✅ 확장 가능 엔진
-    case "github":
-      return { engine: "GitHub", hits: Math.floor(Math.random() * 12) + 1 };
-
-    case "klaw":
-      return { engine: "K-Law", hits: Math.floor(Math.random() * 9) + 1 };
-
-    case "naver":
-      return { engine: "Naver", hits: Math.floor(Math.random() * 14) + 1 };
-
-    default:
-      throw new Error(`Invalid engine name: ${engine}`);
+async function safeFetch(fn, name) {
+  try {
+    const data = await fn();
+    return { engine: name, success: true, hits: data.hits || 0, data };
+  } catch (err) {
+    return { engine: name, success: false, hits: 0, error: err.message };
   }
 }
 
-// ✅ 병렬 전체 검증 (모든 엔진 통합)
-async function verifyAllEngines(query) {
-  console.log(`[Verification] Running parallel for query="${query}"`);
-
-  // 🔹 통합 엔진 리스트
-  const engines = ["crossref", "openalex", "gdelt", "wikidata", "github", "klaw", "naver"];
-
-  const results = await Promise.all(
-    engines.map(async (engine) => {
-      try {
-        const res = await verifySingleEngine(engine, query);
-        return res;
-      } catch (err) {
-        return { engine, error: err.message };
-      }
-    })
-  );
-
-  return { success: true, query, results };
-}
-
 module.exports = {
-  verifySingleEngine,
-  verifyAllEngines,
-};
+  async verifySingleEngine(engine, query, keys = {}) {
+    switch (engine.toLowerCase()) {
+      case "crossref": return safeFetch(() => crossrefSearch(query), "CrossRef");
+      case "openalex": return safeFetch(() => openalexSearch(query), "OpenAlex");
+      case "gdelt": return safeFetch(() => gdeltSearch(query), "GDELT");
+      case "wikidata": return safeFetch(() => wikidataSearch(query), "Wikidata");
+      case "github": return safeFetch(() => githubSearch(query, keys), "GitHub");
+      case "k-law": return safeFetch(() => klawSearch(query, keys), "K-Law");
+      case "naver": return safeFetch(() => naverSearch(query, keys), "Naver");
+      default:
+        return { success: false, error: `Invalid engine name: ${engine}` };
+    }
+  },
+
+  async verifyAllEngines(query, keys = {}) {
+    const results = await Promise.allSettled([
+      safeFetch(() => crossrefSearch(query), "CrossRef"),
+      safeFetch(() => openalexSearch(query), "OpenAlex"),
+      safeFetch(() => gdeltSearch(query), "GDELT"),
+      safeFetch(() => wikidataSearch(query), "Wikidata"),
+      safeFetch(() => githubSearch(query, keys), "GitHub"),
+      safeFetch(() => klawSearch(query, keys), "K-Law"),
+      safeFetch(() => naverSearch

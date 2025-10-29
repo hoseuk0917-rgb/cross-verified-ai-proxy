@@ -1,0 +1,54 @@
+{
+  "version": "v10.3.0",
+  "description": "Naver Whitelist - Monthly Auto Evaluation (Overwrite Mode)",
+  "lastUpdate": "2025-10-01",
+  "tiers": {
+    "tier1": {
+      "description": "국가 주요언론 (정책 및 공공보도 중심)",
+      "domains": [
+        "kbs.co.kr",
+        "mbc.co.kr",
+        "sbs.co.kr",
+        "yna.co.kr",
+        "yonhapnews.co.kr",
+        "news1.kr",
+        "hani.co.kr",
+        "joongang.co.kr",
+        "chosun.com",
+        "donga.com"
+      ]
+    },
+    "tier2": {
+      "description": "중앙 주요언론 (경제·기술보도 중심)",
+      "domains": [
+        "mk.co.kr",
+        "hankyung.com",
+        "edaily.co.kr",
+        "fnnews.com",
+        "biz.chosun.com",
+        "kookje.co.kr",
+        "segye.com"
+      ]
+    },
+    "tier3": {
+      "description": "전문분야 언론 (모빌리티·항공·산업 중심)",
+      "domains": [
+        "transportationnews.net",
+        "futurechosun.com",
+        "uammagazine.kr",
+        "smartcitytoday.kr",
+        "aviationnews.kr"
+      ]
+    },
+    "tier4": {
+      "description": "지역·협력 언론 (정책연계 및 사업보도 중심)",
+      "domains": [
+        "gyeongnamnews.com",
+        "ggilbo.com",
+        "jejutoday.com",
+        "busantoday.com",
+        "ulsanpress.net"
+      ]
+    }
+  }
+}
