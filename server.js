@@ -1,39 +1,37 @@
-// server.js — Cross-Verified AI Proxy Server v9.9.1 (Web + App 통합 OAuth 안정버전)
+/**
+ * Cross-Verified AI Proxy Server v10.0.0
+ * -------------------------------------
+ * Features:
+ * ✅ Express 기반 서버
+ * ✅ Google OAuth 로그인 + JWT 발급
+ * ✅ JWT 토큰 검증 미들웨어 (API 보호)
+ * ✅ Gemini API 엔진
+ * ✅ /api/verify/:engine, /api/verify/all 보호 적용
+ */
+
 const express = require("express");
 const session = require("express-session");
 const passport = require("passport");
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
-const jwt = require("jsonwebtoken");
+const bodyParser = require("body-parser");
 const cors = require("cors");
-const helmet = require("helmet");
-const rateLimit = require("express-rate-limit");
-const axios = require("axios");
+const jwt = require("jsonwebtoken");
+const path = require("path");
 require("dotenv").config();
 
+// -------------------------------
+// 🔹 Express 초기 설정
+// -------------------------------
 const app = express();
-const PORT = process.env.PORT || 3000;
+app.use(cors());
+app.use(bodyParser.json());
 
-// ==============================
-// 미들웨어 설정
-// ==============================
-app.use(helmet());
-app.use(cors({ origin: "*", credentials: true }));
-app.use(express.json({ limit: "10mb" }));
-
-// 요청 제한
-app.use(
-  rateLimit({
-    windowMs: 15 * 60 * 1000, // 15분
-    max: 200,
-  })
-);
-
-// ==============================
-// 세션 및 Passport 설정
-// ==============================
+// -------------------------------
+// 🔹 세션 & Passport 초기화
+// -------------------------------
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || "crossverified_secret",
+    secret: process.env.SESSION_SECRET || "session_secret_key",
     resave: false,
     saveUninitialized: false,
   })
@@ -41,9 +39,9 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-// ==============================
-// Google OAuth Strategy (웹 로그인용)
-// ==============================
+// -------------------------------
+// 🔹 Google OAuth 설정
+// -------------------------------
 passport.use(
   new GoogleStrategy(
     {
@@ -67,21 +65,42 @@ passport.use(
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
 
-// ==============================
-// Health Check
-// ==============================
+// -------------------------------
+// 🔹 JWT 미들웨어
+// -------------------------------
+const authMiddleware = (req, res, next) => {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+
+  if (!token)
+    return res.status(401).json({ success: false, error: "No token provided" });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "jwt_secret");
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res
+      .status(403)
+      .json({ success: false, error: "Invalid or expired token" });
+  }
+};
+
+// -------------------------------
+// 🔹 Health Check
+// -------------------------------
 app.get("/health", (req, res) => {
   res.json({
     success: true,
     status: "healthy",
+    version: "10.0.0",
     timestamp: new Date().toISOString(),
-    version: "9.9.1",
   });
 });
 
-// ==============================
-// Google OAuth Routes (웹 로그인용)
-// ==============================
+// -------------------------------
+// 🔹 Google OAuth 라우트
+// -------------------------------
 app.get(
   "/auth/google",
   passport.authenticate("google", { scope: ["profile", "email"] })
@@ -89,103 +108,83 @@ app.get(
 
 app.get(
   "/auth/google/callback",
-  passport.authenticate("google", { failureRedirect: "/auth/failure" }),
+  passport.authenticate("google", { failureRedirect: "/auth/fail" }),
   (req, res) => {
+    const user = req.user;
     const token = jwt.sign(
-      { email: req.user.email, name: req.user.displayName },
+      { email: user.email, name: user.displayName },
       process.env.JWT_SECRET || "jwt_secret",
       { expiresIn: "2h" }
     );
-    res.json({
-      success: true,
-      message: "✅ Google login successful",
-      user: req.user,
-      token,
-    });
+
+    res.json({ success: true, token, user });
   }
 );
 
-app.get("/auth/failure", (req, res) => {
-  res.status(401).json({ success: false, error: "Google login failed" });
-});
+app.get("/auth/fail", (req, res) =>
+  res.status(401).json({ success: false, error: "Authentication failed" })
+);
 
-// ==============================
-// Google OAuth (App / 모바일용)
-// ==============================
-app.post("/auth/google/app", async (req, res) => {
-  const { idToken } = req.body;
-  if (!idToken) {
-    return res
-      .status(400)
-      .json({ success: false, error: "idToken is required" });
-  }
-
-  try {
-    const response = await axios.get(
-      `https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`
-    );
-    const data = response.data;
-
-    if (!data.email) throw new Error("Invalid Google token");
-
-    const token = jwt.sign(
-      { email: data.email, name: data.name },
-      process.env.JWT_SECRET || "jwt_secret",
-      { expiresIn: "2h" }
-    );
-
-    res.json({
-      success: true,
-      message: "✅ App login successful",
-      user: { email: data.email, name: data.name },
-      token,
-    });
-  } catch (error) {
-    console.error("App OAuth error:", error.message);
-    res.status(400).json({ success: false, error: error.message });
-  }
-});
-
-// ==============================
-// JWT Verify
-// ==============================
+// JWT 검증 API
 app.get("/auth/verify", (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader)
-    return res.status(401).json({ success: false, error: "Missing token" });
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+  if (!token)
+    return res.status(401).json({ success: false, error: "No token provided" });
 
-  const token = authHeader.split(" ")[1];
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || "jwt_secret");
     res.json({ success: true, user: decoded });
-  } catch {
-    res.status(401).json({ success: false, error: "Invalid token" });
+  } catch (error) {
+    res.status(403).json({ success: false, error: "Invalid token" });
   }
 });
 
-// ==============================
-// Logout (Web 세션)
-// ==============================
-app.get("/auth/logout", (req, res) => {
-  req.logout(() => {
-    res.json({ success: true, message: "Logged out successfully" });
-  });
+// -------------------------------
+// 🔹 Gemini 엔진 (샘플 버전)
+// -------------------------------
+const { callGemini } = require("./engine/gemini");
+
+app.post("/api/gemini/generate", async (req, res) => {
+  try {
+    const { apiKey, model, prompt } = req.body;
+    const result = await callGemini({ apiKey, model, prompt });
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
-// ==============================
-// 404 핸들러
-// ==============================
-app.use((req, res) => {
-  res.status(404).json({ error: "Endpoint not found" });
+// -------------------------------
+// 🔹 엔진 보호 구간 (/api/verify/*)
+// -------------------------------
+const verification = require("./engine/verification");
+
+app.post("/api/verify/:engine", authMiddleware, async (req, res) => {
+  try {
+    const { engine } = req.params;
+    const { query } = req.body;
+    const result = await verification.verifySingleEngine(engine, query);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// ==============================
-// 서버 시작
-// ==============================
+app.post("/api/verify/all", authMiddleware, async (req, res) => {
+  try {
+    const { query } = req.body;
+    const result = await verification.verifyAllEngines(query);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// -------------------------------
+// 🔹 서버 실행
+// -------------------------------
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`
-✅ Cross-Verified AI Proxy Server v9.9.1
-🚀 Web + App 통합 Google OAuth 활성화
-🌐 Running on port ${PORT}
-  `);
+  console.log(`✅ Server running on port ${PORT}`);
 });
