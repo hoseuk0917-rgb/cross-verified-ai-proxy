@@ -22,7 +22,7 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-// ✅ Google OAuth Strategy
+// ✅ Google OAuth 설정
 passport.use(
   new GoogleStrategy(
     {
@@ -39,15 +39,17 @@ passport.use(
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
 
-// ✅ 기본 페이지
+// ✅ 루트 페이지
 app.get("/", (req, res) => {
-  res.json({ message: "Cross-Verified AI Proxy Server v10.0 Ready ✅" });
+  res.json({
+    message: "🚀 Cross-Verified AI Proxy Server v10.0 (OAuth + JWT Ready)",
+  });
 });
 
 // ✅ Google 로그인 시작
 app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
 
-// ✅ 로그인 성공 콜백 → JWT 발급
+// ✅ 로그인 성공 후 JWT 발급
 app.get(
   "/auth/google/callback",
   passport.authenticate("google", { failureRedirect: "/auth/failure" }),
@@ -79,7 +81,7 @@ app.get("/auth/failure", (req, res) => {
   res.status(401).json({ success: false, message: "Google login failed ❌" });
 });
 
-// ✅ 토큰 검증용 엔드포인트
+// ✅ JWT 검증
 app.get("/auth/verify", (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: "Missing Authorization header" });
@@ -91,6 +93,15 @@ app.get("/auth/verify", (req, res) => {
   } catch (err) {
     res.status(403).json({ success: false, error: "Invalid or expired token" });
   }
+});
+
+// ✅ Health check
+app.get("/health", (req, res) => {
+  res.json({
+    success: true,
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ✅ 서버 시작
