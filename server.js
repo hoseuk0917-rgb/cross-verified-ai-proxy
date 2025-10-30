@@ -1,4 +1,4 @@
-// server.js (v10.5.1)
+// server.js (v10.5.2)
 import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
@@ -12,15 +12,22 @@ dotenv.config();
 const app = express();
 
 // ------------------------------------------------------
-// 🔧 Middleware 설정
+// 🌐 Middleware 설정
 // ------------------------------------------------------
-app.use(cors());
+app.use(
+  cors({
+    origin: "*", // ✅ Flutter Web, Localhost, Render 등 모두 허용
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 app.use(bodyParser.json());
 
 // 요청 과부하 방지 (15분당 100회)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
+  message: { success: false, error: "Too many requests, please try again later." },
 });
 app.use(limiter);
 
@@ -28,28 +35,30 @@ const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "default-secret-key";
 
 // ------------------------------------------------------
-// ✅ 서버 헬스체크 (Render용 기본)
+// ✅ 서버 헬스체크 (Render 확인용)
 // ------------------------------------------------------
 app.get("/health", (req, res) => {
   res.json({
     success: true,
     status: "healthy",
-    version: "10.5.1",
+    version: "10.5.2",
     timestamp: new Date().toISOString(),
   });
 });
 
-// ✅ Flutter 연결 확인용 Ping (Flutter 앱에서 /api/ping 호출 테스트)
+// ------------------------------------------------------
+// ✅ Flutter 연결 테스트용 Ping 엔드포인트
+// ------------------------------------------------------
 app.get("/api/ping", (req, res) => {
   res.status(200).json({
     message: "✅ Proxy active and responding",
-    version: "10.5.1",
+    version: "10.5.2",
     time: new Date().toISOString(),
   });
 });
 
 // ------------------------------------------------------
-// 🔐 개발용 토큰 발급
+// 🔐 개발용 토큰 발급 (/auth/dev-token)
 // ------------------------------------------------------
 app.post("/auth/dev-token", (req, res) => {
   const { email, name } = req.body;
@@ -60,7 +69,7 @@ app.post("/auth/dev-token", (req, res) => {
 });
 
 // ------------------------------------------------------
-// 🔑 토큰 검증
+// 🔑 토큰 검증 (/auth/verify)
 // ------------------------------------------------------
 app.get("/auth/verify", (req, res) => {
   const header = req.headers.authorization;
@@ -107,7 +116,7 @@ app.post("/proxy/fulltest", async (req, res) => {
 });
 
 // ------------------------------------------------------
-// 🚀 서버 실행
+// 🚀 서버 시작
 // ------------------------------------------------------
 app.listen(PORT, () => {
   console.log(`✅ Cross-Verified AI Proxy running on port ${PORT}`);
