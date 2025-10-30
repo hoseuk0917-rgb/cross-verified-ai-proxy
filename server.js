@@ -1,78 +1,106 @@
 /**
- * Cross-Verified AI Proxy Server v10.3.0
- * Basic Auth + JWT + Health endpoints
+ * Cross-Verified AI Proxy Server v10.4.0
+ * Integrated Proxy + TruthScore + OAuth + Health Routes
  */
 
 const express = require("express");
-const cors = require("cors");
 const bodyParser = require("body-parser");
-const jwt = require("jsonwebtoken");
-const dotenv = require("dotenv");
+const cors = require("cors");
 const rateLimit = require("express-rate-limit");
+const jwt = require("jsonwebtoken");
+require("dotenv").config();
 
-dotenv.config();
 const app = express();
-const PORT = process.env.PORT || 3000;
-
 app.use(cors());
 app.use(bodyParser.json());
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-});
-app.use(limiter);
+// ✅ Basic Rate Limiter
+app.use(rateLimit({
+  windowMs: process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000,
+  max: process.env.RATE_LIMIT_MAX_REQUESTS || 100
+}));
 
 // ✅ Health Check
 app.get("/health", (req, res) => {
   res.json({
     success: true,
     status: "healthy",
-    version: "10.3.0",
-    timestamp: new Date().toISOString(),
+    version: "10.4.0",
+    timestamp: new Date().toISOString()
   });
 });
 
-// ✅ Dev Token 발급 (테스트용)
+// ✅ JWT Auth Verification
+app.get("/auth/verify", (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ success: false, error: "No token" });
+  try {
+    const user = jwt.verify(token, process.env.JWT_SECRET);
+    res.json({ success: true, user });
+  } catch (err) {
+    res.status(401).json({ success: false, error: "Invalid or expired token" });
+  }
+});
+
+// ✅ Developer Token (for test)
 app.post("/auth/dev-token", (req, res) => {
   const { email, name } = req.body;
-  if (!email || !name) {
-    return res.status(400).json({ success: false, error: "Missing email or name" });
-  }
-
-  try {
-    const token = jwt.sign({ email, name }, process.env.JWT_SECRET || "default_secret", {
-      expiresIn: "2h",
-    });
-    res.json({ success: true, token });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  if (!email || !name) return res.status(400).json({ success: false, error: "Missing credentials" });
+  const token = jwt.sign({ email, name }, process.env.JWT_SECRET, { expiresIn: "2h" });
+  res.json({ success: true, token });
 });
 
-// ✅ JWT 토큰 검증
-app.get("/auth/verify", (req, res) => {
-  const authHeader = req.headers["authorization"];
-  if (!authHeader) return res.status(401).json({ success: false, error: "Missing Authorization header" });
+// ----------------------------------------------------------------------
+// ✅ Proxy Endpoints (external verification engines)
+// ----------------------------------------------------------------------
+const { callGemini } = require("./engine/gemini");
+const { verifyEngines, verifySingleEngine } = require("./engine/verification");
+const { calculateTruthScore } = require("./engine/truthscore");
 
-  const token = authHeader.split(" ")[1];
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || "default_secret");
-    res.json({ success: true, user: decoded });
-  } catch (err) {
-    res.status(401).json({ success: false, error: err.message });
-  }
+// Gemini Proxy
+app.post("/proxy/gemini/:model", async (req, res) => {
+  const { model } = req.params;
+  const { apiKey, prompt } = req.body;
+  const result = await callGemini({ apiKey, model, prompt });
+  res.json(result);
 });
 
-// ✅ 기본 라우트
-app.get("/", (req, res) => {
-  res.send("✅ Cross-Verified AI Proxy v10.3.0 running.");
+// Unified External Verification Proxy
+app.get("/proxy/external", async (req, res) => {
+  const { query } = req.query;
+  const results = await verifyEngines(query);
+  res.json(results);
 });
 
-// ✅ 404 핸들러
+// Single Engine Route (e.g., /proxy/openalex)
+app.get("/proxy/:engine", async (req, res) => {
+  const { engine } = req.params;
+  const { query } = req.query;
+  const result = await verifySingleEngine(engine, query);
+  res.json(result);
+});
+
+// ----------------------------------------------------------------------
+// ✅ TruthScore Calculation
+// ----------------------------------------------------------------------
+app.post("/truthscore/calculate", async (req, res) => {
+  const { query, weights } = req.body;
+  if (!query) return res.status(400).json({ error: "Query missing" });
+  const score = await calculateTruthScore(query, weights);
+  res.json(score);
+});
+
+// ----------------------------------------------------------------------
+// ✅ 404 fallback
+// ----------------------------------------------------------------------
 app.use((req, res) => {
   res.status(404).json({ error: "Endpoint not found" });
 });
 
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+// ----------------------------------------------------------------------
+// ✅ Start Server
+// ----------------------------------------------------------------------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
+});
