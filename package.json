@@ -1,38 +1,42 @@
 {
   "name": "cross-verified-ai-proxy",
-  "version": "1.0.0",
-  "description": "Proxy server for Cross-Verified AI system",
+  "version": "10.4.1",
+  "description": "Cross-Verified AI Proxy Server — Multi-engine verification, truthscore calculator, Gemini proxy, and OAuth handler.",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "NODE_ENV=development nodemon server.js"
   },
-  "keywords": [
-    "proxy",
-    "gemini",
-    "verification",
-    "ai"
-  ],
-  "author": "",
-  "license": "MIT",
   "dependencies": {
-    "axios": "^1.6.2",
-    "bcryptjs": "^2.4.3",
+    "express": "^4.19.2",
+    "body-parser": "^1.20.2",
     "cors": "^2.8.5",
-    "crypto": "^1.0.1",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "express-rate-limit": "^7.1.5",
-    "express-session": "^1.18.2",
-    "helmet": "^7.1.0",
+    "dotenv": "^16.4.5",
+    "express-rate-limit": "^6.10.0",
     "jsonwebtoken": "^9.0.2",
-    "node-cron": "^3.0.3",
-    "nodemailer": "^7.0.10",
-    "passport": "^0.7.0",
-    "passport-google-oauth20": "^2.0.0",
-    "pg": "^8.11.3"
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
-    "nodemon": "^3.1.10"
-  }
+    "nodemon": "^3.1.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "cross-verified-ai",
+    "proxy-server",
+    "gemini",
+    "truthscore",
+    "UAM",
+    "verification-engine",
+    "openalex",
+    "crossref",
+    "gdelt",
+    "wikidata",
+    "naver",
+    "klaw"
+  ],
+  "author": "Cross-Verified AI Project",
+  "license": "MIT"
 }
