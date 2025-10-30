@@ -3,14 +3,20 @@
  * Integrated Proxy + TruthScore + OAuth + Health Routes
  */
 
-const express = require("express");
-const bodyParser = require("body-parser");
-const cors = require("cors");
-const rateLimit = require("express-rate-limit");
-const jwt = require("jsonwebtoken");
-require("dotenv").config();
+import express from "express";
+import bodyParser from "body-parser";
+import cors from "cors";
+import rateLimit from "express-rate-limit";
+import jwt from "jsonwebtoken";
+import dotenv from "dotenv";
 
+import { callGemini } from "./engine/gemini.js";
+import { verifyEngines, verifySingleEngine } from "./engine/verification.js";
+import { calculateTruthScore } from "./engine/truthscore.js";
+
+dotenv.config();
 const app = express();
+
 app.use(cors());
 app.use(bodyParser.json());
 
@@ -42,7 +48,7 @@ app.get("/auth/verify", (req, res) => {
   }
 });
 
-// ✅ Developer Token (for test)
+// ✅ Developer Token
 app.post("/auth/dev-token", (req, res) => {
   const { email, name } = req.body;
   if (!email || !name) return res.status(400).json({ success: false, error: "Missing credentials" });
@@ -51,11 +57,8 @@ app.post("/auth/dev-token", (req, res) => {
 });
 
 // ----------------------------------------------------------------------
-// ✅ Proxy Endpoints (external verification engines)
+// ✅ Proxy Routes
 // ----------------------------------------------------------------------
-const { callGemini } = require("./engine/gemini");
-const { verifyEngines, verifySingleEngine } = require("./engine/verification");
-const { calculateTruthScore } = require("./engine/truthscore");
 
 // Gemini Proxy
 app.post("/proxy/gemini/:model", async (req, res) => {
@@ -65,14 +68,14 @@ app.post("/proxy/gemini/:model", async (req, res) => {
   res.json(result);
 });
 
-// Unified External Verification Proxy
+// Unified Multi-Engine Verification
 app.get("/proxy/external", async (req, res) => {
   const { query } = req.query;
   const results = await verifyEngines(query);
   res.json(results);
 });
 
-// Single Engine Route (e.g., /proxy/openalex)
+// Single Engine Verification
 app.get("/proxy/:engine", async (req, res) => {
   const { engine } = req.params;
   const { query } = req.query;
