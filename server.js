@@ -1,57 +1,57 @@
-// server.js (v10.5.3)
+/**
+ * Cross-Verified AI Proxy (Render-safe + Local-safe build)
+ * v10.5.3
+ */
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import bodyParser from "body-parser";
-import cors from "cors";
-import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
-import jwt from "jsonwebtoken";
-import { verifyEngines } from "./engine/verification.js";
-import { calculateTruthScore } from "./engine/truthscore.js";
+import cors from "cors";
 
 dotenv.config();
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-// ------------------------------------------------------
-// 📂 경로 설정
-// ------------------------------------------------------
+// Resolve paths
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ------------------------------------------------------
-// 🔧 미들웨어 설정
-// ------------------------------------------------------
-app.use(cors());
-app.use(bodyParser.json());
+// === STEP 1. 기본 미들웨어 설정 ===
+app.use(express.json());
+app.use(
+  cors({
+    origin: process.env.ALLOWED_ORIGINS?.split(",") || "*",
+    credentials: true,
+  })
+);
 
-// 요청 제한 완화 (Render HealthCheck 안정화)
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15분
-  max: 1000, // 허용 요청 수 확장
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use(limiter);
+// === STEP 2. 정적 파일 경로 설정 ===
+const renderBuildPath = "/opt/render/project/src/build/web";
+const localBuildPath = path.join(__dirname, "build", "web");
 
-const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || "default-secret-key";
+let activeBuildPath = "";
 
-// ------------------------------------------------------
-// 🩺 서버 헬스체크
-// ------------------------------------------------------
-app.get("/health", (req, res) => {
-  res.json({
-    success: true,
-    status: "healthy",
-    version: "10.5.3",
-    timestamp: new Date().toISOString(),
+// Render용 경로 먼저 확인
+import fs from "fs";
+if (fs.existsSync(renderBuildPath)) {
+  activeBuildPath = renderBuildPath;
+  console.log(`✅ Using Render build path: ${renderBuildPath}`);
+} else if (fs.existsSync(localBuildPath)) {
+  activeBuildPath = localBuildPath;
+  console.log(`✅ Using Local build path: ${localBuildPath}`);
+} else {
+  console.warn("⚠️ No build/web directory found. Serving API only.");
+}
+
+if (activeBuildPath) {
+  app.use(express.static(activeBuildPath));
+
+  app.get("/", (req, res) => {
+    res.sendFile(path.join(activeBuildPath, "index.html"));
   });
-});
+}
 
-// ------------------------------------------------------
-// 🧩 Flutter 앱 연결 확인
-// ------------------------------------------------------
+// === STEP 3. 기본 헬스체크 ===
 app.get("/api/ping", (req, res) => {
   res.status(200).json({
     message: "✅ Proxy active and responding",
@@ -60,80 +60,25 @@ app.get("/api/ping", (req, res) => {
   });
 });
 
-// ------------------------------------------------------
-// 🔐 개발용 JWT 토큰 발급
-// ------------------------------------------------------
-app.post("/auth/dev-token", (req, res) => {
-  const { email, name } = req.body;
-  if (!email)
-    return res.status(400).json({ success: false, error: "Missing email" });
-
-  const token = jwt.sign({ email, name }, JWT_SECRET, { expiresIn: "2h" });
-  res.json({ success: true, token });
+// === STEP 4. 인증 및 API 라우트 예시 ===
+app.get("/auth/google/callback", (req, res) => {
+  res.status(200).send("✅ Google OAuth callback received");
 });
 
-// ------------------------------------------------------
-// 🧾 토큰 검증
-// ------------------------------------------------------
-app.get("/auth/verify", (req, res) => {
-  const header = req.headers.authorization;
-  if (!header)
-    return res.status(401).json({ success: false, error: "Missing token" });
-
-  const token = header.split(" ")[1];
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    res.json({ success: true, user: decoded });
-  } catch {
-    res.status(401).json({ success: false, error: "Invalid or expired token" });
-  }
+// === STEP 5. fallback 404 ===
+app.use((req, res) => {
+  res.status(404).send(`
+    <html>
+      <body style="font-family:sans-serif; text-align:center; padding:60px;">
+        <h2>⚠️ Flutter build not found</h2>
+        <p>현재 Render에 <code>build/web</code>이 업로드되지 않았습니다.<br/>
+        로컬에서 <code>flutter build web</code> 후 다시 커밋하세요.</p>
+      </body>
+    </html>
+  `);
 });
 
-// ------------------------------------------------------
-// 🤖 교차검증 + TruthScore 통합 엔드포인트
-// ------------------------------------------------------
-app.post("/proxy/fulltest", async (req, res) => {
-  const header = req.headers.authorization;
-  const token = header ? header.split(" ")[1] : null;
-
-  if (!token)
-    return res.status(401).json({ success: false, error: "Missing token" });
-
-  try {
-    jwt.verify(token, JWT_SECRET);
-    const { query } = req.body;
-    if (!query)
-      return res.status(400).json({ success: false, error: "Missing query" });
-
-    const engineResults = await verifyEngines(query);
-    const scoreResult = calculateTruthScore(engineResults);
-
-    res.json({
-      success: true,
-      query,
-      timestamp: new Date().toISOString(),
-      engines: engineResults,
-      truthScore: scoreResult.truthScore,
-      truthScoreBreakdown: scoreResult.breakdown,
-    });
-  } catch (err) {
-    console.error("[Proxy Error]", err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ------------------------------------------------------
-// 🌐 Flutter Web 정적 빌드 서빙
-// ------------------------------------------------------
-app.use(express.static(path.join(__dirname, "build", "web")));
-
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "build", "web", "index.html"));
-});
-
-// ------------------------------------------------------
-// 🚀 서버 실행
-// ------------------------------------------------------
+// === STEP 6. 서버 시작 ===
 app.listen(PORT, () => {
   console.log(`✅ Cross-Verified AI Proxy running on port ${PORT}`);
 });
