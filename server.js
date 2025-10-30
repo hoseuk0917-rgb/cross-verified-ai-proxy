@@ -1,34 +1,30 @@
 /**
- * Cross-Verified AI Proxy v10.3.0
- * 서버 메인 엔트리 — 사용자 입력형 Key 구조로 개편
+ * Cross-Verified AI Proxy Server v10.3.0
+ * Basic Auth + JWT + Health endpoints
  */
 
 const express = require("express");
-const bodyParser = require("body-parser");
 const cors = require("cors");
-const session = require("express-session");
+const bodyParser = require("body-parser");
 const jwt = require("jsonwebtoken");
-const path = require("path");
+const dotenv = require("dotenv");
+const rateLimit = require("express-rate-limit");
 
-const gemini = require("./engine/gemini");
-const verification = require("./engine/verification");
-const truthscore = require("./engine/truthscore");
-
+dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ========== 미들웨어 설정 ==========
 app.use(cors());
-app.use(bodyParser.json({ limit: "2mb" }));
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || "cross-verified-secret",
-    resave: false,
-    saveUninitialized: true,
-  })
-);
+app.use(bodyParser.json());
 
-// ========== HEALTH CHECK ==========
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+});
+app.use(limiter);
+
+// ✅ Health Check
 app.get("/health", (req, res) => {
   res.json({
     success: true,
@@ -38,59 +34,45 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ========== GEMINI API ==========
-app.post("/api/gemini/generate", async (req, res) => {
-  try {
-    const { apiKey, model, prompt } = req.body;
-    if (!apiKey) return res.status(400).json({ success: false, error: "API key missing" });
+// ✅ Dev Token 발급 (테스트용)
+app.post("/auth/dev-token", (req, res) => {
+  const { email, name } = req.body;
+  if (!email || !name) {
+    return res.status(400).json({ success: false, error: "Missing email or name" });
+  }
 
-    const result = await gemini.callGemini({ apiKey, model, prompt });
-    res.json(result);
+  try {
+    const token = jwt.sign({ email, name }, process.env.JWT_SECRET || "default_secret", {
+      expiresIn: "2h",
+    });
+    res.json({ success: true, token });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ========== TRUTH SCORE 계산 ==========
-app.post("/api/truthscore/calculate", async (req, res) => {
+// ✅ JWT 토큰 검증
+app.get("/auth/verify", (req, res) => {
+  const authHeader = req.headers["authorization"];
+  if (!authHeader) return res.status(401).json({ success: false, error: "Missing Authorization header" });
+
+  const token = authHeader.split(" ")[1];
   try {
-    const result = await truthscore.calculate(req.body);
-    res.json(result);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "default_secret");
+    res.json({ success: true, user: decoded });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(401).json({ success: false, error: err.message });
   }
 });
 
-// ========== VERIFY (단일 엔진) ==========
-app.post("/api/verify/:engine", async (req, res) => {
-  try {
-    const { engine } = req.params;
-    const { query, keys } = req.body;
-    const result = await verification.verifySingleEngine(engine, query, keys);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ========== VERIFY (전체 엔진 병렬) ==========
-app.post("/api/verify/all", async (req, res) => {
-  try {
-    const { query, keys } = req.body;
-    const result = await verification.verifyAllEngines(query, keys);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ========== 기본 라우트 ==========
-app.use(express.static(path.join(__dirname, "public")));
+// ✅ 기본 라우트
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public/index.html"));
+  res.send("✅ Cross-Verified AI Proxy v10.3.0 running.");
 });
 
-// ========== 서버 시작 ==========
-app.listen(PORT, () => {
-  console.log(`✅ Cross-Verified AI Proxy running on port ${PORT}`);
+// ✅ 404 핸들러
+app.use((req, res) => {
+  res.status(404).json({ error: "Endpoint not found" });
 });
+
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
