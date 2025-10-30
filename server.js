@@ -1,4 +1,4 @@
-// server.js (v10.4.2)
+// server.js (v10.5.1)
 import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
@@ -10,10 +10,14 @@ import { calculateTruthScore } from "./engine/truthscore.js";
 
 dotenv.config();
 const app = express();
+
+// ------------------------------------------------------
+// 🔧 Middleware 설정
+// ------------------------------------------------------
 app.use(cors());
 app.use(bodyParser.json());
 
-// Rate limiting
+// 요청 과부하 방지 (15분당 100회)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -23,34 +27,45 @@ app.use(limiter);
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "default-secret-key";
 
-// =======================
-// Health check
-// =======================
+// ------------------------------------------------------
+// ✅ 서버 헬스체크 (Render용 기본)
+// ------------------------------------------------------
 app.get("/health", (req, res) => {
   res.json({
     success: true,
     status: "healthy",
-    version: "10.4.2",
+    version: "10.5.1",
     timestamp: new Date().toISOString(),
   });
 });
 
-// =======================
-// 토큰 발급 (개발용)
-// =======================
+// ✅ Flutter 연결 확인용 Ping (Flutter 앱에서 /api/ping 호출 테스트)
+app.get("/api/ping", (req, res) => {
+  res.status(200).json({
+    message: "✅ Proxy active and responding",
+    version: "10.5.1",
+    time: new Date().toISOString(),
+  });
+});
+
+// ------------------------------------------------------
+// 🔐 개발용 토큰 발급
+// ------------------------------------------------------
 app.post("/auth/dev-token", (req, res) => {
   const { email, name } = req.body;
   if (!email) return res.status(400).json({ success: false, error: "Missing email" });
+
   const token = jwt.sign({ email, name }, JWT_SECRET, { expiresIn: "2h" });
   res.json({ success: true, token });
 });
 
-// =======================
-// 토큰 검증
-// =======================
+// ------------------------------------------------------
+// 🔑 토큰 검증
+// ------------------------------------------------------
 app.get("/auth/verify", (req, res) => {
   const header = req.headers.authorization;
   if (!header) return res.status(401).json({ success: false, error: "Missing token" });
+
   const token = header.split(" ")[1];
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
@@ -60,12 +75,13 @@ app.get("/auth/verify", (req, res) => {
   }
 });
 
-// =======================
-// 교차검증 + TruthScore 통합 엔드포인트
-// =======================
+// ------------------------------------------------------
+// 🤖 교차검증 + TruthScore + Breakdown 통합
+// ------------------------------------------------------
 app.post("/proxy/fulltest", async (req, res) => {
   const header = req.headers.authorization;
   const token = header ? header.split(" ")[1] : null;
+
   if (!token) return res.status(401).json({ success: false, error: "Missing token" });
 
   try {
@@ -82,12 +98,17 @@ app.post("/proxy/fulltest", async (req, res) => {
       timestamp: new Date().toISOString(),
       engines: engineResults,
       truthScore: scoreResult.truthScore,
+      truthScoreBreakdown: scoreResult.breakdown,
     });
   } catch (err) {
+    console.error("[Proxy Error]", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
+// ------------------------------------------------------
+// 🚀 서버 실행
+// ------------------------------------------------------
 app.listen(PORT, () => {
-  console.log(`✅ Proxy server running on port ${PORT}`);
+  console.log(`✅ Cross-Verified AI Proxy running on port ${PORT}`);
 });
