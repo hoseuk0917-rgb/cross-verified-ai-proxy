@@ -1,10 +1,14 @@
-// server.js (v10.5.2)
+// server.js (v10.5.3)
 import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
+import path from "path";
+import { fileURLToPath } from "url";
+import { dirname } from "path";
+
 import { verifyEngines } from "./engine/verification.js";
 import { calculateTruthScore } from "./engine/truthscore.js";
 
@@ -12,22 +16,15 @@ dotenv.config();
 const app = express();
 
 // ------------------------------------------------------
-// 🌐 Middleware 설정
+// 🔧 Middleware 설정
 // ------------------------------------------------------
-app.use(
-  cors({
-    origin: "*", // ✅ Flutter Web, Localhost, Render 등 모두 허용
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
+app.use(cors());
 app.use(bodyParser.json());
 
 // 요청 과부하 방지 (15분당 100회)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
-  message: { success: false, error: "Too many requests, please try again later." },
 });
 app.use(limiter);
 
@@ -35,30 +32,28 @@ const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "default-secret-key";
 
 // ------------------------------------------------------
-// ✅ 서버 헬스체크 (Render 확인용)
+// ✅ 서버 헬스체크 (Render 자동 감시용)
 // ------------------------------------------------------
 app.get("/health", (req, res) => {
   res.json({
     success: true,
     status: "healthy",
-    version: "10.5.2",
+    version: "10.5.3",
     timestamp: new Date().toISOString(),
   });
 });
 
-// ------------------------------------------------------
-// ✅ Flutter 연결 테스트용 Ping 엔드포인트
-// ------------------------------------------------------
+// ✅ Flutter 연결 확인용 Ping
 app.get("/api/ping", (req, res) => {
   res.status(200).json({
     message: "✅ Proxy active and responding",
-    version: "10.5.2",
+    version: "10.5.3",
     time: new Date().toISOString(),
   });
 });
 
 // ------------------------------------------------------
-// 🔐 개발용 토큰 발급 (/auth/dev-token)
+// 🔐 개발용 토큰 발급
 // ------------------------------------------------------
 app.post("/auth/dev-token", (req, res) => {
   const { email, name } = req.body;
@@ -69,7 +64,7 @@ app.post("/auth/dev-token", (req, res) => {
 });
 
 // ------------------------------------------------------
-// 🔑 토큰 검증 (/auth/verify)
+// 🔑 토큰 검증
 // ------------------------------------------------------
 app.get("/auth/verify", (req, res) => {
   const header = req.headers.authorization;
@@ -116,7 +111,21 @@ app.post("/proxy/fulltest", async (req, res) => {
 });
 
 // ------------------------------------------------------
-// 🚀 서버 시작
+// 🌐 Flutter Web SPA 라우팅 처리 (Render 404 방지)
+// ------------------------------------------------------
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Flutter build/web 폴더를 정적 경로로 설정
+app.use(express.static(path.join(__dirname, "build/web")));
+
+// 모든 나머지 요청은 index.html로 리다이렉트 (SPA fallback)
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "build/web/index.html"));
+});
+
+// ------------------------------------------------------
+// 🚀 서버 실행
 // ------------------------------------------------------
 app.listen(PORT, () => {
   console.log(`✅ Cross-Verified AI Proxy running on port ${PORT}`);
