@@ -1,33 +1,30 @@
 {
   "name": "cross-verified-ai-proxy",
-  "version": "10.5.0",
-  "description": "Cross-Verified AI Proxy server for Flutter Web deployment on Render",
-  "main": "server.js",
+  "version": "10.6.1",
+  "description": "Cross-Verified AI Proxy Server with Naver SMTP mail alerts and whitelist automation.",
   "type": "module",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
-    "build": "echo 'Flutter handles web build. No Node build step required.'"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "dev": "nodemon server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
+    "axios": "^1.7.4",
+    "body-parser": "^1.20.2",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.3.0",
+    "jsonwebtoken": "^9.0.2",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.10.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"
   },
-  "keywords": [
-    "flutter",
-    "express",
-    "render",
-    "cross-verified-ai",
-    "proxy",
-    "fullstack"
-  ],
-  "author": "Cross Verified AI Team",
+  "engines": {
+    "node": ">=18.x"
+  },
+  "author": "Cross-Verified AI Dev Team",
   "license": "MIT"
 }
