@@ -1,27 +1,28 @@
-// server.js — Cross-Verified AI Proxy (Render Compatible + Naver SMTP + Auto Fallback)
+// server.js — Cross-Verified AI Proxy (Render + Gmail API OAuth2)
 import express from "express";
 import nodemailer from "nodemailer";
+import { google } from "googleapis";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 
-// 경로 설정
+// ✅ 경로 설정
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ✅ Flutter Web 빌드 경로 설정
+// ✅ Flutter Web 빌드 경로
 const buildPath = path.join(__dirname, "build", "web");
 if (!fs.existsSync(buildPath)) {
-  console.warn("⚠️ build/web not found — Serving API only.");
+  console.warn("⚠️  Warning: build/web not found. Serving API only.");
 } else {
-  console.log("✅ Serving Flutter web files from:", buildPath);
+  console.log("✅ Serving static Flutter web files from:", buildPath);
   app.use(express.static(buildPath));
 }
 
-// ✅ 기본 헬스체크
+// ✅ 기본 헬스체크 API
 app.get("/api/ping", (req, res) => {
   res.json({
     message: "✅ Proxy active and responding",
@@ -30,79 +31,88 @@ app.get("/api/ping", (req, res) => {
   });
 });
 
-// ✅ Nodemailer Transporter 생성 함수 (자동 fallback 포함)
-function createTransporter(isFallback = false) {
-  const port = isFallback ? 587 : (process.env.SMTP_PORT || 465);
-  const secure = isFallback ? false : (process.env.SMTP_SECURE === "true");
+////////////////////////////////////////////////////////////
+// ✅ Gmail API 기반 Nodemailer 설정
+////////////////////////////////////////////////////////////
+const OAuth2 = google.auth.OAuth2;
+const oauth2Client = new OAuth2(
+  process.env.GMAIL_CLIENT_ID,
+  process.env.GMAIL_CLIENT_SECRET,
+  "https://developers.google.com/oauthplayground" // Redirect URI
+);
 
-  console.log(`📡 Creating transporter: ${isFallback ? "TLS (587)" : "SSL (465)"}`);
+// Refresh Token 등록
+oauth2Client.setCredentials({
+  refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
+});
 
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST || "smtp.naver.com",
-    port,
-    secure,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-    tls: { rejectUnauthorized: false },
-    connectionTimeout: 10000, // 10초 타임아웃
-  });
+// ✅ Gmail Transporter 생성 함수
+async function createGmailTransporter() {
+  try {
+    const accessToken = await oauth2Client.getAccessToken();
+
+    return nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        type: "OAuth2",
+        user: process.env.MAIL_FROM,
+        clientId: process.env.GMAIL_CLIENT_ID,
+        clientSecret: process.env.GMAIL_CLIENT_SECRET,
+        refreshToken: process.env.GOOGLE_REFRESH_TOKEN,
+        accessToken: accessToken.token,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Gmail OAuth2 AccessToken Error:", error.message);
+    throw new Error("Failed to create Gmail transporter");
+  }
 }
 
+////////////////////////////////////////////////////////////
 // ✅ 이메일 발송 함수
+////////////////////////////////////////////////////////////
 async function sendAlertEmail(subject, message) {
-  const from = process.env.MAIL_FROM || process.env.SMTP_USER;
+  const from = process.env.MAIL_FROM;
   const to = process.env.ALERT_RECEIVER || process.env.MAIL_TO;
 
-  if (!to) {
-    console.error("❌ ALERT_RECEIVER or MAIL_TO not defined.");
+  if (!from || !to) {
+    console.error("❌ MAIL_FROM 또는 MAIL_TO 환경변수가 없습니다.");
     return;
   }
 
-  const mailOptions = {
-    from: `"Cross-Verified AI" <${from}>`,
-    to,
-    subject: subject || "🚨 Cross-Verified AI Notification",
-    text: message || "This is a test alert from Cross-Verified AI proxy server.",
-  };
-
   try {
-    const transporter = createTransporter(false);
-    await transporter.sendMail(mailOptions);
-    console.log("✅ Email sent successfully (SSL 465) →", to);
+    const transporter = await createGmailTransporter();
+    await transporter.sendMail({
+      from: `"Cross-Verified AI" <${from}>`,
+      to,
+      subject: subject || "🚨 Cross-Verified AI Notification",
+      text: message || "✅ This is a test alert from Cross-Verified AI Proxy.",
+    });
+    console.log("✅ Gmail API 이메일 발송 성공:", to);
   } catch (err) {
-    console.error("⚠️ SSL 465 failed:", err.message);
-    console.log("🔁 Retrying with TLS 587...");
-    try {
-      const fallbackTransporter = createTransporter(true);
-      await fallbackTransporter.sendMail(mailOptions);
-      console.log("✅ Email sent successfully (TLS 587) →", to);
-    } catch (fallbackErr) {
-      console.error("❌ Email send failed (TLS 587):", fallbackErr.message);
-      throw fallbackErr;
-    }
+    console.error("❌ Gmail API 발송 실패:", err.message);
   }
 }
 
-// ✅ 이메일 테스트용 엔드포인트
+////////////////////////////////////////////////////////////
+// ✅ 테스트용 엔드포인트
+////////////////////////////////////////////////////////////
 app.get("/api/test-email", async (req, res) => {
   try {
     await sendAlertEmail(
       "📬 Cross-Verified AI Email Test",
-      `✅ Test email sent successfully at ${new Date().toLocaleString()}`
+      `✅ Gmail API test email sent at ${new Date().toLocaleString()}`
     );
-    res.json({ success: true, message: "✅ Test email sent successfully." });
+    res.json({ success: true, message: "Gmail API test email sent successfully." });
   } catch (err) {
-    res.status(500).json({
-      success: false,
-      message: "❌ Email send failed",
-      error: err.message,
-    });
+    console.error("❌ 테스트 이메일 발송 실패:", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
+////////////////////////////////////////////////////////////
 // ✅ SPA 라우팅 (404 방지)
+////////////////////////////////////////////////////////////
 app.get("*", (req, res) => {
   const indexPath = path.resolve(buildPath, "index.html");
   if (fs.existsSync(indexPath)) {
@@ -112,7 +122,9 @@ app.get("*", (req, res) => {
   }
 });
 
-// ✅ Render 호환: 반드시 0.0.0.0으로 바인딩
+////////////////////////////////////////////////////////////
+// ✅ Render 호환 바인딩
+////////////////////////////////////////////////////////////
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Cross-Verified AI Proxy running on port ${PORT}`);
+  console.log(`✅ Cross-Verified AI Proxy (Gmail API Mode) running on port ${PORT}`);
 });
