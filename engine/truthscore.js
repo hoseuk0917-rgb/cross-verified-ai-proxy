@@ -1,5 +1,5 @@
 // engine/truthscore.js
-// TruthScore 계산 모듈 (v10.4.2)
+// TruthScore 계산 모듈 (v10.5.0)
 export function calculateTruthScore(results) {
   try {
     const weights = {
@@ -14,13 +14,24 @@ export function calculateTruthScore(results) {
 
     let numerator = 0;
     let denominator = 0;
+    const breakdown = [];
 
     for (const r of results) {
       const w = weights[r.engine] || 0;
-      const Qi = r.success ? 1 : 0; // 성공한 요청만 반영
+      const Qi = r.success ? 1 : 0;
       const Vi = r.hits && r.hits > 0 ? 1 : 0;
-      numerator += Qi * Vi * w;
+      const score = Qi * Vi * w;
+
+      numerator += score;
       denominator += Qi * w;
+
+      breakdown.push({
+        engine: r.engine,
+        weight: w,
+        success: r.success,
+        hits: r.hits,
+        partialScore: Number(score.toFixed(3))
+      });
     }
 
     const truthScore = denominator > 0 ? numerator / denominator : 0;
@@ -29,7 +40,7 @@ export function calculateTruthScore(results) {
       success: true,
       truthScore: Number(truthScore.toFixed(3)),
       totalEngines: results.length,
-      details: results
+      breakdown
     };
   } catch (err) {
     return { success: false, error: err.message };

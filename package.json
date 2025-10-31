@@ -1,42 +1,33 @@
 {
   "name": "cross-verified-ai-proxy",
-  "version": "10.4.1",
-  "description": "Cross-Verified AI Proxy Server — Multi-engine verification, truthscore calculator, Gemini proxy, and OAuth handler.",
-  "type": "module",
+  "version": "10.5.0",
+  "description": "Cross-Verified AI Proxy server for Flutter Web deployment on Render",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "NODE_ENV=development nodemon server.js"
-  },
-  "dependencies": {
-    "express": "^4.19.2",
-    "body-parser": "^1.20.2",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express-rate-limit": "^6.10.0",
-    "jsonwebtoken": "^9.0.2",
-    "node-fetch": "^3.3.2"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.4"
+    "dev": "nodemon server.js",
+    "build": "echo 'Flutter handles web build. No Node build step required.'"
   },
   "engines": {
     "node": ">=18.0.0"
   },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
   "keywords": [
+    "flutter",
+    "express",
+    "render",
     "cross-verified-ai",
-    "proxy-server",
-    "gemini",
-    "truthscore",
-    "UAM",
-    "verification-engine",
-    "openalex",
-    "crossref",
-    "gdelt",
-    "wikidata",
-    "naver",
-    "klaw"
+    "proxy",
+    "fullstack"
   ],
-  "author": "Cross-Verified AI Project",
+  "author": "Cross Verified AI Team",
   "license": "MIT"
 }

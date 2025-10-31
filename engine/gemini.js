@@ -1,116 +1,26 @@
 /**
- * engine/gemini.js
- * Cross-Verified AI Proxy v10.2.1
- * - Gemini 2.5 Flash / Pro / Lite 지원
- * - Fail-Grace 로직 (개별 Key 단위)
- * - 앱 레벨 Key-Rotation 신호 전달
+ * Gemini Proxy v10.4.0
  */
 
-const axios = require("axios");
+import fetch from "node-fetch";
 
-/**
- * Google Gemini 호출 (Fail-Grace 대응)
- */
-module.exports = {
-  async callGemini({ apiKey, model = "gemini-2.5-flash", prompt }) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+export async function callGemini({ apiKey, model, prompt }) {
+  if (!apiKey || !prompt) return { success: false, error: "Missing apiKey or prompt" };
 
-    try {
-      const response = await axios.post(
-        url,
-        {
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 2048,
-          },
-        },
-        { timeout: 15000 }
-      );
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-      const text =
-        response.data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-        "⚠️ No response text.";
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    });
 
-      return {
-        success: true,
-        state: "ok",
-        text,
-        model,
-        timestamp: new Date().toISOString(),
-      };
-    } catch (error) {
-      const status = error.response?.status || 500;
-      const message =
-        error.response?.data?.error?.message || error.message || "Unknown error";
-      const resetTime = getNextPacificMidnight();
+    const data = await response.json();
 
-      // ⚠️ Rate limit 초과 or Timeout → Fail-Grace
-      if (status === 429 || error.code === "ECONNABORTED") {
-        return {
-          success: false,
-          state: "fail_grace",
-          code: status === 429 ? 429 : "TIMEOUT",
-          error:
-            status === 429
-              ? "Rate limit exceeded for this key"
-              : "Request timeout",
-          retryAfter: resetTime,
-        };
-      }
-
-      // 🔴 기타 오류 → 일반 Error
-      return {
-        success: false,
-        state: "error",
-        code: status,
-        error: message,
-      };
-    }
-  },
-
-  /**
-   * 키워드 추출 (간단한 로컬 로직)
-   */
-  async extractKeywords(text) {
-    try {
-      const words = text
-        .replace(/[^\w\s]/gi, "")
-        .split(/\s+/)
-        .filter((w) => w.length > 2)
-        .slice(0, 10);
-      return { success: true, keywords: words };
-    } catch (err) {
-      return { success: false, keywords: [] };
-    }
-  },
-
-  /**
-   * Gemini API Key 유효성 검증
-   */
-  async validateApiKey(apiKey) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash?key=${apiKey}`;
-      const res = await axios.get(url, { timeout: 8000 });
-      const valid = !!res.data?.name;
-      return { success: true, valid };
-    } catch (error) {
-      return {
-        success: false,
-        valid: false,
-        error: error.response?.data?.error?.message || error.message,
-      };
-    }
-  },
-};
-
-/**
- * ⏰ 태평양 자정 리셋 타임 계산 (UTC-8)
- */
-function getNextPacificMidnight() {
-  const now = new Date();
-  const utcOffsetMinutes = 8 * 60; // PST 기준
-  const pacificNow = new Date(now.getTime() - utcOffsetMinutes * 60 * 1000);
-  pacificNow.setUTCHours(24, 0, 0, 0);
-  return pacificNow.toISOString();
+    if (data.error) return { success: false, error: data.error.message };
+    return { success: true, model, output: data };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 }
