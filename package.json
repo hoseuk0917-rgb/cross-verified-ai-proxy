@@ -1,7 +1,7 @@
 {
   "name": "cross-verified-ai-proxy",
-  "version": "10.7.0",
-  "description": "Cross-Verified AI Proxy Server (Render-compatible, Gmail API direct send)",
+  "version": "10.8.1",
+  "description": "Cross-Verified AI Proxy Server (Render-compatible, Gmail API direct send, full logging enabled)",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -11,7 +11,10 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "googleapis": "^140.0.0"
+    "body-parser": "^1.20.2",
+    "dotenv": "^16.3.1",
+    "googleapis": "^140.0.0",
+    "morgan": "^1.10.0"
   },
   "engines": {
     "node": ">=18"
@@ -21,7 +24,8 @@
     "Render",
     "Gmail-API",
     "Express",
-    "Proxy"
+    "Proxy",
+    "Morgan-Logging"
   ],
   "author": "Ho Seok Goh",
   "license": "MIT"
