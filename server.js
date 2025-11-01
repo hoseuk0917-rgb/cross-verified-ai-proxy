@@ -1,32 +1,37 @@
+/**
+ * Cross-Verified AI Proxy Server
+ * Version: 10.8.1
+ * Description: Render-compatible Express backend
+ * Author: Ho Seok Goh
+ */
+
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
-import dotenv from "dotenv";
 import morgan from "morgan";
-import path from "path";
-import { fileURLToPath } from "url";
+import dotenv from "dotenv";
+import { google } from "googleapis";
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-// 미들웨어
+// ===================== 기본 설정 =====================
 app.use(cors());
-app.use(express.json());
 app.use(bodyParser.json());
 app.use(morgan("dev"));
 
-// ✅ Flutter Web 빌드 결과 서빙
-app.use(express.static(path.join(__dirname, "src/build/web")));
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "src/build/web/index.html"));
+const PORT = process.env.PORT || 3000;
+
+// ===================== 헬스체크 =====================
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    uptime: process.uptime(),
+    time: new Date().toISOString(),
+  });
 });
 
-// ✅ 서버 상태 체크
+// ===================== 핑 (서버 응답 테스트) =====================
 app.get("/api/ping", (req, res) => {
   res.json({
     success: true,
@@ -36,40 +41,81 @@ app.get("/api/ping", (req, res) => {
   });
 });
 
-// ✅ 테스트 엔드포인트 (각 엔진별 키 유효성 확인)
-app.post("/api/test/:engine", (req, res) => {
-  const { engine } = req.params;
-  const { key } = req.body;
-  if (!key || key.length < 4) {
-    return res.status(400).json({ success: false, message: "❌ Invalid key" });
+// ===================== 화이트리스트 확인 =====================
+app.get("/api/check-whitelist", (req, res) => {
+  try {
+    const whitelist = [
+      "hoseuk0917@gmail.com",
+      "crossverified.ai@app.dev",
+      "test@crossai.local",
+    ];
+    const user = req.query.user || "anonymous";
+    const allowed = whitelist.includes(user);
+
+    res.json({
+      success: true,
+      user,
+      allowed,
+      updated: true,
+      daysPassed: null,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error("❌ check-whitelist error:", err);
+    res.status(500).json({ success: false, error: err.message });
   }
-  res.json({
-    success: true,
-    message: `✅ ${engine} 연결 성공`,
-    keySample: key.slice(0, 4) + "****",
-  });
 });
 
-// ✅ Gemini 호출 (Stub: 실제 API 연동 전)
-app.post("/api/gemini/:model", async (req, res) => {
-  const { query, user } = req.body;
-  if (!query)
-    return res.status(400).json({ success: false, message: "❌ query 없음" });
+// ===================== Gmail API 테스트 =====================
+app.post("/api/test-email", async (req, res) => {
+  try {
+    const { to, subject, text } = req.body;
+    if (!to || !subject || !text)
+      return res.status(400).json({ error: "Missing email parameters" });
 
-  res.json({
-    success: true,
-    model: req.params.model,
-    user,
-    response: `Gemini-${req.params.model} 시뮬레이션 응답: "${query}"`,
-    time: new Date().toISOString(),
-  });
+    const auth = new google.auth.OAuth2(
+      process.env.GMAIL_CLIENT_ID,
+      process.env.GMAIL_CLIENT_SECRET,
+      process.env.GMAIL_REDIRECT_URI
+    );
+    auth.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
+
+    const gmail = google.gmail({ version: "v1", auth });
+
+    const encodedMessage = Buffer.from(
+      `To: ${to}\r\nSubject: ${subject}\r\n\r\n${text}`
+    ).toString("base64");
+
+    await gmail.users.messages.send({
+      userId: "me",
+      requestBody: { raw: encodedMessage },
+    });
+
+    res.json({ success: true, message: "✅ Test email sent successfully" });
+  } catch (err) {
+    console.error("❌ Gmail send error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-// ✅ 404 방지
-app.use((req, res) =>
-  res.status(404).json({ success: false, message: "Endpoint not found" })
-);
+// ===================== 기본 라우트 =====================
+app.get("/", (req, res) => {
+  res.send("🚀 Cross-Verified AI Proxy Server (v10.8.1) is running.");
+});
 
+// ===================== Render 웹서빙 =====================
+import path from "path";
+import { fileURLToPath } from "url";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+app.use(express.static(path.join(__dirname, "src/build/web")));
+
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "src/build/web/index.html"));
+});
+
+// ===================== 서버 시작 =====================
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v10.8.1 running on port ${PORT}`);
+  console.log(`✅ Cross-Verified AI Proxy running on port ${PORT}`);
 });
