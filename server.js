@@ -1,6 +1,6 @@
 /**
  * Cross-Verified AI Proxy Server
- * Version: 10.8.2
+ * Version: 10.8.3
  * Author: Ho Seok Goh
  * Description: Render-compatible Express backend with full API endpoints
  */
@@ -11,6 +11,7 @@ import bodyParser from "body-parser";
 import morgan from "morgan";
 import dotenv from "dotenv";
 import { google } from "googleapis";
+import fetch from "node-fetch";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -44,7 +45,7 @@ app.get("/api/ping", (req, res) => {
   res.json({
     success: true,
     message: "✅ Proxy active and responding",
-    version: "10.8.2",
+    version: "10.8.3",
     time: new Date().toISOString(),
   });
 });
@@ -93,7 +94,6 @@ app.post("/api/test-email", async (req, res) => {
     auth.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
 
     const gmail = google.gmail({ version: "v1", auth });
-
     const encodedMessage = Buffer.from(
       `To: ${to}\r\nSubject: ${subject}\r\n\r\n${text}`
     ).toString("base64");
@@ -111,7 +111,7 @@ app.post("/api/test-email", async (req, res) => {
 });
 
 // ==================================================
-// ✅ 5. Gemini (QV/FV) 테스트 엔드포인트
+// ✅ 5. Gemini (QV/FV/DV/CV) 시뮬레이션
 // ==================================================
 app.post("/api/callGemini", (req, res) => {
   try {
@@ -127,16 +127,16 @@ app.post("/api/callGemini", (req, res) => {
     let simulated = "";
     switch (mode) {
       case "QV":
-        simulated = `질문검증(QV) 결과: "${query}"는 신뢰성 있는 질문입니다.`;
+        simulated = `질문검증(QV): "${query}"는 신뢰성 있는 질문입니다.`;
         break;
       case "FV":
-        simulated = `사실검증(FV) 결과: "${query}"에 대한 근거가 확인되었습니다.`;
+        simulated = `사실검증(FV): "${query}"에 대한 근거가 확인되었습니다.`;
         break;
       case "DV":
-        simulated = `개발검증(DV) 결과: "${query}" 코드 검증 완료.`;
+        simulated = `개발검증(DV): "${query}" 관련 코드 검증 완료.`;
         break;
       case "CV":
-        simulated = `코드검증(CV) 결과: "${query}" 분석 성공.`;
+        simulated = `코드검증(CV): "${query}" 분석 성공.`;
         break;
       default:
         simulated = `Unknown mode "${mode}".`;
@@ -157,14 +157,62 @@ app.post("/api/callGemini", (req, res) => {
 });
 
 // ==================================================
-// ✅ 6. 기본 루트
+// ✅ 6. GitHub Token 테스트
 // ==================================================
-app.get("/", (req, res) => {
-  res.send("🚀 Cross-Verified AI Proxy v10.8.2 is running.");
+app.post("/api/github-test", async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: "Missing GitHub token" });
+
+    const response = await fetch("https://api.github.com/user", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await response.json();
+
+    if (response.ok)
+      res.json({ success: true, message: "✅ GitHub token valid", data });
+    else res.status(401).json({ success: false, error: data.message });
+  } catch (err) {
+    console.error("❌ GitHub Test Error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ==================================================
-// ✅ 7. Flutter Web 정적 서빙
+// ✅ 7. Naver API 테스트
+// ==================================================
+app.post("/api/naver-test", async (req, res) => {
+  try {
+    const { clientId, clientSecret } = req.body;
+    if (!clientId || !clientSecret)
+      return res.status(400).json({ error: "Missing Naver credentials" });
+
+    const response = await fetch("https://openapi.naver.com/v1/search/news.json?query=UAM", {
+      headers: {
+        "X-Naver-Client-Id": clientId,
+        "X-Naver-Client-Secret": clientSecret,
+      },
+    });
+    const data = await response.json();
+
+    if (response.ok)
+      res.json({ success: true, message: "✅ Naver API test successful", sample: data.items?.slice(0, 2) });
+    else res.status(401).json({ success: false, error: data });
+  } catch (err) {
+    console.error("❌ Naver Test Error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==================================================
+// ✅ 8. 기본 루트
+// ==================================================
+app.get("/", (req, res) => {
+  res.send("🚀 Cross-Verified AI Proxy v10.8.3 is running.");
+});
+
+// ==================================================
+// ✅ 9. Flutter Web 정적 서빙
 // ==================================================
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -175,8 +223,8 @@ app.get("*", (req, res) => {
 });
 
 // ==================================================
-// ✅ 8. 서버 시작
+// ✅ 10. 서버 시작
 // ==================================================
 app.listen(PORT, () => {
-  console.log(`✅ Cross-Verified AI Proxy v10.8.2 running on port ${PORT}`);
+  console.log(`✅ Cross-Verified AI Proxy v10.8.3 running on port ${PORT}`);
 });
