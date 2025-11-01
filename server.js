@@ -110,7 +110,7 @@ app.get("/api/test-email", async (req, res) => {
 // ------------------------------
 // 📋 화이트리스트 자동 점검 엔드포인트
 // ------------------------------
-const whitelistPath = path.join(__dirname, "data", "whitelist.json");
+const whitelistPath = path.join(__dirname, "data", "naver_whitelist.json");
 
 app.get("/api/check-whitelist", async (req, res) => {
   try {
