@@ -1,4 +1,4 @@
-// server.js — Cross-Verified AI Proxy Server v11.1.0 (Gemini Key Test Enhanced)
+// server.js — Cross-Verified AI Proxy Server v11.2.0 (Gemini Key Validation Enhanced)
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -39,17 +39,21 @@ app.use(express.static(webDir));
 // Health Check
 // ─────────────────────────────
 app.get("/health", (req, res) =>
-  res.status(200).json({ status: "ok", version: "v11.1.0", timestamp: Date.now() })
+  res.status(200).json({ status: "ok", version: "v11.2.0", timestamp: Date.now() })
 );
 
 // ─────────────────────────────
-// ✅ Step 1: Gemini Key 테스트 엔드포인트 개선
+// ✅ Step 2: Gemini Key 유효성 검증 강화
 // ─────────────────────────────
 app.post("/api/test-gemini", (req, res) => {
   const { key, model } = req.body;
-  if (!key) return res.status(400).json({ message: "❌ Gemini Key 누락" });
 
-  // 모델 맵
+  // 🔸 필수 입력 확인
+  if (!key) {
+    return res.status(400).json({ success: false, message: "❌ Gemini Key 누락" });
+  }
+
+  // 🔸 모델명 매핑
   const modelMap = {
     flash: "Gemini 1.5 Flash",
     pro: "Gemini 1.5 Pro",
@@ -57,9 +61,29 @@ app.post("/api/test-gemini", (req, res) => {
   };
   const selectedModel = modelMap[model] || "Gemini (기본)";
 
-  // 모의 응답 시간
+  // 🔸 기본 형식 검증
+  if (key.length < 20 || !/^AI|GEM/.test(key)) {
+    return res.status(400).json({
+      success: false,
+      model: selectedModel,
+      message: `❌ ${selectedModel} Key 형식 오류 (길이 또는 접두사 불일치)`,
+    });
+  }
+
+  // 🔸 모의 실패 시뮬레이션 (30% 확률로 인증 실패)
+  const isValid = Math.random() > 0.3;
   const elapsed = `${Math.floor(Math.random() * 300 + 100)} ms`;
 
+  if (!isValid) {
+    return res.status(401).json({
+      success: false,
+      model: selectedModel,
+      elapsed,
+      message: `❌ ${selectedModel} Key 인증 실패 (서버 응답 불일치)`,
+    });
+  }
+
+  // 🔸 성공 응답
   return res.status(200).json({
     success: true,
     model: selectedModel,
@@ -145,5 +169,5 @@ app.post("/api/verify", async (req, res) => {
 // ─────────────────────────────
 app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
 app.listen(PORT, () =>
-  console.log(`🚀 Cross-Verified AI Proxy v11.1.0 running on port ${PORT}`)
+  console.log(`🚀 Cross-Verified AI Proxy v11.2.0 running on port ${PORT}`)
 );
