@@ -1,4 +1,4 @@
-// server.js — Cross-Verified AI Proxy Server v11.3.1 (Authorization Propagation Fix)
+// server.js — Cross-Verified AI Proxy Server v11.4.0 (Gemini Multi-Step Verification Simulation)
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -39,7 +39,7 @@ app.use(express.static(webDir));
 // Health Check
 // ─────────────────────────────
 app.get("/health", (req, res) =>
-  res.status(200).json({ status: "ok", version: "v11.3.1", timestamp: Date.now() })
+  res.status(200).json({ status: "ok", version: "v11.4.0", timestamp: Date.now() })
 );
 
 // ─────────────────────────────
@@ -121,13 +121,13 @@ app.post("/api/naver-test", (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ 검증용 메인 엔드포인트 (Mock)
+// ✅ Step 3: 다단계 Gemini 검증 시뮬레이션
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   try {
     const { mode, query, user } = req.body;
 
-    // 1️⃣ Authorization 헤더에서도 Gemini Key 확인
+    // 1️⃣ Gemini Key 확인
     let gemini_key = req.body.gemini_key;
     const authHeader = req.headers["authorization"];
     if (!gemini_key && authHeader && authHeader.startsWith("Bearer ")) {
@@ -157,7 +157,32 @@ app.post("/api/verify", async (req, res) => {
       });
     }
 
-    // 3️⃣ 모의 검증 데이터
+    // 3️⃣ 다단계 검증 프로세스 시뮬레이션
+    const steps = [
+      {
+        step: 1,
+        model: "Gemini 1.5 Flash",
+        action: "기본 응답 생성",
+        elapsed: `${Math.floor(Math.random() * 200 + 100)} ms`,
+        result: "초기 응답 생성 완료 (주요 개념 파악)"
+      },
+      {
+        step: 2,
+        model: "Gemini 1.5 Flash-Lite",
+        action: "핵심 키워드 추출",
+        elapsed: `${Math.floor(Math.random() * 250 + 100)} ms`,
+        result: "핵심 키워드 3개 추출 완료"
+      },
+      {
+        step: 3,
+        model: "Gemini 1.5 Pro",
+        action: "결과 비교 및 신뢰도 계산",
+        elapsed: `${Math.floor(Math.random() * 300 + 150)} ms`,
+        result: "최종 결과 검증 완료 (신뢰도 산출)"
+      }
+    ];
+
+    // 4️⃣ 모드별 응답 정의
     const responses = {
       QV: {
         message: "질문 검증(QV): 문장의 논리적 일관성과 의미 명확성을 평가했습니다.",
@@ -177,6 +202,7 @@ app.post("/api/verify", async (req, res) => {
       },
     };
 
+    // 5️⃣ 모의 결과 생성
     const now = new Date();
     const elapsed = `${Math.floor(Math.random() * 900 + 300)} ms`;
     const confidence = (Math.random() * 0.3 + 0.7).toFixed(2);
@@ -185,12 +211,14 @@ app.post("/api/verify", async (req, res) => {
       summary: "입력 문장이 정상적으로 분석되었습니다.",
     };
 
+    // 6️⃣ 결과 반환
     return res.status(200).json({
       success: true,
       mode,
       model: "Gemini 1.5 Pro (Mock)",
       user: user || "local",
       gemini_key: gemini_key ? "attached" : "missing",
+      steps,
       confidence,
       elapsed,
       message: resp.message,
@@ -213,5 +241,5 @@ app.post("/api/verify", async (req, res) => {
 app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
 
 app.listen(PORT, () =>
-  console.log(`🚀 Cross-Verified AI Proxy v11.3.1 running on port ${PORT}`)
+  console.log(`🚀 Cross-Verified AI Proxy v11.4.0 running on port ${PORT}`)
 );
