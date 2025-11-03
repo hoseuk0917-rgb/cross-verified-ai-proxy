@@ -1,4 +1,5 @@
-// server.js — Cross-Verified AI Proxy Server v11.7.0 (Gemini API Key QueryParam Auth + Debug Log)
+// server.js — Cross-Verified AI Proxy Server v11.7.1
+// (Gemini 2.5 API + Internal Keep-Alive Ping)
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -40,7 +41,7 @@ app.use(express.static(webDir));
 // Health Check
 // ─────────────────────────────
 app.get("/health", (req, res) =>
-  res.status(200).json({ status: "ok", version: "v11.7.0", timestamp: Date.now() })
+  res.status(200).json({ status: "ok", version: "v11.7.1", timestamp: Date.now() })
 );
 
 // ─────────────────────────────
@@ -171,9 +172,21 @@ app.post("/api/verify", async (req, res) => {
 });
 
 // ─────────────────────────────
+// 🔄 내부 Keep-Alive Ping (Render Free Plan Sleep 방지)
+// ─────────────────────────────
+setInterval(async () => {
+  try {
+    const res = await fetch("https://cross-verified-ai-proxy.onrender.com/health");
+    console.log("💓 Internal keep-alive ping:", res.status);
+  } catch (e) {
+    console.warn("⚠️ Ping 실패:", e.message);
+  }
+}, 1000 * 60 * 4); // ⏱️ 4분마다 Ping (Render Free 인스턴스 Sleep 방지)
+
+// ─────────────────────────────
 // SPA 라우팅 및 서버 시작
 // ─────────────────────────────
 app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
 app.listen(PORT, () =>
-  console.log(`🚀 Cross-Verified AI Proxy v11.7.0 running on port ${PORT}`)
+  console.log(`🚀 Cross-Verified AI Proxy v11.7.1 running on port ${PORT}`)
 );
