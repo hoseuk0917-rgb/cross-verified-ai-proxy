@@ -1,4 +1,4 @@
-// server.js — Cross-Verified AI Proxy Server v11.6.0 (Gemini 2.5 API Integration + Debug Log)
+// server.js — Cross-Verified AI Proxy Server v11.7.0 (Gemini API Key QueryParam Auth + Debug Log)
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -40,11 +40,11 @@ app.use(express.static(webDir));
 // Health Check
 // ─────────────────────────────
 app.get("/health", (req, res) =>
-  res.status(200).json({ status: "ok", version: "v11.6.0", timestamp: Date.now() })
+  res.status(200).json({ status: "ok", version: "v11.7.0", timestamp: Date.now() })
 );
 
 // ─────────────────────────────
-// ✅ Gemini Key 유효성 검증
+// ✅ Gemini Key 유효성 검증 (Mock)
 // ─────────────────────────────
 app.post("/api/test-gemini", (req, res) => {
   try {
@@ -53,12 +53,8 @@ app.post("/api/test-gemini", (req, res) => {
     if (authHeader?.startsWith("Bearer ")) key = authHeader.substring(7).trim();
     else if (req.body?.key) key = req.body.key.trim();
 
-    if (!key) {
-      return res.status(400).json({
-        success: false,
-        message: "❌ Gemini Key 누락 (Authorization 또는 body 없음)",
-      });
-    }
+    if (!key)
+      return res.status(400).json({ success: false, message: "❌ Gemini Key 누락" });
 
     if (!(key.startsWith("AIz") || key.startsWith("AIza"))) {
       return res.status(401).json({
@@ -88,12 +84,13 @@ app.post("/api/test-gemini", (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ Step 3: 실제 Gemini 2.5 Pro API 연동 + 디버그 로그
+// ✅ Step 3: 실제 Gemini 2.5 API 연동 (쿼리 파라미터 인증 방식)
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   try {
-    const { mode, query, user, model } = req.body;
+    const { mode, query, user, model = "pro" } = req.body;
     let gemini_key = req.body.gemini_key;
+
     const authHeader = req.headers["authorization"];
     if (!gemini_key && authHeader?.startsWith("Bearer ")) {
       gemini_key = authHeader.substring(7).trim();
@@ -110,7 +107,7 @@ app.post("/api/verify", async (req, res) => {
     if (!gemini_key)
       return res.status(400).json({ message: "❌ Gemini Key 누락" });
 
-    // 🔹 모델명 매핑
+    // 🔹 모델명 매핑 (정식 2.5 버전)
     const modelMap = {
       flash: "gemini-2.5-flash",
       pro: "gemini-2.5-pro",
@@ -118,15 +115,14 @@ app.post("/api/verify", async (req, res) => {
     };
     const selectedModel = modelMap[model] || "gemini-2.5-pro";
 
-    // 🔹 실제 API 호출
-    const start = Date.now();
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent`;
+    // 🔹 ✅ 쿼리 파라미터 방식으로 key 전달
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${gemini_key}`;
 
+    const start = Date.now();
     const geminiResponse = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${gemini_key}`,
       },
       body: JSON.stringify({
         contents: [{ parts: [{ text: query }] }],
@@ -145,7 +141,9 @@ app.post("/api/verify", async (req, res) => {
       });
     }
 
-    const output = data.candidates?.[0]?.content?.parts?.[0]?.text || "응답 없음";
+    const output =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "응답 없음 (candidates 비어 있음)";
 
     console.log(`✅ Gemini 응답 (${selectedModel}) [${elapsed}]`);
     console.log("──────────────────────────────");
@@ -177,5 +175,5 @@ app.post("/api/verify", async (req, res) => {
 // ─────────────────────────────
 app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
 app.listen(PORT, () =>
-  console.log(`🚀 Cross-Verified AI Proxy v11.6.0 running on port ${PORT}`)
+  console.log(`🚀 Cross-Verified AI Proxy v11.7.0 running on port ${PORT}`)
 );
