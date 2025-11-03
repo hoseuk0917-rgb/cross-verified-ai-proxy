@@ -9,12 +9,13 @@
     "test": "echo \"No tests configured\""
   },
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
     "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
     "dotenv": "^16.3.1",
+    "express": "^4.19.2",
     "googleapis": "^140.0.0",
-    "morgan": "^1.10.0"
+    "morgan": "^1.10.0",
+    "node-fetch": "^3.3.2"
   },
   "engines": {
     "node": ">=18"
