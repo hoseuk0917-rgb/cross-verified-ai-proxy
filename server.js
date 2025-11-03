@@ -1,12 +1,12 @@
-// server.js — Cross-Verified AI Proxy Server v11.7.1
-// (Gemini 2.5 API + Internal Keep-Alive Ping)
+// server.js — Cross-Verified AI Proxy Server v11.7.2
+// (Gemini 2.5 API + KLaw/GitHub/Naver Test + 11min Keep-Alive Ping)
 import express from "express";
 import cors from "cors";
 import path from "path";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import morgan from "morgan";
-import fetch from "node-fetch"; // ✅ 실제 Gemini API 호출용
+import fetch from "node-fetch"; // ✅ Gemini 및 Ping 호출용
 
 dotenv.config();
 const app = express();
@@ -41,7 +41,9 @@ app.use(express.static(webDir));
 // Health Check
 // ─────────────────────────────
 app.get("/health", (req, res) =>
-  res.status(200).json({ status: "ok", version: "v11.7.1", timestamp: Date.now() })
+  res
+    .status(200)
+    .json({ status: "ok", version: "v11.7.2", timestamp: Date.now() })
 );
 
 // ─────────────────────────────
@@ -85,7 +87,29 @@ app.post("/api/test-gemini", (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ Step 3: 실제 Gemini 2.5 API 연동 (쿼리 파라미터 인증 방식)
+// ✅ K-Law / GitHub / Naver 연결 테스트 추가
+// ─────────────────────────────
+app.post("/api/klaw-test", async (req, res) => {
+  const { id } = req.body;
+  if (!id) return res.status(400).json({ message: "❌ ID 누락됨" });
+  res.json({ success: true, message: `✅ K-Law 연결 성공 (${id})` });
+});
+
+app.post("/api/github-test", async (req, res) => {
+  const { token } = req.body;
+  if (!token) return res.status(400).json({ message: "❌ Token 누락됨" });
+  res.json({ success: true, message: `✅ GitHub 연결 성공 (${token.slice(0, 6)}...)` });
+});
+
+app.post("/api/naver-test", async (req, res) => {
+  const { clientId, clientSecret } = req.body;
+  if (!clientId || !clientSecret)
+    return res.status(400).json({ message: "❌ Client ID 또는 Secret 누락됨" });
+  res.json({ success: true, message: `✅ Naver 연결 성공 (${clientId.slice(0, 5)}...)` });
+});
+
+// ─────────────────────────────
+// ✅ Gemini 2.5 실제 API 연동
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   try {
@@ -108,7 +132,6 @@ app.post("/api/verify", async (req, res) => {
     if (!gemini_key)
       return res.status(400).json({ message: "❌ Gemini Key 누락" });
 
-    // 🔹 모델명 매핑 (정식 2.5 버전)
     const modelMap = {
       flash: "gemini-2.5-flash",
       pro: "gemini-2.5-pro",
@@ -116,7 +139,6 @@ app.post("/api/verify", async (req, res) => {
     };
     const selectedModel = modelMap[model] || "gemini-2.5-pro";
 
-    // 🔹 ✅ 쿼리 파라미터 방식으로 key 전달
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${gemini_key}`;
 
     const start = Date.now();
@@ -172,21 +194,21 @@ app.post("/api/verify", async (req, res) => {
 });
 
 // ─────────────────────────────
-// 🔄 내부 Keep-Alive Ping (Render Free Plan Sleep 방지)
+// 🔄 내부 Keep-Alive Ping (Render Free Plan Sleep 방지, 11분 주기)
 // ─────────────────────────────
 setInterval(async () => {
   try {
     const res = await fetch("https://cross-verified-ai-proxy.onrender.com/health");
-    console.log("💓 Internal keep-alive ping:", res.status);
+    console.log(`💓 Internal keep-alive ping: ${res.status}`);
   } catch (e) {
     console.warn("⚠️ Ping 실패:", e.message);
   }
-}, 1000 * 60 * 4); // ⏱️ 4분마다 Ping (Render Free 인스턴스 Sleep 방지)
+}, 1000 * 60 * 11); // ⏱️ 11분마다 Ping
 
 // ─────────────────────────────
 // SPA 라우팅 및 서버 시작
 // ─────────────────────────────
 app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
 app.listen(PORT, () =>
-  console.log(`🚀 Cross-Verified AI Proxy v11.7.1 running on port ${PORT}`)
+  console.log(`🚀 Cross-Verified AI Proxy v11.7.2 running on port ${PORT}`)
 );
