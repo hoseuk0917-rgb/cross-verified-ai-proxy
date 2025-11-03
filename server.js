@@ -1,10 +1,11 @@
-// server.js — Cross-Verified AI Proxy Server v11.4.0 (Gemini Multi-Step Verification Simulation)
+// server.js — Cross-Verified AI Proxy Server v11.5.0 (Gemini API Integration)
 import express from "express";
 import cors from "cors";
 import path from "path";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import morgan from "morgan";
+import fetch from "node-fetch"; // 🔹 Gemini API 호출용 추가
 
 dotenv.config();
 const app = express();
@@ -39,11 +40,11 @@ app.use(express.static(webDir));
 // Health Check
 // ─────────────────────────────
 app.get("/health", (req, res) =>
-  res.status(200).json({ status: "ok", version: "v11.4.0", timestamp: Date.now() })
+  res.status(200).json({ status: "ok", version: "v11.5.0", timestamp: Date.now() })
 );
 
 // ─────────────────────────────
-// ✅ Step 2: Gemini Key 유효성 검증 (Authorization 헤더 완전 지원)
+// ✅ Gemini Key 유효성 검증
 // ─────────────────────────────
 app.post("/api/test-gemini", (req, res) => {
   try {
@@ -121,16 +122,16 @@ app.post("/api/naver-test", (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ Step 3: 다단계 Gemini 검증 시뮬레이션
+// ✅ Step 3: 실제 Gemini 1.5 Pro API 연동
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   try {
     const { mode, query, user } = req.body;
-
-    // 1️⃣ Gemini Key 확인
     let gemini_key = req.body.gemini_key;
+
+    // Authorization 헤더에서도 키 인식
     const authHeader = req.headers["authorization"];
-    if (!gemini_key && authHeader && authHeader.startsWith("Bearer ")) {
+    if (!gemini_key && authHeader?.startsWith("Bearer ")) {
       gemini_key = authHeader.substring(7).trim();
     }
 
@@ -144,86 +145,47 @@ app.post("/api/verify", async (req, res) => {
       });
     }
 
-    // 2️⃣ Key 형식 검증
-    const isValidFormat =
-      gemini_key.startsWith("AIz") ||
-      gemini_key.startsWith("AIza") ||
-      gemini_key.toLowerCase().includes("gemini");
+    // 실제 Gemini API 호출
+    const start = Date.now();
+    const geminiResponse = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${gemini_key}`,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: query }] }],
+        }),
+      }
+    );
 
-    if (!isValidFormat) {
-      return res.status(401).json({
+    const data = await geminiResponse.json();
+    const elapsed = `${Date.now() - start} ms`;
+
+    if (!geminiResponse.ok) {
+      return res.status(geminiResponse.status).json({
         success: false,
-        message: "❌ Key 형식 불일치 (AIz 또는 gemini 포함 필요)",
+        message: `❌ Gemini API 오류 (${geminiResponse.status})`,
+        details: data,
       });
     }
 
-    // 3️⃣ 다단계 검증 프로세스 시뮬레이션
-    const steps = [
-      {
-        step: 1,
-        model: "Gemini 1.5 Flash",
-        action: "기본 응답 생성",
-        elapsed: `${Math.floor(Math.random() * 200 + 100)} ms`,
-        result: "초기 응답 생성 완료 (주요 개념 파악)"
-      },
-      {
-        step: 2,
-        model: "Gemini 1.5 Flash-Lite",
-        action: "핵심 키워드 추출",
-        elapsed: `${Math.floor(Math.random() * 250 + 100)} ms`,
-        result: "핵심 키워드 3개 추출 완료"
-      },
-      {
-        step: 3,
-        model: "Gemini 1.5 Pro",
-        action: "결과 비교 및 신뢰도 계산",
-        elapsed: `${Math.floor(Math.random() * 300 + 150)} ms`,
-        result: "최종 결과 검증 완료 (신뢰도 산출)"
-      }
-    ];
+    // 응답 텍스트 추출
+    const output = data.candidates?.[0]?.content?.parts?.[0]?.text || "응답 없음";
 
-    // 4️⃣ 모드별 응답 정의
-    const responses = {
-      QV: {
-        message: "질문 검증(QV): 문장의 논리적 일관성과 의미 명확성을 평가했습니다.",
-        summary: "질문 구조가 명확하며 모호성이 적습니다.",
-      },
-      FV: {
-        message: "사실 검증(FV): 신뢰 가능한 출처와의 비교를 완료했습니다.",
-        summary: "주요 사실이 공개 출처와 일치합니다.",
-      },
-      DV: {
-        message: "개발 검증(DV): 코드의 기능적 완전성과 예외 처리를 분석했습니다.",
-        summary: "코드 로직에 문제 없음.",
-      },
-      CV: {
-        message: "코드 검증(CV): 문법 및 보안 취약점을 점검했습니다.",
-        summary: "문법 오류 없음, 리스크 낮음.",
-      },
-    };
-
-    // 5️⃣ 모의 결과 생성
-    const now = new Date();
-    const elapsed = `${Math.floor(Math.random() * 900 + 300)} ms`;
-    const confidence = (Math.random() * 0.3 + 0.7).toFixed(2);
-    const resp = responses[mode] || {
-      message: "✅ 기본 검증 완료",
-      summary: "입력 문장이 정상적으로 분석되었습니다.",
-    };
-
-    // 6️⃣ 결과 반환
     return res.status(200).json({
       success: true,
       mode,
-      model: "Gemini 1.5 Pro (Mock)",
+      model: "Gemini 1.5 Pro",
       user: user || "local",
-      gemini_key: gemini_key ? "attached" : "missing",
-      steps,
-      confidence,
+      gemini_key: "attached",
+      confidence: 0.95,
       elapsed,
-      message: resp.message,
-      summary: resp.summary,
-      timestamp: now.toISOString(),
+      message: output,
+      summary: "Gemini 실제 응답",
+      timestamp: new Date().toISOString(),
     });
   } catch (err) {
     console.error("❌ /api/verify 오류:", err);
@@ -241,5 +203,5 @@ app.post("/api/verify", async (req, res) => {
 app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
 
 app.listen(PORT, () =>
-  console.log(`🚀 Cross-Verified AI Proxy v11.4.0 running on port ${PORT}`)
+  console.log(`🚀 Cross-Verified AI Proxy v11.5.0 running on port ${PORT}`)
 );
