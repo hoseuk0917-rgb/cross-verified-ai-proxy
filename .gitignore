@@ -10,6 +10,7 @@
 .env.development
 .env.test
 .env.backup
+.env.template
 # (↑ 혹시 백업본도 실수로 올라가는 경우 방지)
 
 # --- Dependencies ---
