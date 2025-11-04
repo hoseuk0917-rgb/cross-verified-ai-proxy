@@ -1,5 +1,7 @@
-import express from "express";
+// ✅ Cross-Verified AI Proxy Server v12.0.1
+// (Gemini Key Test + TruthScore + Source Visualization)
 import cors from "cors";
+import express from "express";
 import path from "path";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
@@ -9,11 +11,11 @@ import fetch from "node-fetch";
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = process.env.APP_VERSION || "v12.0.0";
+const APP_VERSION = process.env.APP_VERSION || "v12.0.1";
 const DEV_MODE = process.env.DEV_MODE === "true";
 
 // ─────────────────────────────
-// TruthScore 계산 모듈 (Annex B + 출처 통합)
+// TruthScore 계산 모듈
 // ─────────────────────────────
 function evaluateResults(engineScores = []) {
   if (!engineScores || engineScores.length === 0) {
@@ -25,7 +27,6 @@ function evaluateResults(engineScores = []) {
     };
   }
 
-  // 분야별 가중치 (v9.8.4 Annex 기준)
   const weights = {
     CrossRef: 1.2,
     OpenAlex: 1.0,
@@ -72,7 +73,6 @@ function evaluateResults(engineScores = []) {
 
   const adjusted = Math.min(Math.max(T * factor, 0), 1);
 
-  // 🔹 상위 5개 출처만 반환 (명세서 시각화 규칙)
   const sortedSources = sources
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, 5);
@@ -86,15 +86,11 @@ function evaluateResults(engineScores = []) {
 }
 
 // ─────────────────────────────
-// Middleware (CORS 완전 허용 + 로깅)
+// Middleware (CORS 완전 허용 + 조용한 로그)
 // ─────────────────────────────
 app.use(
   cors({
-    origin: (origin, callback) => {
-      if (DEV_MODE)
-        console.log("🌐 CORS 요청 Origin:", origin || "Direct / No-Origin");
-      callback(null, true);
-    },
+    origin: true,
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
@@ -112,6 +108,7 @@ if (process.env.LOG_REQUESTS === "true") {
     })
   );
 }
+
 // ─────────────────────────────
 // Static (Flutter Web build)
 // ─────────────────────────────
@@ -130,6 +127,52 @@ app.get("/health", (req, res) =>
     ping_interval_sec: process.env.PING_INTERVAL_SEC || 660,
   })
 );
+
+// ─────────────────────────────
+// ✅ Gemini Key 테스트 엔드포인트
+// ─────────────────────────────
+app.post("/api/test-gemini", async (req, res) => {
+  const key = req.body.key || req.body?.creds?.key;
+  if (!key) {
+    return res.status(400).json({ success: false, message: "❌ API 키가 없습니다." });
+  }
+
+  try {
+    const r = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: "ping" }] }],
+        }),
+      }
+    );
+
+    if (r.ok) {
+      const data = await r.json();
+      return res.json({
+        success: true,
+        message: "✅ Gemini Key 유효",
+        model: "gemini-pro",
+        elapsed: `${Date.now()}ms`,
+        response: data,
+      });
+    } else {
+      return res.status(r.status).json({
+        success: false,
+        message: `❌ API 응답 오류 (${r.status})`,
+      });
+    }
+  } catch (err) {
+    return res
+      .status(500)
+      .json({ success: false, message: `서버 오류: ${err.message}` });
+  }
+});
 
 // ─────────────────────────────
 // Gemini 체인 기반 검증 + 출처 평가
@@ -157,9 +200,6 @@ app.post("/api/verify", async (req, res) => {
     const MODEL_EVAL = process.env.VERIFY_EVALUATOR_MODEL || "gemini-2.5-pro";
     const modelMap = { flash: MODEL_MAIN, pro: MODEL_EVAL, lite: MODEL_PRE };
 
-    // ─────────────────────────────
-    // 단일 요청 모드 (체인 OFF)
-    // ─────────────────────────────
     if (!chain) {
       const selectedModel = modelMap[model] || MODEL_MAIN;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${gemini_key}`;
@@ -178,9 +218,7 @@ app.post("/api/verify", async (req, res) => {
         data?.candidates?.[0]?.content?.parts?.[0]?.text ||
         data?.output_text ||
         data?.text ||
-        "⚠️ Gemini 응답 없음 (candidates 비어 있음)";
-
-      if (DEV_MODE) console.log(`🧠 [단일] ${selectedModel} 응답 (${elapsed})`);
+        "⚠️ Gemini 응답 없음";
 
       return res.status(200).json({
         success: true,
@@ -192,11 +230,6 @@ app.post("/api/verify", async (req, res) => {
         timestamp: new Date().toISOString(),
       });
     }
-
-    // ─────────────────────────────
-    // 체인형 검증 (요약 → 응답 → 평가)
-    // ─────────────────────────────
-    if (DEV_MODE) console.log(`🔁 [CHAIN] ${mode} 모드 시작`);
 
     const preUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_PRE}:generateContent?key=${gemini_key}`;
     const preResp = await fetch(preUrl, {
@@ -229,7 +262,7 @@ app.post("/api/verify", async (req, res) => {
           {
             parts: [
               {
-                text: `다음은 생성된 응답입니다.\n\n[응답]\n${mainText}\n\n[요약]\n${preText}\n\n출처 일치도와 신뢰도를 0~100점으로 평가하고, 간략한 평가를 작성하세요.`,
+                text: `다음은 생성된 응답입니다.\n\n[응답]\n${mainText}\n\n[요약]\n${preText}\n\n출처 일치도와 신뢰도를 평가하세요.`,
               },
             ],
           },
@@ -239,9 +272,6 @@ app.post("/api/verify", async (req, res) => {
     const evalData = await evalResp.json();
     const evalText = evalData?.candidates?.[0]?.content?.parts?.[0]?.text || "(평가 결과 없음)";
 
-    // ─────────────────────────────
-    // 🔍 출처 배열(Mock) + TruthScore 계산
-    // ─────────────────────────────
     const engineScores = [
       { name: "CrossRef", score: Math.random() * 0.15 + 0.82, title: "CrossRef DOI 검증" },
       { name: "OpenAlex", score: Math.random() * 0.15 + 0.76, title: "OpenAlex 학술일치" },
@@ -251,7 +281,6 @@ app.post("/api/verify", async (req, res) => {
     ];
 
     const truthEval = evaluateResults(engineScores);
-    if (DEV_MODE) console.log("🧩 TruthScore:", truthEval);
 
     return res.status(200).json({
       success: true,
@@ -262,7 +291,7 @@ app.post("/api/verify", async (req, res) => {
       truthScore: truthEval.truthScore,
       adjustedScore: truthEval.adjustedScore,
       status: truthEval.status,
-      sources: truthEval.sources, // ✅ 출처 배열 전달
+      sources: truthEval.sources,
       message: "✅ 체인형 검증 완료 + TruthScore + 출처 정보 포함",
       timestamp: new Date().toISOString(),
     });
@@ -275,8 +304,9 @@ app.post("/api/verify", async (req, res) => {
     });
   }
 });
+
 // ─────────────────────────────
-// Keep-Alive Ping (Render Free Plan)
+// Keep-Alive Ping
 // ─────────────────────────────
 const pingInterval = Number(process.env.PING_INTERVAL_SEC || 660) * 1000;
 
@@ -292,7 +322,7 @@ setInterval(async () => {
 }, pingInterval);
 
 // ─────────────────────────────
-// SPA 라우팅 (Flutter Web 지원)
+// SPA 라우팅
 // ─────────────────────────────
 app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
 
@@ -301,7 +331,5 @@ app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
 // ─────────────────────────────
 app.listen(PORT, () => {
   console.log(`🚀 Proxy ${APP_VERSION} running on port ${PORT} | DEV_MODE: ${DEV_MODE}`);
-  if (DEV_MODE) {
-    console.log("🔍 출처 시각화 및 TruthScore 확장 모듈 활성화됨");
-  }
+  if (DEV_MODE) console.log("🔍 TruthScore 확장 모듈 활성화됨");
 });
