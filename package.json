@@ -1,7 +1,7 @@
 {
   "name": "cross-verified-ai-proxy",
-  "version": "10.8.1",
-  "description": "Cross-Verified AI Proxy Server (Render-compatible, Gmail API direct send, full logging enabled)",
+  "version": "11.7.3",
+  "description": "Cross-Verified AI Proxy Server (Gemini 2.5 + KLaw/GitHub/Naver Test + Render 11min KeepAlive)",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -9,11 +9,10 @@
     "test": "echo \"No tests configured\""
   },
   "dependencies": {
-    "body-parser": "^1.20.2",
+    "body-parser": "^1.20.3",
     "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "express": "^4.19.2",
-    "googleapis": "^140.0.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
     "morgan": "^1.10.0",
     "node-fetch": "^3.3.2"
   },
@@ -22,11 +21,11 @@
   },
   "keywords": [
     "Cross-Verified-AI",
+    "Gemini-2.5",
     "Render",
-    "Gmail-API",
     "Express",
     "Proxy",
-    "Morgan-Logging"
+    "Keep-Alive"
   ],
   "author": "Ho Seok Goh",
   "license": "MIT"
