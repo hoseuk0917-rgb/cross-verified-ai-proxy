@@ -1,7 +1,7 @@
 {
   "name": "cross-verified-ai-proxy",
-  "version": "11.8.1",
-  "description": "Cross-Verified AI Proxy Server (Gemini 2.5 + 3-Step Verify + Render DevMode Safe)",
+  "version": "12.0.2",
+  "description": "Cross-Verified AI Proxy Server (Gemini 2.5 + 3-Step Verify + TruthScore + Render DevMode Safe)",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -22,11 +22,14 @@
   "keywords": [
     "Cross-Verified-AI",
     "Gemini-2.5",
+    "Gemini-API",
     "Render",
     "Express",
     "Proxy",
     "Keep-Alive",
-    "DEV_MODE"
+    "DEV_MODE",
+    "TruthScore",
+    "Source-Visualization"
   ],
   "author": "Ho Seok Goh",
   "license": "MIT"
