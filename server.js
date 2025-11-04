@@ -1,5 +1,5 @@
-// ✅ Cross-Verified AI Proxy Server v12.1.0
-// (Parallel Gemini + Real External API Integration + FV/DV/LV Full Alignment)
+// ✅ Cross-Verified AI Proxy Server v12.1.2
+// (Flash-Lite Default + Sequential Verify + Fixed K-Law & Elapsed Time)
 
 import cors from "cors";
 import express from "express";
@@ -9,13 +9,28 @@ import dotenv from "dotenv";
 import morgan from "morgan";
 import fetch from "node-fetch";
 import https from "https";
+import fs from "fs";
 
-dotenv.config();
+// ✅ 환경설정 자동 감지 (.env.local → .env)
+if (fs.existsSync(".env.local")) {
+  dotenv.config({ path: ".env.local" });
+  console.log("🌍 Using .env.local (로컬 개발환경)");
+} else {
+  dotenv.config();
+  console.log("☁️ Using .env (Render/배포환경)");
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = process.env.APP_VERSION || "v12.1.0";
+const APP_VERSION = process.env.APP_VERSION || "v12.1.2";
 const DEV_MODE = process.env.DEV_MODE === "true";
-const agent = new https.Agent({ keepAlive: true });
+
+// ✅ Keep-Alive Agent 개선 (응답속도 향상)
+const agent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 10,
+  keepAliveMsecs: 60000,
+});
 
 // ─────────────────────────────
 // TruthScore 계산 모듈
@@ -102,7 +117,7 @@ app.get("/health", (req, res) =>
   })
 );
 // ─────────────────────────────
-// ✅ Gemini Key 테스트 (정확한 elapsed 측정 + 병렬 지원)
+// ✅ Gemini Key 테스트 (Flash-Lite 기본 + 정확한 elapsed 반환)
 // ─────────────────────────────
 app.post("/api/test-gemini", async (req, res) => {
   let keys = [];
@@ -115,7 +130,7 @@ app.post("/api/test-gemini", async (req, res) => {
   if (!keys.length)
     return res.status(400).json({ success: false, message: "❌ Gemini Key가 없습니다." });
 
-  const modelName = process.env.GEMINI_TEST_MODEL || "gemini-2.5-pro";
+  const modelName = process.env.GEMINI_TEST_MODEL || "gemini-2.5-flash-lite";
   const urlBase = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=`;
 
   try {
@@ -127,14 +142,14 @@ app.post("/api/test-gemini", async (req, res) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contents: [{ parts: [{ text: "ping" }] }] }),
       });
-      const elapsed = `${Date.now() - start} ms`;
+      const elapsed = Date.now() - start;
       return { key, ok: r.ok, elapsed, status: r.status };
     });
 
     const results = await Promise.all(tasks);
     const valid = results.filter(r => r.ok);
 
-    if (valid.length === 0)
+    if (!valid.length)
       return res.status(400).json({ success: false, message: "❌ 유효한 Gemini Key 없음", results });
 
     res.json({
@@ -149,16 +164,21 @@ app.post("/api/test-gemini", async (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ 외부 API 실연동 테스트 (앱 설정값 기반)
+// ✅ 외부 API 실연동 테스트 (빈 query 대응 + 오류 방지)
 // ─────────────────────────────
 app.post("/api/klaw-test", async (req, res) => {
   try {
     const { userId, query } = req.body;
-    if (!userId) return res.status(400).json({ success: false, message: "K-Law 사용자 ID 누락" });
+    if (!userId)
+      return res.status(400).json({ success: false, message: "❌ K-Law 사용자 ID 누락" });
 
-    const url = `https://www.law.go.kr/DRF/lawSearch.do?target=law&type=json&OC=${userId}&query=${encodeURIComponent(query || "인공지능")}`;
+    const searchQuery = query && query.trim() ? query : "UAM";
+    const url = `https://www.law.go.kr/DRF/lawSearch.do?target=law&type=json&OC=${userId}&query=${encodeURIComponent(searchQuery)}`;
+
     const r = await fetch(url);
-    if (!r.ok) return res.status(r.status).json({ success: false, message: `API 오류 (${r.status})` });
+    if (!r.ok)
+      return res.status(r.status).json({ success: false, message: `API 오류 (${r.status})` });
+
     const data = await r.json();
     res.json({ success: true, message: `✅ ${data.LAWDATA_LIST?.length || 0}건 검색 완료`, data });
   } catch (e) {
@@ -169,12 +189,15 @@ app.post("/api/klaw-test", async (req, res) => {
 app.post("/api/github-test", async (req, res) => {
   try {
     const { token } = req.body;
-    if (!token) return res.status(400).json({ success: false, message: "GitHub Token 누락" });
+    if (!token)
+      return res.status(400).json({ success: false, message: "❌ GitHub Token 누락" });
 
     const r = await fetch("https://api.github.com/user", {
       headers: { Authorization: `Bearer ${token}`, "User-Agent": "CrossVerifiedAI" },
     });
-    if (!r.ok) return res.status(r.status).json({ success: false, message: "❌ GitHub 인증 실패" });
+    if (!r.ok)
+      return res.status(r.status).json({ success: false, message: "❌ GitHub 인증 실패" });
+
     const user = await r.json();
     res.json({ success: true, message: `✅ 연결 성공 (${user.login})`, user });
   } catch (e) {
@@ -186,20 +209,29 @@ app.post("/api/naver-test", async (req, res) => {
   try {
     const { clientId, clientSecret } = req.body;
     if (!clientId || !clientSecret)
-      return res.status(400).json({ success: false, message: "Naver API 자격정보 누락" });
+      return res.status(400).json({ success: false, message: "❌ Naver API 자격정보 누락" });
 
     const r = await fetch("https://openapi.naver.com/v1/search/news.json?query=인공지능", {
-      headers: { "X-Naver-Client-Id": clientId, "X-Naver-Client-Secret": clientSecret },
+      headers: {
+        "X-Naver-Client-Id": clientId,
+        "X-Naver-Client-Secret": clientSecret,
+      },
     });
-    if (!r.ok) return res.status(r.status).json({ success: false, message: "❌ Naver 인증 실패" });
+    if (!r.ok)
+      return res.status(r.status).json({ success: false, message: "❌ Naver 인증 실패" });
+
     const data = await r.json();
-    res.json({ success: true, message: `✅ Naver 연결 성공 (${data.items?.length || 0}건)`, sample: data.items?.[0] });
+    res.json({
+      success: true,
+      message: `✅ Naver 연결 성공 (${data.items?.length || 0}건)`,
+      sample: data.items?.[0],
+    });
   } catch (e) {
     res.status(500).json({ success: false, message: `Naver 요청 실패: ${e.message}` });
   }
 });
 // ─────────────────────────────
-// Gemini 체인 기반 검증 + TruthScore
+// ✅ Gemini 체인 기반 검증 (순차 실행 pre → main → eval)
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   try {
@@ -216,14 +248,19 @@ app.post("/api/verify", async (req, res) => {
     if (query.length > 4000)
       return res.status(413).json({ message: "⚠️ 요청 문장이 너무 깁니다 (4000자 제한)" });
 
-    // 모델명 보정 (flash-lite alias 포함)
+    // 모델명 매핑
     const MODEL_PRE = "gemini-2.5-flash-lite";
     const MODEL_MAIN = "gemini-2.5-flash";
     const MODEL_EVAL = "gemini-2.5-pro";
-    const modelMap = { flash: MODEL_MAIN, "flash-lite": MODEL_PRE, pro: MODEL_EVAL, lite: MODEL_PRE };
+    const modelMap = {
+      flash: MODEL_MAIN,
+      "flash-lite": MODEL_PRE,
+      pro: MODEL_EVAL,
+      lite: MODEL_PRE,
+    };
     const selectedModel = modelMap[model] || MODEL_MAIN;
 
-    // ------------------- 단일 모드 -------------------
+    // ──────────────── [단일 모드] ────────────────
     if (!chain) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${gemini_key}`;
       const start = Date.now();
@@ -252,55 +289,57 @@ app.post("/api/verify", async (req, res) => {
       });
     }
 
-    // ------------------- 체인 모드 -------------------
-    const preUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_PRE}:generateContent?key=${gemini_key}`;
-    const mainUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_MAIN}:generateContent?key=${gemini_key}`;
-    const evalUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_EVAL}:generateContent?key=${gemini_key}`;
-
+    // ──────────────── [체인형 모드] ────────────────
     const start = Date.now();
-    const [preResp, mainResp, evalResp] = await Promise.all([
-      fetch(preUrl, {
-        method: "POST",
-        agent,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `다음 문장을 핵심어로 요약:\n${query}` }] }],
-        }),
-      }),
-      fetch(mainUrl, {
-        method: "POST",
-        agent,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `질문: ${query}\n요약: (이전 단계 요약 결과 사용)` }] }],
-        }),
-      }),
-      fetch(evalUrl, {
-        method: "POST",
-        agent,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text: `다음은 생성된 응답입니다.\n\n[응답]\n(응답 내용)\n\n[요약]\n(요약 내용)\n\n출처 일치도와 신뢰도를 평가하세요.`,
-                },
-              ],
-            },
-          ],
-        }),
-      }),
-    ]);
-    const elapsed = `${Date.now() - start} ms`;
 
+    // ① Pre 단계 (요약)
+    const preUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_PRE}:generateContent?key=${gemini_key}`;
+    const preResp = await fetch(preUrl, {
+      method: "POST",
+      agent,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `다음 문장을 핵심어로 요약:\n${query}` }] }],
+      }),
+    });
     const preData = await preResp.json();
-    const mainData = await mainResp.json();
-    const evalData = await evalResp.json();
-
     const preText = preData?.candidates?.[0]?.content?.parts?.[0]?.text || "(요약 결과 없음)";
+
+    // ② Main 단계 (응답 생성)
+    const mainUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_MAIN}:generateContent?key=${gemini_key}`;
+    const mainResp = await fetch(mainUrl, {
+      method: "POST",
+      agent,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `질문: ${query}\n요약: ${preText}` }] }],
+      }),
+    });
+    const mainData = await mainResp.json();
     const mainText = mainData?.candidates?.[0]?.content?.parts?.[0]?.text || "(응답 결과 없음)";
+
+    // ③ Eval 단계 (출처 일치도 평가)
+    const evalUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_EVAL}:generateContent?key=${gemini_key}`;
+    const evalResp = await fetch(evalUrl, {
+      method: "POST",
+      agent,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                text: `다음은 생성된 응답입니다.\n\n[응답]\n${mainText}\n\n[요약]\n${preText}\n\n출처 일치도와 신뢰도를 평가하세요.`,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    const evalData = await evalResp.json();
     const evalText = evalData?.candidates?.[0]?.content?.parts?.[0]?.text || "(평가 결과 없음)";
+
+    const elapsed = `${Date.now() - start} ms`;
 
     const engineScores = [
       { name: "CrossRef", score: Math.random() * 0.15 + 0.82, title: "CrossRef DOI 검증" },
@@ -327,7 +366,9 @@ app.post("/api/verify", async (req, res) => {
     });
   } catch (err) {
     console.error("[VerifyChainError]", err);
-    res.status(500).json({ success: false, message: "❌ 서버 처리 중 예외 발생", error: err.message });
+    res
+      .status(500)
+      .json({ success: false, message: "❌ 서버 처리 중 예외 발생", error: err.message });
   }
 });
 
@@ -346,13 +387,10 @@ setInterval(async () => {
 }, pingInterval);
 
 // ─────────────────────────────
-// SPA Routing
+// SPA Routing & Server Start
 // ─────────────────────────────
 app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
 
-// ─────────────────────────────
-// 서버 실행
-// ─────────────────────────────
 app.listen(PORT, () => {
   console.log(`🚀 Proxy ${APP_VERSION} running on port ${PORT} | DEV_MODE: ${DEV_MODE}`);
   if (DEV_MODE) console.log("🔍 TruthScore 확장 모듈 활성화됨");
