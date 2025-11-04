@@ -13,28 +13,31 @@ const PORT = process.env.PORT || 3000;
 const APP_VERSION = process.env.APP_VERSION || "v11.8.0";
 
 // ─────────────────────────────
-// Middleware
+// Middleware (CORS 완전 허용 + 로깅)
 // ─────────────────────────────
-let allowedOrigins = ["*"];
-if (process.env.ALLOWED_ORIGINS && process.env.ALLOWED_ORIGINS.trim() !== "") {
-  allowedOrigins = process.env.ALLOWED_ORIGINS.split(",").map((s) => s.trim());
-}
-
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error(`❌ CORS 차단: ${origin}`));
-      }
+      console.log("🌐 CORS 요청 Origin:", origin || "Direct / No-Origin");
+      callback(null, true); // 모든 Origin 허용
     },
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
+    credentials: true, // 인증/토큰 포함 요청도 허용
   })
 );
 
+app.use(bodyParser.json({ limit: `${process.env.MAX_REQUEST_BODY_MB || 5}mb` }));
+app.use(bodyParser.urlencoded({ extended: true }));
+
+if (process.env.LOG_REQUESTS === "true") {
+  app.use(
+    morgan(process.env.LOG_LEVEL || "dev", {
+      skip: (req) =>
+        process.env.LOG_HEALTH_PINGS === "false" && req.url === "/health",
+    })
+  );
+}
 // ─────────────────────────────
 // Static (Flutter Web build)
 // ─────────────────────────────
