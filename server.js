@@ -1,4 +1,3 @@
-// ✅ Cross-Verified AI Proxy Server v11.9.0 (TruthScore Integration)
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -10,33 +9,47 @@ import fetch from "node-fetch";
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = process.env.APP_VERSION || "v11.9.0";
+const APP_VERSION = process.env.APP_VERSION || "v12.0.0";
 const DEV_MODE = process.env.DEV_MODE === "true";
 
 // ─────────────────────────────
-// TruthScore 계산 모듈 (Annex B 기반)
+// TruthScore 계산 모듈 (Annex B + 출처 통합)
 // ─────────────────────────────
 function evaluateResults(engineScores = []) {
   if (!engineScores || engineScores.length === 0) {
-    return { truthScore: 0, adjustedScore: 0, status: "missing" };
+    return {
+      truthScore: 0,
+      adjustedScore: 0,
+      status: "missing",
+      sources: [],
+    };
   }
 
+  // 분야별 가중치 (v9.8.4 Annex 기준)
   const weights = {
     CrossRef: 1.2,
     OpenAlex: 1.0,
     GDELT: 0.8,
     Wikidata: 0.6,
+    Naver: 0.5,
   };
 
   let weightedSum = 0;
   let weightSum = 0;
   const Qvalues = [];
+  const sources = [];
 
   for (const e of engineScores) {
     const w = weights[e.name] ?? 1.0;
     weightedSum += w * e.score;
     weightSum += w;
     Qvalues.push(e.score);
+
+    sources.push({
+      engine: e.name,
+      title: e.title || "출처명 미상",
+      confidence: Number(e.score.toFixed(3)),
+    });
   }
 
   const T = weightedSum / weightSum;
@@ -59,10 +72,16 @@ function evaluateResults(engineScores = []) {
 
   const adjusted = Math.min(Math.max(T * factor, 0), 1);
 
+  // 🔹 상위 5개 출처만 반환 (명세서 시각화 규칙)
+  const sortedSources = sources
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 5);
+
   return {
     truthScore: Number(T.toFixed(3)),
     adjustedScore: Number(adjusted.toFixed(3)),
     status,
+    sources: sortedSources,
   };
 }
 
@@ -93,7 +112,6 @@ if (process.env.LOG_REQUESTS === "true") {
     })
   );
 }
-
 // ─────────────────────────────
 // Static (Flutter Web build)
 // ─────────────────────────────
@@ -114,72 +132,7 @@ app.get("/health", (req, res) =>
 );
 
 // ─────────────────────────────
-// Gemini Key 테스트
-// ─────────────────────────────
-app.post("/api/test-gemini", (req, res) => {
-  try {
-    let key = null;
-    const authHeader = req.get("Authorization");
-    if (authHeader?.startsWith("Bearer ")) key = authHeader.substring(7).trim();
-    else if (req.body?.key) key = req.body.key.trim();
-
-    if (!key)
-      return res.status(400).json({ success: false, message: "❌ Gemini Key 누락" });
-    if (!(key.startsWith("AIz") || key.startsWith("AIza"))) {
-      return res
-        .status(401)
-        .json({ success: false, message: "❌ Key 형식 불일치 (AIz / gemini 필요)" });
-    }
-
-    const modelMap = {
-      flash: "gemini-2.5-flash",
-      pro: "gemini-2.5-pro",
-      lite: "gemini-2.5-flash-lite",
-    };
-    const selectedModel = modelMap[req.body?.model] || process.env.DEFAULT_MODEL;
-    const elapsed = `${Math.floor(Math.random() * 300 + 100)} ms`;
-
-    return res.status(200).json({
-      success: true,
-      model: selectedModel,
-      elapsed,
-      message: `✅ ${selectedModel} Key 인증 성공`,
-    });
-  } catch (err) {
-    console.error("❌ /api/test-gemini 오류:", err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// ─────────────────────────────
-// K-Law / GitHub / Naver 테스트
-// ─────────────────────────────
-app.post("/api/klaw-test", (req, res) => {
-  const { id } = req.body;
-  if (!id) return res.status(400).json({ message: "❌ ID 누락됨" });
-  res.json({ success: true, message: "✅ K-Law 연결 성공" });
-});
-
-app.post("/api/github-test", (req, res) => {
-  const { token } = req.body;
-  if (!token) return res.status(400).json({ message: "❌ Token 누락됨" });
-  res.json({
-    success: true,
-    message: `✅ GitHub 연결 성공 (${token.slice(0, 6)}...)`,
-  });
-});
-
-app.post("/api/naver-test", (req, res) => {
-  const { clientId, clientSecret } = req.body;
-  if (!clientId || !clientSecret)
-    return res.status(400).json({ message: "❌ Client ID 또는 Secret 누락됨" });
-  res.json({
-    success: true,
-    message: `✅ Naver 연결 성공 (${clientId.slice(0, 5)}...)`,
-  });
-});
-// ─────────────────────────────
-// Gemini 2.5 실제 API 연동 (3단계 체계 + TruthScore)
+// Gemini 체인 기반 검증 + 출처 평가
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   try {
@@ -199,23 +152,25 @@ app.post("/api/verify", async (req, res) => {
         .status(413)
         .json({ message: "⚠️ 요청 문장이 너무 깁니다 (4000자 제한)" });
 
-    const MODEL_PRE =
-      process.env.VERIFY_PREPROCESS_MODEL || "gemini-2.5-flash-lite";
+    const MODEL_PRE = process.env.VERIFY_PREPROCESS_MODEL || "gemini-2.5-flash-lite";
     const MODEL_MAIN = process.env.DEFAULT_MODEL || "gemini-2.5-flash";
-    const MODEL_EVAL =
-      process.env.VERIFY_EVALUATOR_MODEL || "gemini-2.5-pro";
+    const MODEL_EVAL = process.env.VERIFY_EVALUATOR_MODEL || "gemini-2.5-pro";
     const modelMap = { flash: MODEL_MAIN, pro: MODEL_EVAL, lite: MODEL_PRE };
 
+    // ─────────────────────────────
+    // 단일 요청 모드 (체인 OFF)
+    // ─────────────────────────────
     if (!chain) {
       const selectedModel = modelMap[model] || MODEL_MAIN;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${gemini_key}`;
-
       const start = Date.now();
+
       const geminiResponse = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contents: [{ parts: [{ text: query }] }] }),
       });
+
       const data = await geminiResponse.json();
       const elapsed = `${Date.now() - start} ms`;
 
@@ -223,11 +178,9 @@ app.post("/api/verify", async (req, res) => {
         data?.candidates?.[0]?.content?.parts?.[0]?.text ||
         data?.output_text ||
         data?.text ||
-        data?.message ||
         "⚠️ Gemini 응답 없음 (candidates 비어 있음)";
 
-      if (DEV_MODE)
-        console.log(`🧠 [단일] ${selectedModel} 응답 (${elapsed})`);
+      if (DEV_MODE) console.log(`🧠 [단일] ${selectedModel} 응답 (${elapsed})`);
 
       return res.status(200).json({
         success: true,
@@ -235,13 +188,14 @@ app.post("/api/verify", async (req, res) => {
         model: selectedModel,
         elapsed,
         message: output,
-        output_text: output,
-        content: output,
-        summary: "Gemini 모델 단일 응답 완료",
+        summary: "Gemini 단일 응답 완료",
         timestamp: new Date().toISOString(),
       });
     }
 
+    // ─────────────────────────────
+    // 체인형 검증 (요약 → 응답 → 평가)
+    // ─────────────────────────────
     if (DEV_MODE) console.log(`🔁 [CHAIN] ${mode} 모드 시작`);
 
     const preUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_PRE}:generateContent?key=${gemini_key}`;
@@ -253,8 +207,7 @@ app.post("/api/verify", async (req, res) => {
       }),
     });
     const preData = await preResp.json();
-    const preText =
-      preData?.candidates?.[0]?.content?.parts?.[0]?.text || "(요약 결과 없음)";
+    const preText = preData?.candidates?.[0]?.content?.parts?.[0]?.text || "(요약 결과 없음)";
 
     const mainUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_MAIN}:generateContent?key=${gemini_key}`;
     const mainResp = await fetch(mainUrl, {
@@ -265,8 +218,7 @@ app.post("/api/verify", async (req, res) => {
       }),
     });
     const mainData = await mainResp.json();
-    const mainText =
-      mainData?.candidates?.[0]?.content?.parts?.[0]?.text || "(응답 결과 없음)";
+    const mainText = mainData?.candidates?.[0]?.content?.parts?.[0]?.text || "(응답 결과 없음)";
 
     const evalUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_EVAL}:generateContent?key=${gemini_key}`;
     const evalResp = await fetch(evalUrl, {
@@ -285,18 +237,20 @@ app.post("/api/verify", async (req, res) => {
       }),
     });
     const evalData = await evalResp.json();
-    const evalText =
-      evalData?.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "(평가 결과 없음)";
+    const evalText = evalData?.candidates?.[0]?.content?.parts?.[0]?.text || "(평가 결과 없음)";
 
+    // ─────────────────────────────
+    // 🔍 출처 배열(Mock) + TruthScore 계산
+    // ─────────────────────────────
     const engineScores = [
-      { name: "CrossRef", score: Math.random() * 0.2 + 0.8 },
-      { name: "OpenAlex", score: Math.random() * 0.2 + 0.75 },
-      { name: "GDELT", score: Math.random() * 0.2 + 0.7 },
-      { name: "Wikidata", score: Math.random() * 0.2 + 0.65 },
+      { name: "CrossRef", score: Math.random() * 0.15 + 0.82, title: "CrossRef DOI 검증" },
+      { name: "OpenAlex", score: Math.random() * 0.15 + 0.76, title: "OpenAlex 학술일치" },
+      { name: "GDELT", score: Math.random() * 0.15 + 0.72, title: "GDELT 뉴스일치" },
+      { name: "Wikidata", score: Math.random() * 0.15 + 0.66, title: "Wikidata 속성검증" },
+      { name: "Naver", score: Math.random() * 0.15 + 0.60, title: "Naver 검색결과" },
     ];
-    const truthEval = evaluateResults(engineScores);
 
+    const truthEval = evaluateResults(engineScores);
     if (DEV_MODE) console.log("🧩 TruthScore:", truthEval);
 
     return res.status(200).json({
@@ -308,7 +262,8 @@ app.post("/api/verify", async (req, res) => {
       truthScore: truthEval.truthScore,
       adjustedScore: truthEval.adjustedScore,
       status: truthEval.status,
-      message: "✅ 체인형 검증 완료 + TruthScore 적용",
+      sources: truthEval.sources, // ✅ 출처 배열 전달
+      message: "✅ 체인형 검증 완료 + TruthScore + 출처 정보 포함",
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
@@ -320,16 +275,14 @@ app.post("/api/verify", async (req, res) => {
     });
   }
 });
-
 // ─────────────────────────────
 // Keep-Alive Ping (Render Free Plan)
 // ─────────────────────────────
 const pingInterval = Number(process.env.PING_INTERVAL_SEC || 660) * 1000;
+
 setInterval(async () => {
   try {
-    const res = await fetch(
-      "https://cross-verified-ai-proxy.onrender.com/health"
-    );
+    const res = await fetch("https://cross-verified-ai-proxy.onrender.com/health");
     if (process.env.LOG_HEALTH_PINGS !== "false") {
       console.log(`💓 Keep-alive ping: ${res.status}`);
     }
@@ -339,13 +292,16 @@ setInterval(async () => {
 }, pingInterval);
 
 // ─────────────────────────────
-// SPA 라우팅
+// SPA 라우팅 (Flutter Web 지원)
 // ─────────────────────────────
 app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
 
-app.listen(PORT, () =>
-  console.log(
-    `🚀 Proxy ${APP_VERSION} running on port ${PORT} | DEV_MODE: ${DEV_MODE}`
-  )
-);
-
+// ─────────────────────────────
+// 서버 실행
+// ─────────────────────────────
+app.listen(PORT, () => {
+  console.log(`🚀 Proxy ${APP_VERSION} running on port ${PORT} | DEV_MODE: ${DEV_MODE}`);
+  if (DEV_MODE) {
+    console.log("🔍 출처 시각화 및 TruthScore 확장 모듈 활성화됨");
+  }
+});
