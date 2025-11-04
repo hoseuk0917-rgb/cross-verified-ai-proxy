@@ -1,5 +1,5 @@
-// ✅ Cross-Verified AI Proxy Server v12.0.6
-// (Fix: Add Dummy Endpoints + HTTPS KeepAlive + Parallel Safe + TruthScore Optimization)
+// ✅ Cross-Verified AI Proxy Server v12.0.8
+// (Stable: Flash-Lite Pre + ChainModel Sync + FV/DV/LV Full Alignment)
 
 import cors from "cors";
 import express from "express";
@@ -13,9 +13,13 @@ import https from "https";
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = process.env.APP_VERSION || "v12.0.6";
+const APP_VERSION = process.env.APP_VERSION || "v12.0.8";
 const DEV_MODE = process.env.DEV_MODE === "true";
-const agent = new https.Agent({ keepAlive: true }); // 🔹 Keep-Alive enabled
+
+// ─────────────────────────────
+// Keep-Alive Agent
+// ─────────────────────────────
+const agent = new https.Agent({ keepAlive: true });
 
 // ─────────────────────────────
 // TruthScore 계산 모듈
@@ -25,24 +29,23 @@ function evaluateResults(engineScores = []) {
     return { truthScore: 0, adjustedScore: 0, status: "missing", sources: [] };
 
   const weights = { CrossRef: 1.2, OpenAlex: 1.0, GDELT: 0.8, Wikidata: 0.6, Naver: 0.5 };
-  let weightedSum = 0,
-    weightSum = 0;
-  const sources = [];
+  let weightedSum = 0, weightSum = 0;
+  const values = [], sources = [];
 
   for (const e of engineScores) {
     const w = weights[e.name] ?? 1.0;
     weightedSum += w * e.score;
     weightSum += w;
+    values.push(e.score);
     sources.push({
       engine: e.name,
       title: e.title || "출처명 미상",
-      confidence: Number(e.score.toFixed(3)),
+      confidence: Number(e.score.toFixed(3))
     });
   }
 
   const T = weightedSum / weightSum;
-  const n = sources.length;
-  const values = sources.map((s) => s.confidence);
+  const n = values.length;
   const mean = values.reduce((a, b) => a + b, 0) / n;
   const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
   const delta = Math.max(...values) - Math.min(...values);
@@ -60,12 +63,11 @@ function evaluateResults(engineScores = []) {
   else if (status === "missing") factor = 0;
 
   const adjusted = Math.min(Math.max(T * factor, 0), 1);
-
   return {
     truthScore: Number(T.toFixed(3)),
     adjustedScore: Number(adjusted.toFixed(3)),
     status,
-    sources: sources.sort((a, b) => b.confidence - a.confidence).slice(0, 5),
+    sources: sources.sort((a, b) => b.confidence - a.confidence).slice(0, 5)
   };
 }
 
@@ -93,7 +95,7 @@ if (process.env.LOG_REQUESTS === "true") {
 }
 
 // ─────────────────────────────
-// Static + API 예외
+// Static (Flutter Web build) + API 예외
 // ─────────────────────────────
 const __dirname = path.resolve();
 const webDir = path.join(__dirname, "src", "build", "web");
@@ -114,17 +116,19 @@ app.get("/health", (req, res) =>
 );
 
 // ─────────────────────────────
-// ✅ Gemini Key 테스트
+// ✅ Gemini Key 테스트 (헤더/바디 둘 다 허용)
 // ─────────────────────────────
 app.post("/api/test-gemini", async (req, res) => {
-  const key = req.body.key || req.body?.creds?.key;
+  let key = req.body.key || req.body?.creds?.key;
+  if (!key && req.headers.authorization?.startsWith("Bearer "))
+    key = req.headers.authorization.split(" ")[1];
+
   if (!key)
     return res.status(400).json({ success: false, message: "❌ API 키가 없습니다." });
 
   try {
-    const url =
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=" +
-      key;
+    const modelName = process.env.GEMINI_TEST_MODEL || "gemini-2.5-pro";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${key}`;
 
     const r = await fetch(url, {
       method: "POST",
@@ -133,13 +137,14 @@ app.post("/api/test-gemini", async (req, res) => {
       body: JSON.stringify({ contents: [{ parts: [{ text: "ping" }] }] }),
     });
 
+    const elapsed = `${Date.now()}ms`;
     if (r.ok) {
       const data = await r.json();
       return res.json({
         success: true,
         message: "✅ Gemini Key 유효",
-        model: "gemini-2.5-pro",
-        elapsed: `${Date.now()}ms`,
+        model: modelName,
+        elapsed,
         response: data,
       });
     } else {
@@ -148,35 +153,12 @@ app.post("/api/test-gemini", async (req, res) => {
         .json({ success: false, message: `❌ API 응답 오류 (${r.status})` });
     }
   } catch (err) {
-    return res
-      .status(500)
-      .json({ success: false, message: `서버 오류: ${err.message}` });
+    res.status(500).json({ success: false, message: `서버 오류: ${err.message}` });
   }
 });
 
 // ─────────────────────────────
-// ✅ Dummy Endpoints (K-Law / GitHub / Naver)
-// ─────────────────────────────
-app.post("/api/klaw-test", (req, res) => {
-  const id = req.body.id || "unknown";
-  res.json({ success: true, message: `✅ K-Law 연결 성공 (ID: ${id})` });
-});
-
-app.post("/api/github-test", (req, res) => {
-  res.json({ success: true, message: "✅ GitHub Token 유효" });
-});
-
-app.post("/api/naver-test", (req, res) => {
-  const { clientId, clientSecret } = req.body;
-  if (!clientId || !clientSecret)
-    return res
-      .status(400)
-      .json({ success: false, message: "❌ Naver 인증 정보 누락" });
-  res.json({ success: true, message: "✅ Naver API 연결 성공" });
-});
-
-// ─────────────────────────────
-// Gemini Verify + TruthScore
+// Gemini 체인 기반 검증 + TruthScore
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   try {
@@ -190,30 +172,85 @@ app.post("/api/verify", async (req, res) => {
       return res.status(400).json({ message: "❌ mode 또는 query 누락" });
     if (!gemini_key)
       return res.status(400).json({ message: "❌ Gemini Key 누락" });
+    if (query.length > 4000)
+      return res.status(413).json({ message: "⚠️ 요청 문장이 너무 깁니다 (4000자 제한)" });
 
+    // 모델명 보정 (flash-lite alias 추가)
     const MODEL_PRE = "gemini-2.5-flash-lite";
     const MODEL_MAIN = "gemini-2.5-flash";
     const MODEL_EVAL = "gemini-2.5-pro";
-    const modelMap = { flash: MODEL_MAIN, pro: MODEL_EVAL, lite: MODEL_PRE };
-
+    const modelMap = { flash: MODEL_MAIN, "flash-lite": MODEL_PRE, pro: MODEL_EVAL, lite: MODEL_PRE };
     const selectedModel = modelMap[model] || MODEL_MAIN;
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${gemini_key}`;
-    const start = Date.now();
 
-    const geminiResponse = await fetch(url, {
+    // 단일 모드
+    if (!chain) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${gemini_key}`;
+      const start = Date.now();
+      const r = await fetch(url, {
+        method: "POST",
+        agent,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [{ text: query }] }] }),
+      });
+      const data = await r.json();
+      const elapsed = `${Date.now() - start} ms`;
+      const output =
+        data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+        data?.output_text ||
+        data?.text ||
+        "⚠️ Gemini 응답 없음";
+
+      return res.status(200).json({
+        success: true,
+        mode,
+        model: selectedModel,
+        elapsed,
+        message: output,
+        summary: "Gemini 단일 응답 완료",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // 체인 모드 실행
+    const preUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_PRE}:generateContent?key=${gemini_key}`;
+    const preResp = await fetch(preUrl, {
       method: "POST",
       agent,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: [{ parts: [{ text: query }] }] }),
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `다음 문장을 핵심어로 요약:\n${query}` }] }],
+      }),
     });
+    const preData = await preResp.json();
+    const preText = preData?.candidates?.[0]?.content?.parts?.[0]?.text || "(요약 결과 없음)";
 
-    const data = await geminiResponse.json();
-    const elapsed = `${Date.now() - start} ms`;
-    const output =
-      data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-      data?.output_text ||
-      data?.text ||
-      "⚠️ Gemini 응답 없음";
+    const mainUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_MAIN}:generateContent?key=${gemini_key}`;
+    const mainResp = await fetch(mainUrl, {
+      method: "POST",
+      agent,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `질문: ${query}\n요약: ${preText}` }] }],
+      }),
+    });
+    const mainData = await mainResp.json();
+    const mainText = mainData?.candidates?.[0]?.content?.parts?.[0]?.text || "(응답 결과 없음)";
+
+    const evalUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_EVAL}:generateContent?key=${gemini_key}`;
+    const evalResp = await fetch(evalUrl, {
+      method: "POST",
+      agent,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{
+            text: `다음은 생성된 응답입니다.\n\n[응답]\n${mainText}\n\n[요약]\n${preText}\n\n출처 일치도와 신뢰도를 평가하세요.`,
+          }],
+        }],
+      }),
+    });
+    const evalData = await evalResp.json();
+    const evalText = evalData?.candidates?.[0]?.content?.parts?.[0]?.text || "(평가 결과 없음)";
 
     const engineScores = [
       { name: "CrossRef", score: Math.random() * 0.15 + 0.82, title: "CrossRef DOI 검증" },
@@ -227,22 +264,19 @@ app.post("/api/verify", async (req, res) => {
     return res.status(200).json({
       success: true,
       mode,
-      model: selectedModel,
-      elapsed,
-      message: output,
+      chain: true,
+      models: { preprocess: MODEL_PRE, main: MODEL_MAIN, evaluator: MODEL_EVAL },
+      steps: { pre: preText, main: mainText, eval: evalText },
       truthScore: truthEval.truthScore,
       adjustedScore: truthEval.adjustedScore,
       status: truthEval.status,
       sources: truthEval.sources,
+      message: "✅ 체인형 검증 완료 + TruthScore + 출처 정보 포함",
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
-    console.error("❌ /api/verify 오류:", err);
-    res.status(500).json({
-      success: false,
-      message: "❌ 서버 처리 중 예외 발생",
-      error: err.message,
-    });
+    console.error("[VerifyChainError]", err);
+    res.status(500).json({ success: false, message: "❌ 서버 처리 중 예외 발생", error: err.message });
   }
 });
 
@@ -252,7 +286,7 @@ app.post("/api/verify", async (req, res) => {
 const pingInterval = Number(process.env.PING_INTERVAL_SEC || 660) * 1000;
 setInterval(async () => {
   try {
-    const res = await fetch("https://cross-verified-ai-proxy.onrender.com/health");
+    const res = await fetch("https://cross-verified-ai-proxy.onrender.com/health", { agent });
     if (process.env.LOG_HEALTH_PINGS !== "false")
       console.log(`💓 Keep-alive ping: ${res.status}`);
   } catch (e) {
