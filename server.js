@@ -1,33 +1,40 @@
-// ✅ Cross-Verified AI Proxy Server v11.7.3 (Stable)
+// ✅ Cross-Verified AI Proxy Server v11.7.4 (Stable+Env Linked)
 import express from "express";
 import cors from "cors";
 import path from "path";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import morgan from "morgan";
-import fetch from "node-fetch";
 
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
+const APP_VERSION = process.env.APP_VERSION || "v11.7.4";
 
 // ─────────────────────────────
 // Middleware
 // ─────────────────────────────
+const allowedOrigins =
+  process.env.ALLOWED_ORIGINS?.split(",").map((s) => s.trim()) || ["*"];
 app.use(
   cors({
-    origin: "*",
+    origin: allowedOrigins,
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-app.use(bodyParser.json({ limit: "5mb" }));
+
+app.use(bodyParser.json({ limit: `${process.env.MAX_REQUEST_BODY_MB || 5}mb` }));
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(
-  morgan("dev", {
-    skip: (req) => req.url === "/health",
-  })
-);
+
+if (process.env.LOG_REQUESTS === "true") {
+  app.use(
+    morgan(process.env.LOG_LEVEL || "dev", {
+      skip: (req) =>
+        process.env.LOG_HEALTH_PINGS === "false" && req.url === "/health",
+    })
+  );
+}
 
 // ─────────────────────────────
 // Static (Flutter Web build)
@@ -40,9 +47,12 @@ app.use(express.static(webDir));
 // Health Check
 // ─────────────────────────────
 app.get("/health", (req, res) =>
-  res
-    .status(200)
-    .json({ status: "ok", version: "v11.7.3", timestamp: Date.now() })
+  res.status(200).json({
+    status: "ok",
+    version: APP_VERSION,
+    timestamp: Date.now(),
+    ping_interval_sec: process.env.PING_INTERVAL_SEC || 660,
+  })
 );
 
 // ─────────────────────────────
@@ -55,9 +65,12 @@ app.post("/api/test-gemini", (req, res) => {
     if (authHeader?.startsWith("Bearer ")) key = authHeader.substring(7).trim();
     else if (req.body?.key) key = req.body.key.trim();
 
-    if (!key) return res.status(400).json({ success: false, message: "❌ Gemini Key 누락" });
+    if (!key)
+      return res.status(400).json({ success: false, message: "❌ Gemini Key 누락" });
     if (!(key.startsWith("AIz") || key.startsWith("AIza"))) {
-      return res.status(401).json({ success: false, message: "❌ Key 형식 불일치 (AIz / gemini 필요)" });
+      return res
+        .status(401)
+        .json({ success: false, message: "❌ Key 형식 불일치 (AIz / gemini 필요)" });
     }
 
     const modelMap = {
@@ -98,7 +111,9 @@ app.post("/api/github-test", (req, res) => {
 app.post("/api/naver-test", (req, res) => {
   const { clientId, clientSecret } = req.body;
   if (!clientId || !clientSecret)
-    return res.status(400).json({ message: "❌ Client ID 또는 Secret 누락됨" });
+    return res
+      .status(400)
+      .json({ message: "❌ Client ID 또는 Secret 누락됨" });
   res.json({ success: true, message: `✅ Naver 연결 성공 (${clientId.slice(0, 5)}...)` });
 });
 
@@ -115,8 +130,13 @@ app.post("/api/verify", async (req, res) => {
       gemini_key = authHeader.substring(7).trim();
     }
 
-    if (!query || !mode) return res.status(400).json({ message: "❌ mode 또는 query 누락" });
-    if (!gemini_key) return res.status(400).json({ message: "❌ Gemini Key 누락" });
+    if (!query || !mode)
+      return res.status(400).json({ message: "❌ mode 또는 query 누락" });
+    if (!gemini_key)
+      return res.status(400).json({ message: "❌ Gemini Key 누락" });
+
+    if (query.length > 4000)
+      return res.status(413).json({ message: "⚠️ 요청 문장이 너무 깁니다 (4000자 제한)" });
 
     const modelMap = {
       flash: "gemini-2.5-flash",
@@ -145,7 +165,6 @@ app.post("/api/verify", async (req, res) => {
       });
     }
 
-    // ✅ Gemini output fallback
     const output =
       data?.candidates?.[0]?.content?.parts?.[0]?.text ||
       data?.output_text ||
@@ -177,17 +196,24 @@ app.post("/api/verify", async (req, res) => {
 // ─────────────────────────────
 // Keep-Alive Ping (Render Free Plan)
 // ─────────────────────────────
+const pingInterval = Number(process.env.PING_INTERVAL_SEC || 660) * 1000;
 setInterval(async () => {
   try {
-    const res = await fetch("https://cross-verified-ai-proxy.onrender.com/health");
-    console.log(`💓 Keep-alive ping: ${res.status}`);
+    const res = await fetch(
+      "https://cross-verified-ai-proxy.onrender.com/health"
+    );
+    if (process.env.LOG_HEALTH_PINGS !== "false") {
+      console.log(`💓 Keep-alive ping: ${res.status}`);
+    }
   } catch (e) {
     console.warn("⚠️ Ping 실패:", e.message);
   }
-}, 1000 * 60 * 11);
+}, pingInterval);
 
 // ─────────────────────────────
 // SPA 라우팅
 // ─────────────────────────────
 app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
-app.listen(PORT, () => console.log(`🚀 Proxy v11.7.3 running on port ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🚀 Proxy ${APP_VERSION} running on port ${PORT}`)
+);
