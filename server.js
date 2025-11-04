@@ -1,4 +1,4 @@
-// ✅ Cross-Verified AI Proxy Server v11.8.0 (3단계 모델체계 + Env Linked)
+// ✅ Cross-Verified AI Proxy Server v11.8.1-LintFixed
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -10,7 +10,8 @@ import fetch from "node-fetch";
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = process.env.APP_VERSION || "v11.8.0";
+const APP_VERSION = process.env.APP_VERSION || "v11.8.1";
+const DEV_MODE = process.env.DEV_MODE === "true";
 
 // ─────────────────────────────
 // Middleware (CORS 완전 허용 + 로깅)
@@ -18,12 +19,13 @@ const APP_VERSION = process.env.APP_VERSION || "v11.8.0";
 app.use(
   cors({
     origin: (origin, callback) => {
-      console.log("🌐 CORS 요청 Origin:", origin || "Direct / No-Origin");
-      callback(null, true); // 모든 Origin 허용
+      if (DEV_MODE)
+        console.log("🌐 CORS 요청 Origin:", origin || "Direct / No-Origin");
+      callback(null, true);
     },
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true, // 인증/토큰 포함 요청도 허용
+    credentials: true,
   })
 );
 
@@ -38,6 +40,7 @@ if (process.env.LOG_REQUESTS === "true") {
     })
   );
 }
+
 // ─────────────────────────────
 // Static (Flutter Web build)
 // ─────────────────────────────
@@ -101,13 +104,16 @@ app.post("/api/test-gemini", (req, res) => {
 app.post("/api/klaw-test", (req, res) => {
   const { id } = req.body;
   if (!id) return res.status(400).json({ message: "❌ ID 누락됨" });
-  res.json({ success: true, message: `✅ K-Law 연결 성공 (${id})` });
+  res.json({ success: true, message: "✅ K-Law 연결 성공" });
 });
 
 app.post("/api/github-test", (req, res) => {
   const { token } = req.body;
   if (!token) return res.status(400).json({ message: "❌ Token 누락됨" });
-  res.json({ success: true, message: `✅ GitHub 연결 성공 (${token.slice(0, 6)}...)` });
+  res.json({
+    success: true,
+    message: `✅ GitHub 연결 성공 (${token.slice(0, 6)}...)`,
+  });
 });
 
 app.post("/api/naver-test", (req, res) => {
@@ -116,33 +122,40 @@ app.post("/api/naver-test", (req, res) => {
     return res
       .status(400)
       .json({ message: "❌ Client ID 또는 Secret 누락됨" });
-  res.json({ success: true, message: `✅ Naver 연결 성공 (${clientId.slice(0, 5)}...)` });
+  res.json({
+    success: true,
+    message: `✅ Naver 연결 성공 (${clientId.slice(0, 5)}...)`,
+  });
 });
+
 // ─────────────────────────────
 // Gemini 2.5 실제 API 연동 (3단계 체계)
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   try {
-    const { mode, query, user, model = "pro", chain = false } = req.body;
+    const { mode, query, model = "pro", chain = false } = req.body;
     let gemini_key = req.body.gemini_key;
     const authHeader = req.get("Authorization");
 
-    if (!gemini_key && authHeader?.startsWith("Bearer ")) {
+    if (!gemini_key && authHeader?.startsWith("Bearer "))
       gemini_key = authHeader.substring(7).trim();
-    }
 
     if (!query || !mode)
       return res.status(400).json({ message: "❌ mode 또는 query 누락" });
     if (!gemini_key)
       return res.status(400).json({ message: "❌ Gemini Key 누락" });
     if (query.length > 4000)
-      return res.status(413).json({ message: "⚠️ 요청 문장이 너무 깁니다 (4000자 제한)" });
+      return res
+        .status(413)
+        .json({ message: "⚠️ 요청 문장이 너무 깁니다 (4000자 제한)" });
 
     // === 모델 매핑 (.env 기준)
-    const MODEL_PRE = process.env.VERIFY_PREPROCESS_MODEL || "gemini-2.5-flash-lite";
+    const MODEL_PRE =
+      process.env.VERIFY_PREPROCESS_MODEL || "gemini-2.5-flash-lite";
     const MODEL_MAIN = process.env.DEFAULT_MODEL || "gemini-2.5-flash";
-    const MODEL_EVAL = process.env.VERIFY_EVALUATOR_MODEL || "gemini-2.5-pro";
-    const modelMap = { flash: MODEL_MAIN, pro: "gemini-2.5-pro", lite: MODEL_PRE };
+    const MODEL_EVAL =
+      process.env.VERIFY_EVALUATOR_MODEL || "gemini-2.5-pro";
+    const modelMap = { flash: MODEL_MAIN, pro: MODEL_EVAL, lite: MODEL_PRE };
 
     // === 단일 호출 모드
     if (!chain) {
@@ -159,26 +172,30 @@ app.post("/api/verify", async (req, res) => {
       const elapsed = `${Date.now() - start} ms`;
 
       const output =
-  data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-  data?.output_text ||
-  data?.text ||
-  data?.message ||
-  "⚠️ Gemini 응답 없음 (output_text / candidates 비어 있음)";
+        data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+        data?.output_text ||
+        data?.text ||
+        data?.message ||
+        "⚠️ Gemini 응답 없음 (candidates 비어 있음)";
 
-return res.status(200).json({
-  success: true,
-  mode,
-  model: selectedModel,
-  elapsed,
-  message: output,       // ✅ Flutter에서 표시할 실제 응답
-  output_text: output,   // ✅ 백호환용
-  content: output,       // ✅ 일부 구버전 호환
-  summary: "Gemini 모델 단일 응답 완료",
-  timestamp: new Date().toISOString(),
-});
+      if (DEV_MODE)
+        console.log(`🧠 [단일] ${selectedModel} 응답 (${elapsed})`);
+
+      return res.status(200).json({
+        success: true,
+        mode,
+        model: selectedModel,
+        elapsed,
+        message: output,
+        output_text: output,
+        content: output,
+        summary: "Gemini 모델 단일 응답 완료",
+        timestamp: new Date().toISOString(),
+      });
+    } // ✅ if(!chain) 블록 닫음 (핵심 수정)
 
     // === 체인 호출 모드 (요약→응답→평가)
-    console.log(`🔁 [CHAIN] ${mode} 모드 시작`);
+    if (DEV_MODE) console.log(`🔁 [CHAIN] ${mode} 모드 시작`);
 
     // 1️⃣ 전처리 (요약·핵심어화)
     const preUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_PRE}:generateContent?key=${gemini_key}`;
@@ -225,7 +242,15 @@ return res.status(200).json({
     });
     const evalData = await evalResp.json();
     const evalText =
-      evalData?.candidates?.[0]?.content?.parts?.[0]?.text || "(평가 결과 없음)";
+      evalData?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "(평가 결과 없음)";
+
+    if (DEV_MODE)
+      console.log("📊 [CHAIN 완료] 모델:", {
+        preprocess: MODEL_PRE,
+        main: MODEL_MAIN,
+        evaluator: MODEL_EVAL,
+      });
 
     return res.status(200).json({
       success: true,
@@ -267,7 +292,7 @@ setInterval(async () => {
       console.log(`💓 Keep-alive ping: ${res.status}`);
     }
   } catch (e) {
-    console.warn("⚠️ Ping 실패:", e.message);
+    if (DEV_MODE) console.warn("⚠️ Ping 실패:", e.message);
   }
 }, pingInterval);
 
@@ -275,6 +300,9 @@ setInterval(async () => {
 // SPA 라우팅
 // ─────────────────────────────
 app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
+
 app.listen(PORT, () =>
-  console.log(`🚀 Proxy ${APP_VERSION} running on port ${PORT}`)
+  console.log(
+    `🚀 Proxy ${APP_VERSION} running on port ${PORT} | DEV_MODE: ${DEV_MODE}`
+  )
 );
