@@ -1,5 +1,5 @@
-// ✅ Cross-Verified AI Proxy Server v12.0.1
-// (Gemini Key Test + TruthScore + Source Visualization)
+// ✅ Cross-Verified AI Proxy Server v12.0.2
+// (Gemini Key Test fix: use ?key= param + TruthScore + Source Visualization)
 import cors from "cors";
 import express from "express";
 import path from "path";
@@ -11,7 +11,7 @@ import fetch from "node-fetch";
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = process.env.APP_VERSION || "v12.0.1";
+const APP_VERSION = process.env.APP_VERSION || "v12.0.2";
 const DEV_MODE = process.env.DEV_MODE === "true";
 
 // ─────────────────────────────
@@ -129,7 +129,7 @@ app.get("/health", (req, res) =>
 );
 
 // ─────────────────────────────
-// ✅ Gemini Key 테스트 엔드포인트
+// ✅ Gemini Key 테스트 엔드포인트 (수정됨)
 // ─────────────────────────────
 app.post("/api/test-gemini", async (req, res) => {
   const key = req.body.key || req.body?.creds?.key;
@@ -138,19 +138,16 @@ app.post("/api/test-gemini", async (req, res) => {
   }
 
   try {
-    const r = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: "ping" }] }],
-        }),
-      }
-    );
+    // ✅ Bearer 대신 URL 파라미터로 전달
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${key}`;
+
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: "ping" }] }],
+      }),
+    });
 
     if (r.ok) {
       const data = await r.json();
@@ -200,6 +197,7 @@ app.post("/api/verify", async (req, res) => {
     const MODEL_EVAL = process.env.VERIFY_EVALUATOR_MODEL || "gemini-2.5-pro";
     const modelMap = { flash: MODEL_MAIN, pro: MODEL_EVAL, lite: MODEL_PRE };
 
+    // 단일모드
     if (!chain) {
       const selectedModel = modelMap[model] || MODEL_MAIN;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${gemini_key}`;
@@ -231,6 +229,7 @@ app.post("/api/verify", async (req, res) => {
       });
     }
 
+    // 체인모드
     const preUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_PRE}:generateContent?key=${gemini_key}`;
     const preResp = await fetch(preUrl, {
       method: "POST",
@@ -305,31 +304,18 @@ app.post("/api/verify", async (req, res) => {
   }
 });
 
-// ─────────────────────────────
-// Keep-Alive Ping
-// ─────────────────────────────
+// Keep-Alive, SPA, listen 부분은 기존과 동일
 const pingInterval = Number(process.env.PING_INTERVAL_SEC || 660) * 1000;
-
 setInterval(async () => {
   try {
     const res = await fetch("https://cross-verified-ai-proxy.onrender.com/health");
-    if (process.env.LOG_HEALTH_PINGS !== "false") {
-      console.log(`💓 Keep-alive ping: ${res.status}`);
-    }
+    if (process.env.LOG_HEALTH_PINGS !== "false") console.log(`💓 Keep-alive ping: ${res.status}`);
   } catch (e) {
     if (DEV_MODE) console.warn("⚠️ Ping 실패:", e.message);
   }
 }, pingInterval);
 
-// ─────────────────────────────
-// SPA 라우팅
-// ─────────────────────────────
 app.get("*", (req, res) => res.sendFile(path.join(webDir, "index.html")));
-
-// ─────────────────────────────
-// 서버 실행
-// ─────────────────────────────
 app.listen(PORT, () => {
   console.log(`🚀 Proxy ${APP_VERSION} running on port ${PORT} | DEV_MODE: ${DEV_MODE}`);
-  if (DEV_MODE) console.log("🔍 TruthScore 확장 모듈 활성화됨");
 });
