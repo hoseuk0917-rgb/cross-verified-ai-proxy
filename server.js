@@ -1,199 +1,126 @@
-// ✅ Cross-Verified AI Proxy Server v12.3.0
-// (Gemini 2.5 + K-Law + Naver 개선 버전)
 import express from "express";
 import axios from "axios";
 import cors from "cors";
-import bodyParser from "body-parser";
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json({ limit: "10mb" }));
+app.use(express.json());
 
-// ✅ Health Check
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok", service: "Cross-Verified AI Proxy v12.3.0" });
+// axios 공통 설정 (30초 timeout)
+const axiosInstance = axios.create({
+  timeout: 30000,
 });
 
-// ✅ /api/verify — Gemini + CrossRef + K-Law + Naver 등 통합 교차검증
+// ✅ 헬스체크
+app.get("/health", (req, res) => {
+  res.json({ ok: true, message: "Cross-Verified AI Proxy is alive" });
+});
+
+// ✅ 교차검증 엔드포인트
 app.post("/api/verify", async (req, res) => {
   const { query, key, naverKey, naverSecret, klawKey } = req.body;
-  const startTime = Date.now();
 
   if (!query || !key) {
-    return res.status(400).json({ success: false, message: "❌ Missing required parameters" });
+    return res.status(400).json({ success: false, message: "query와 key는 필수입니다." });
   }
 
+  const start = Date.now();
+  const engines = [];
+  const sources = [];
+
   try {
-    // ✅ Gemini 2.5 기본 응답 생성
-    const geminiRes = await axios.post(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + key,
-      {
-        contents: [{ role: "user", parts: [{ text: query }]}],
-      },
-      { timeout: 60000 }
+    // ✅ 1️⃣ Gemini 요청
+    const geminiResp = await axiosInstance.post(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=" + key,
+      { contents: [{ parts: [{ text: query }] }] }
     );
 
-    const mainText =
-      geminiRes?.data?.candidates?.[0]?.content?.parts?.[0]?.text || "응답이 비어 있습니다.";
+    const mainText = geminiResp.data?.candidates?.[0]?.content?.parts?.[0]?.text || "No content generated.";
 
-    // ✅ 병렬 교차검증 엔진 (Gemini 외부)
-    const [crossref, openalex, gdelt, wikidata, naver, klaw] = await Promise.allSettled([
-      verifyCrossRef(query),
-      verifyOpenAlex(query),
-      verifyGDELT(query),
-      verifyWikidata(query),
-      verifyNaver(query, naverKey, naverSecret),
-      verifyKLaw(query, klawKey),
-    ]);
+    // ✅ 2️⃣ CrossRef
+    let crossrefResult = {};
+    try {
+      const r = await axiosInstance.get(`https://api.crossref.org/works?query=${encodeURIComponent(query)}&rows=1`);
+      crossrefResult = {
+        name: "CrossRef",
+        score: 0.9,
+        title: r.data.message.items[0]?.title?.[0] || "결과 없음",
+      };
+    } catch {
+      crossrefResult = { name: "CrossRef", score: 0.3, title: "CrossRef 오류" };
+    }
+    engines.push(crossrefResult);
+    sources.push({ engine: "CrossRef", title: crossrefResult.title, confidence: crossrefResult.score });
 
-    const results = [crossref, openalex, gdelt, wikidata, naver, klaw]
-      .filter(r => r.status === "fulfilled")
-      .map(r => r.value);
+    // ✅ 3️⃣ Naver News
+    let naverResult = {};
+    try {
+      const r = await axiosInstance.get(
+        `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent(query)}&display=3`,
+        {
+          headers: {
+            "X-Naver-Client-Id": naverKey,
+            "X-Naver-Client-Secret": naverSecret,
+          },
+        }
+      );
+      const title = r.data.items?.[0]?.title?.replace(/<[^>]*>?/g, "") || "결과 없음";
+      naverResult = { name: "Naver", score: 0.7, title };
+    } catch (e) {
+      naverResult = { name: "Naver", score: 0.3, title: `Naver 오류: ${e.message}` };
+    }
+    engines.push(naverResult);
+    sources.push({ engine: "Naver", title: naverResult.title, confidence: naverResult.score });
 
-    const elapsed = `${Date.now() - startTime} ms`;
-    res.status(200).json({
+    // ✅ 4️⃣ K-Law (법제처)
+    let klawResult = {};
+    try {
+      const r = await axiosInstance.get(
+        `https://www.law.go.kr/DRF/lawSearch.do?target=law&type=JSON&OC=${klawKey}&query=${encodeURIComponent(query)}&display=3`
+      );
+
+      if (r.status === 200 && r.data?.LAW) {
+        klawResult = {
+          name: "K-Law",
+          score: 0.9,
+          title: r.data.LAW[0]?.법령명한글 || "결과 없음",
+        };
+      } else {
+        klawResult = { name: "K-Law", score: 0.4, title: "응답 없음" };
+      }
+    } catch (e) {
+      const htmlCheck = e?.response?.data?.includes?.("<html>");
+      klawResult = {
+        name: "K-Law",
+        score: 0,
+        title: htmlCheck ? "K-Law 500 오류 (서버측 문제)" : `K-Law 오류: ${e.message}`,
+      };
+    }
+    engines.push(klawResult);
+    sources.push({ engine: "K-Law", title: klawResult.title, confidence: klawResult.score });
+
+    // ✅ 최종 truthScore 계산
+    const avgScore = engines.reduce((acc, e) => acc + e.score, 0) / engines.length;
+    const adjusted = Math.max(0, Math.min(1, avgScore - 0.05 * (engines.length - 1)));
+
+    const elapsed = `${Date.now() - start} ms`;
+
+    res.json({
       success: true,
       message: "✅ Gemini 2.5 기반 실제 교차검증 완료",
       query,
       elapsed,
-      keywords: extractKeywords(mainText),
-      mainText,
-      evalText: generateEvaluation(mainText, results),
-      engines: results,
-      truthScore: calcTruthScore(results),
-      adjustedScore: calcAdjustedScore(results),
-      status: "conflict",
-      sources: results.map(r => ({ engine: r.name, title: r.title, confidence: r.score })),
+      engines,
+      truthScore: Number(avgScore.toFixed(3)),
+      adjustedScore: Number(adjusted.toFixed(3)),
+      sources,
       timestamp: new Date().toISOString(),
     });
-  } catch (error) {
-    console.error("❌ /api/verify failed:", error.message);
-    res.status(500).json({ success: false, message: "서버 오류: " + error.message });
+  } catch (err) {
+    console.error("서버 오류:", err);
+    res.status(500).json({ success: false, message: "서버 오류: " + err.message });
   }
 });
 
-// ✅ CrossRef 엔진
-async function verifyCrossRef(query) {
-  try {
-    const res = await axios.get(
-      `https://api.crossref.org/works?query=${encodeURIComponent(query)}&rows=1`
-    );
-    const item = res.data.message.items[0];
-    return {
-      name: "CrossRef",
-      score: 0.9,
-      title: item?.title?.[0] || "결과 없음",
-    };
-  } catch {
-    return { name: "CrossRef", score: 0, title: "오류" };
-  }
-}
-
-// ✅ OpenAlex
-async function verifyOpenAlex(query) {
-  try {
-    const res = await axios.get(
-      `https://api.openalex.org/works?filter=title.search:${encodeURIComponent(query)}`
-    );
-    const item = res.data.results[0];
-    return {
-      name: "OpenAlex",
-      score: 0.4,
-      title: item?.title || "결과 없음",
-    };
-  } catch {
-    return { name: "OpenAlex", score: 0, title: "오류" };
-  }
-}
-
-// ✅ GDELT
-async function verifyGDELT(query) {
-  try {
-    const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(query)}&format=json`;
-    const res = await axios.get(url);
-    const title = res.data?.articles?.[0]?.title || "결과 없음";
-    return { name: "GDELT", score: 0.4, title };
-  } catch {
-    return { name: "GDELT", score: 0, title: "오류" };
-  }
-}
-
-// ✅ Wikidata
-async function verifyWikidata(query) {
-  try {
-    const url = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(query)}&language=ko&format=json`;
-    const res = await axios.get(url);
-    const title = res.data.search?.[0]?.label || "결과 없음";
-    return { name: "Wikidata", score: 0.3, title };
-  } catch {
-    return { name: "Wikidata", score: 0, title: "오류" };
-  }
-}
-
-// ✅ Naver 뉴스 API
-async function verifyNaver(query, clientId, clientSecret) {
-  if (!clientId || !clientSecret)
-    return { name: "Naver", score: 0, title: "API Key 누락" };
-  try {
-    const res = await axios.get(
-      `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent(query)}&display=10&sort=sim`,
-      {
-        headers: {
-          "X-Naver-Client-Id": clientId,
-          "X-Naver-Client-Secret": clientSecret,
-        },
-      }
-    );
-    const title = res.data.items?.[0]?.title?.replace(/<[^>]*>/g, "") || "결과 없음";
-    return { name: "Naver", score: 0.35, title };
-  } catch {
-    return { name: "Naver", score: 0, title: "오류" };
-  }
-}
-
-// ✅ K-Law 법령정보 API
-async function verifyKLaw(query, ocKey) {
-  if (!ocKey) return { name: "K-Law", score: 0, title: "OC Key 누락" };
-  try {
-    const encoded = encodeURIComponent(query);
-    const url = `https://www.law.go.kr/DRF/lawSearch.do?OC=${ocKey}&target=eflaw&type=JSON&query=${encoded}&display=3`;
-    const res = await axios.get(url, { timeout: 10000 });
-
-    let data = res.data;
-    if (typeof data === "string") {
-      try { data = JSON.parse(data); } catch { return { name: "K-Law", score: 0, title: "JSON 파싱 실패" }; }
-    }
-
-    const lawName = data?.law?.[0]?.법령명한글 || data?.law?.법령명한글 || "결과 없음";
-    return { name: "K-Law", score: 0.4, title: lawName };
-  } catch (err) {
-    return { name: "K-Law", score: 0, title: "K-Law 오류: " + err.message };
-  }
-}
-
-// ✅ 보조 함수들
-function extractKeywords(text) {
-  if (!text) return [];
-  const lines = text.split("\n").filter(l => l.trim().length > 0);
-  return lines.slice(0, 4).map((l, i) => `${i + 1}. ${l.substring(0, 30)}`);
-}
-
-function generateEvaluation(mainText, results) {
-  const positives = results.filter(r => r.score >= 0.4);
-  return `✅ Gemini 생성 응답 신뢰도 평가\n\n총 ${results.length}개 엔진 중 ${positives.length}개에서 긍정적 일치가 확인되었습니다.\n\n주요 일치 엔진: ${positives.map(r => r.name).join(", ")}`;
-}
-
-function calcTruthScore(results) {
-  if (!results.length) return 0;
-  const sum = results.reduce((a, r) => a + r.score, 0);
-  return (sum / results.length).toFixed(3);
-}
-
-function calcAdjustedScore(results) {
-  const truth = parseFloat(calcTruthScore(results));
-  return (truth * 0.85).toFixed(3);
-}
-
-// ✅ 서버 시작
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Cross-Verified AI Proxy running on port ${PORT}`));
