@@ -15,27 +15,25 @@ const APP_VERSION = process.env.APP_VERSION || "v11.8.0";
 // ─────────────────────────────
 // Middleware
 // ─────────────────────────────
-const allowedOrigins =
-  process.env.ALLOWED_ORIGINS?.split(",").map((s) => s.trim()) || ["*"];
+let allowedOrigins = ["*"];
+if (process.env.ALLOWED_ORIGINS && process.env.ALLOWED_ORIGINS.trim() !== "") {
+  allowedOrigins = process.env.ALLOWED_ORIGINS.split(",").map((s) => s.trim());
+}
+
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`❌ CORS 차단: ${origin}`));
+      }
+    },
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
   })
 );
-
-app.use(bodyParser.json({ limit: `${process.env.MAX_REQUEST_BODY_MB || 5}mb` }));
-app.use(bodyParser.urlencoded({ extended: true }));
-
-if (process.env.LOG_REQUESTS === "true") {
-  app.use(
-    morgan(process.env.LOG_LEVEL || "dev", {
-      skip: (req) =>
-        process.env.LOG_HEALTH_PINGS === "false" && req.url === "/health",
-    })
-  );
-}
 
 // ─────────────────────────────
 // Static (Flutter Web build)
