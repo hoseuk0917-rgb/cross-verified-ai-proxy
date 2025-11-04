@@ -1,7 +1,7 @@
 {
   "name": "cross-verified-ai-proxy",
-  "version": "11.7.3",
-  "description": "Cross-Verified AI Proxy Server (Gemini 2.5 + KLaw/GitHub/Naver Test + Render 11min KeepAlive)",
+  "version": "11.8.1",
+  "description": "Cross-Verified AI Proxy Server (Gemini 2.5 + 3-Step Verify + Render DevMode Safe)",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -17,7 +17,7 @@
     "node-fetch": "^3.3.2"
   },
   "engines": {
-    "node": ">=18"
+    "node": "20.x"
   },
   "keywords": [
     "Cross-Verified-AI",
@@ -25,7 +25,8 @@
     "Render",
     "Express",
     "Proxy",
-    "Keep-Alive"
+    "Keep-Alive",
+    "DEV_MODE"
   ],
   "author": "Ho Seok Goh",
   "license": "MIT"
