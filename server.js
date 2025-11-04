@@ -159,20 +159,23 @@ app.post("/api/verify", async (req, res) => {
       const elapsed = `${Date.now() - start} ms`;
 
       const output =
-        data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-        data?.output_text ||
-        "응답 없음 (candidates 비어 있음)";
+  data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+  data?.output_text ||
+  data?.text ||
+  data?.message ||
+  "⚠️ Gemini 응답 없음 (output_text / candidates 비어 있음)";
 
-      return res.status(200).json({
-        success: true,
-        mode,
-        model: selectedModel,
-        elapsed,
-        output,
-        message: "✅ 단일 모델 응답 완료",
-        timestamp: new Date().toISOString(),
-      });
-    }
+return res.status(200).json({
+  success: true,
+  mode,
+  model: selectedModel,
+  elapsed,
+  message: output,       // ✅ Flutter에서 표시할 실제 응답
+  output_text: output,   // ✅ 백호환용
+  content: output,       // ✅ 일부 구버전 호환
+  summary: "Gemini 모델 단일 응답 완료",
+  timestamp: new Date().toISOString(),
+});
 
     // === 체인 호출 모드 (요약→응답→평가)
     console.log(`🔁 [CHAIN] ${mode} 모드 시작`);
