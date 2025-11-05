@@ -1,142 +1,161 @@
-/**
- * ==============================================
- * Cross-Verified AI Proxy v12.2.0
- * Supabase 연동 + 사용자 Key 입력형 (Gemini/Naver/K-Law)
- * ==============================================
- */
-
 import express from "express";
-import cors from "cors";
-import axios from "axios";
 import bodyParser from "body-parser";
+import axios from "axios";
+import cors from "cors";
+import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 
+dotenv.config();
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// === [Middleware 설정] ===
-app.use(cors());
 app.use(bodyParser.json({ limit: "5mb" }));
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(cors());
 
-// === [Supabase 연결] ===
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
+// ==========================
+// 🔒 환경 변수 설정
+// ==========================
+const PORT = process.env.PORT || 3000;
+const GEMINI_MODEL = process.env.DEFAULT_MODEL || "gemini-2.5-flash";
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
-if (!supabaseUrl || !supabaseServiceKey) {
-  console.error("❌ Supabase 환경변수 누락");
-  process.exit(1);
-}
+// ==========================
+// 🧠 Gemini API 기본 설정
+// ==========================
+const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/";
+const GEMINI_TIMEOUT_MS = parseInt(process.env.API_TIMEOUT_MS || "20000", 10);
 
-// === [기본상태 확인용 Endpoint] ===
-app.get("/health", (req, res) => {
-  res.json({ success: true, message: "✅ Proxy Server Healthy", version: "v12.2.0" });
+// ==========================
+// 🧩 헬스체크 엔드포인트
+// ==========================
+app.get("/api/check-health", (req, res) => {
+  res.json({ success: true, message: "✅ Proxy 서버 동작 중", version: process.env.APP_VERSION });
 });
 
-// === [Supabase 연결 상태 확인용] ===
+// ==========================
+// 🔗 Supabase 연결 테스트
+// ==========================
 app.get("/api/check-supabase", async (req, res) => {
   try {
     const { count } = await supabase.from("verification_logs").select("*", { count: "exact", head: true });
-    res.json({
-      success: true,
-      message: "✅ Supabase 연결 성공",
-      rows: count || 0,
-      url: supabaseUrl,
-    });
+    res.json({ success: true, message: "✅ Supabase 연결 성공", rows: count, url: SUPABASE_URL });
   } catch (err) {
-    console.error("Supabase 확인 실패:", err.message);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: `❌ Supabase 연결 실패: ${err.message}` });
   }
 });
 
-// === [교차검증 엔진 메인 Endpoint] ===
+// ==========================
+// ⚙️ 검증 엔드포인트 (Gemini 호출)
+// ==========================
 app.post("/api/verify", async (req, res) => {
+  const { query, key, naverKey, naverSecret, klawKey } = req.body;
+  if (!query || !key) {
+    return res.status(400).json({ success: false, message: "❌ 요청 파라미터 부족 (query/key 필요)" });
+  }
+
   const startTime = Date.now();
+  const endpoint = `${GEMINI_API_URL}${GEMINI_MODEL}:generateContent?key=${key}`;
+  const payload = {
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: query }]
+      }
+    ]
+  };
+
   try {
-    const { query, key, naverKey, naverSecret, klawKey } = req.body;
-    if (!query || !key) {
-      return res.status(400).json({ success: false, message: "❌ 요청 파라미터 부족 (query/key 필요)" });
-    }
+    const response = await axios.post(endpoint, payload, { timeout: GEMINI_TIMEOUT_MS });
+    const resultText =
+      response.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
+      response.data?.output || "";
 
-    // === 1️⃣ Gemini 호출 ===
-    let geminiText = "";
-    try {
-      const geminiUrl =
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=" + key;
+    const elapsedMs = Date.now() - startTime;
 
-      const gRes = await axios.post(
-        geminiUrl,
-        {
-          contents: [{ role: "user", parts: [{ text: query }] }],
-        },
-        { timeout: 30000 }
-      );
-      geminiText = gRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    } catch (err) {
-      console.warn("⚠️ Gemini 응답 실패:", err.message);
-    }
+    // 간단한 요약 (앞부분 300자)
+    const summary =
+      resultText.length > 300 ? resultText.slice(0, 300) + "..." : resultText;
 
-    // === 2️⃣ Naver Search API ===
-    let naverItems = [];
-    if (naverKey && naverSecret) {
-      try {
-        const nRes = await axios.get("https://openapi.naver.com/v1/search/encyc.json", {
-          headers: {
-            "X-Naver-Client-Id": naverKey,
-            "X-Naver-Client-Secret": naverSecret,
-          },
-          params: { query, display: 5 },
-          timeout: 15000,
-        });
-        naverItems = nRes.data?.items || [];
-      } catch (err) {
-        console.warn("⚠️ Naver 응답 실패:", err.message);
-      }
-    }
+    // 임시 CrossScore 계산 (문장 길이 기반)
+    const crossScore = parseFloat((Math.min(resultText.length / 1000, 1) * 0.9 + 0.1).toFixed(3));
 
-    // === 3️⃣ K-Law (국가법령정보 공동활용 API) ===
-    let klawLaws = [];
-    if (klawKey) {
-      try {
-        const kRes = await axios.get("https://www.law.go.kr/DRF/lawSearch.do", {
-          params: { target: "law", type: "JSON", OC: klawKey, query },
-          timeout: 20000,
-        });
-        klawLaws = kRes.data?.Law || [];
-      } catch (err) {
-        console.warn("⚠️ K-Law 응답 실패:", err.message);
-      }
-    }
-
-    // === 4️⃣ 결과 저장 (Supabase) ===
-    const elapsed = Date.now() - startTime;
+    // Supabase 저장
     const { error } = await supabase.from("verification_logs").insert([
       {
         question: query,
-        summary: geminiText?.slice(0, 500),
-        sources: { naver: naverItems, klaw: klawLaws },
-        cross_score: Math.random().toFixed(3), // 향후 CrossScore 계산 대체
-        created_at: new Date().toISOString(),
-      },
+        cross_score: crossScore,
+        truth_score: null,
+        summary,
+        elapsed: `${elapsedMs} ms`,
+        status: "completed",
+        model_main: GEMINI_MODEL,
+        created_at: new Date().toISOString()
+      }
     ]);
 
-    if (error) console.error("Supabase 저장 실패:", error.message);
+    if (error) {
+      console.error("Supabase 저장 실패:", error.message);
+      return res.status(500).json({ success: false, message: `❌ Supabase 저장 실패: ${error.message}` });
+    }
 
     res.json({
       success: true,
       message: "✅ Gemini 2.5 검증 완료 및 Supabase 저장됨",
       query,
-      elapsed: `${elapsed} ms`,
-      resultPreview: geminiText.slice(0, 300),
+      elapsed: `${elapsedMs} ms`,
+      resultPreview: summary
     });
   } catch (err) {
-    console.error("❌ /api/verify 오류:", err.message);
-    res.status(500).json({ success: false, message: "서버 오류: " + err.message });
+    console.error("Gemini 요청 실패:", err.message);
+    res.status(500).json({ success: false, message: `서버 오류: ${err.message}` });
+  }
+});
+// ==========================
+// ⚖️ K-Law 법령 API (선택적 호출)
+// ==========================
+app.post("/api/klaw", async (req, res) => {
+  const { query, klawKey } = req.body;
+  if (!query || !klawKey) {
+    return res.status(400).json({ success: false, message: "❌ 요청 파라미터 부족 (query/klawKey 필요)" });
+  }
+
+  try {
+    const url = `https://www.law.go.kr/DRF/lawSearch.do?OC=${klawKey}&target=law&type=JSON&query=${encodeURIComponent(
+      query
+    )}`;
+    const result = await axios.get(url, { timeout: 10000 });
+    res.json({ success: true, message: "✅ K-Law 응답 수신", data: result.data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: `K-Law 요청 실패: ${err.message}` });
   }
 });
 
-// === [서버 시작] ===
+// ==========================
+// 🔎 NAVER 요약/검색 API (선택적 호출)
+// ==========================
+app.post("/api/naver", async (req, res) => {
+  const { query, naverKey, naverSecret } = req.body;
+  if (!query || !naverKey || !naverSecret) {
+    return res.status(400).json({ success: false, message: "❌ 요청 파라미터 부족 (query/naverKey/naverSecret 필요)" });
+  }
+
+  try {
+    const response = await axios.get("https://openapi.naver.com/v1/search/news.json", {
+      params: { query, display: 5, sort: "sim" },
+      headers: { "X-Naver-Client-Id": naverKey, "X-Naver-Client-Secret": naverSecret },
+      timeout: 8000
+    });
+    res.json({ success: true, message: "✅ NAVER 응답 수신", items: response.data.items });
+  } catch (err) {
+    res.status(500).json({ success: false, message: `NAVER 요청 실패: ${err.message}` });
+  }
+});
+
+// ==========================
+// 🧾 서버 로그 및 실행부
+// ==========================
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v12.2.0 running on port ${PORT}`);
+  console.log(`🚀 Cross-Verified AI Proxy v12.0.8 실행 중 (포트: ${PORT})`);
+  console.log(`🌐 Supabase 연결: ${SUPABASE_URL}`);
+  console.log(`🧠 기본 모델: ${GEMINI_MODEL}`);
 });
