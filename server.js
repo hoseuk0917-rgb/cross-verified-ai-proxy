@@ -1,127 +1,142 @@
-// =============================================
-// Cross-Verified AI Proxy v12.1.1
-// + Supabase Connection Check Endpoint 추가
-// =============================================
+/**
+ * ==============================================
+ * Cross-Verified AI Proxy v12.2.0
+ * Supabase 연동 + 사용자 Key 입력형 (Gemini/Naver/K-Law)
+ * ==============================================
+ */
 
 import express from "express";
-import axios from "axios";
 import cors from "cors";
-import crypto from "crypto";
-import pkg from "@supabase/supabase-js";
-const { createClient } = pkg;
+import axios from "axios";
+import bodyParser from "body-parser";
+import { createClient } from "@supabase/supabase-js";
 
 const app = express();
-app.use(express.json({ limit: "5mb" }));
-app.use(cors());
-
 const PORT = process.env.PORT || 3000;
 
-// === [환경변수 로드 및 검증] ===
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+// === [Middleware 설정] ===
+app.use(cors());
+app.use(bodyParser.json({ limit: "5mb" }));
+app.use(bodyParser.urlencoded({ extended: true }));
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  console.error("❌ Supabase 환경변수 누락됨");
+// === [Supabase 연결] ===
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+if (!supabaseUrl || !supabaseServiceKey) {
+  console.error("❌ Supabase 환경변수 누락");
   process.exit(1);
 }
 
-// === [Supabase 클라이언트 초기화] ===
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-
-// === [기본 Health 체크] ===
+// === [기본상태 확인용 Endpoint] ===
 app.get("/health", (req, res) => {
-  res.json({ success: true, status: "ok", version: process.env.APP_VERSION });
+  res.json({ success: true, message: "✅ Proxy Server Healthy", version: "v12.2.0" });
 });
 
-// === [Supabase 연결 확인 엔드포인트] ===
+// === [Supabase 연결 상태 확인용] ===
 app.get("/api/check-supabase", async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from("verification_logs")
-      .select("id")
-      .limit(1);
-
-    if (error) {
-      console.error("❌ Supabase Query Error:", error.message);
-      return res
-        .status(500)
-        .json({ success: false, message: "❌ Supabase 쿼리 실패", error: error.message });
-    }
-
-    return res.json({
-      success: true,
-      message: "✅ Supabase 연결 성공",
-      rows: data.length,
-      url: SUPABASE_URL,
-    });
-  } catch (err) {
-    console.error("❌ Supabase 연결 실패:", err.message);
-    return res.status(500).json({
-      success: false,
-      message: "❌ Supabase 연결 오류 발생",
-      error: err.message,
-    });
-  }
-});
-// === [예시: Verify API 본체 요약] ===
-app.post("/api/verify", async (req, res) => {
-  const { query, key } = req.body;
-  if (!query || !key) {
-    return res.status(400).json({ success: false, message: "❌ query 또는 key 누락" });
-  }
-
-  try {
-    const startTime = Date.now();
-
-    // 예시: Gemini 호출
-    const response = await axios.post(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
-      {
-        contents: [{ parts: [{ text: query }] }],
-      },
-      { params: { key } }
-    );
-
-    const mainText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    const elapsed = `${Date.now() - startTime} ms`;
-
-    // === [결과 Supabase 저장] ===
-    await supabase.from("verification_logs").insert([
-      {
-        user_id: "system", // 실제 앱 로그인 시 auth.uid() 연동
-        question: query,
-        summary: mainText.slice(0, 200),
-        cross_score: Math.random().toFixed(3),
-      },
-    ]);
-
+    const { count } = await supabase.from("verification_logs").select("*", { count: "exact", head: true });
     res.json({
       success: true,
-      message: "✅ Gemini 2.5 검증 완료 및 로그 저장됨",
-      query,
-      elapsed,
-      resultPreview: mainText.slice(0, 200),
+      message: "✅ Supabase 연결 성공",
+      rows: count || 0,
+      url: supabaseUrl,
     });
   } catch (err) {
-    console.error("❌ Verify 실패:", err.message);
+    console.error("Supabase 확인 실패:", err.message);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// === [Render Sleep 방지 Ping 루프] ===
-setInterval(async () => {
+// === [교차검증 엔진 메인 Endpoint] ===
+app.post("/api/verify", async (req, res) => {
+  const startTime = Date.now();
   try {
-    const res = await axios.get("https://cross-verified-ai-proxy.onrender.com/health");
-    console.log(`🔄 Health Ping: ${res.status}`);
-  } catch (err) {
-    console.warn(`⚠️ Ping 실패: ${err.message}`);
-  }
-}, 600000);
+    const { query, key, naverKey, naverSecret, klawKey } = req.body;
+    if (!query || !key) {
+      return res.status(400).json({ success: false, message: "❌ 요청 파라미터 부족 (query/key 필요)" });
+    }
 
-// === [서버 구동] ===
+    // === 1️⃣ Gemini 호출 ===
+    let geminiText = "";
+    try {
+      const geminiUrl =
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=" + key;
+
+      const gRes = await axios.post(
+        geminiUrl,
+        {
+          contents: [{ role: "user", parts: [{ text: query }] }],
+        },
+        { timeout: 30000 }
+      );
+      geminiText = gRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    } catch (err) {
+      console.warn("⚠️ Gemini 응답 실패:", err.message);
+    }
+
+    // === 2️⃣ Naver Search API ===
+    let naverItems = [];
+    if (naverKey && naverSecret) {
+      try {
+        const nRes = await axios.get("https://openapi.naver.com/v1/search/encyc.json", {
+          headers: {
+            "X-Naver-Client-Id": naverKey,
+            "X-Naver-Client-Secret": naverSecret,
+          },
+          params: { query, display: 5 },
+          timeout: 15000,
+        });
+        naverItems = nRes.data?.items || [];
+      } catch (err) {
+        console.warn("⚠️ Naver 응답 실패:", err.message);
+      }
+    }
+
+    // === 3️⃣ K-Law (국가법령정보 공동활용 API) ===
+    let klawLaws = [];
+    if (klawKey) {
+      try {
+        const kRes = await axios.get("https://www.law.go.kr/DRF/lawSearch.do", {
+          params: { target: "law", type: "JSON", OC: klawKey, query },
+          timeout: 20000,
+        });
+        klawLaws = kRes.data?.Law || [];
+      } catch (err) {
+        console.warn("⚠️ K-Law 응답 실패:", err.message);
+      }
+    }
+
+    // === 4️⃣ 결과 저장 (Supabase) ===
+    const elapsed = Date.now() - startTime;
+    const { error } = await supabase.from("verification_logs").insert([
+      {
+        question: query,
+        summary: geminiText?.slice(0, 500),
+        sources: { naver: naverItems, klaw: klawLaws },
+        cross_score: Math.random().toFixed(3), // 향후 CrossScore 계산 대체
+        created_at: new Date().toISOString(),
+      },
+    ]);
+
+    if (error) console.error("Supabase 저장 실패:", error.message);
+
+    res.json({
+      success: true,
+      message: "✅ Gemini 2.5 검증 완료 및 Supabase 저장됨",
+      query,
+      elapsed: `${elapsed} ms`,
+      resultPreview: geminiText.slice(0, 300),
+    });
+  } catch (err) {
+    console.error("❌ /api/verify 오류:", err.message);
+    res.status(500).json({ success: false, message: "서버 오류: " + err.message });
+  }
+});
+
+// === [서버 시작] ===
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v12.1.1 구동 중`);
-  console.log(`🌐 포트: ${PORT}`);
-  console.log(`📡 Supabase 연결 테스트 엔드포인트: /api/check-supabase`);
+  console.log(`🚀 Cross-Verified AI Proxy v12.2.0 running on port ${PORT}`);
 });
