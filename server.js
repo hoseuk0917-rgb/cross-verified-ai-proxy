@@ -68,25 +68,26 @@ app.post("/api/verify", async (req, res) => {
     const response = await axios.post(endpoint, payload, { timeout: GEMINI_TIMEOUT_MS });
     const resultText =
       response.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
-      response.data?.output || "";
+      response.data?.output ||
+      "";
 
+    // 🕒 응답 소요시간(ms)
     const elapsedMs = Date.now() - startTime;
 
-    // 간단한 요약 (앞부분 300자)
-    const summary =
-      resultText.length > 300 ? resultText.slice(0, 300) + "..." : resultText;
+    // 🧩 간단 요약 (300자 이내)
+    const summary = resultText.length > 300 ? resultText.slice(0, 300) + "..." : resultText;
 
-    // 임시 CrossScore 계산 (문장 길이 기반)
+    // 🎯 CrossScore 계산 (문장 길이 기반)
     const crossScore = parseFloat((Math.min(resultText.length / 1000, 1) * 0.9 + 0.1).toFixed(3));
 
-    // Supabase 저장
+    // ✅ Supabase 저장 (elapsed을 숫자형으로 저장)
     const { error } = await supabase.from("verification_logs").insert([
       {
         question: query,
         cross_score: crossScore,
         truth_score: null,
         summary,
-        elapsed: `${elapsedMs} ms`,
+        elapsed: elapsedMs,              // ✅ 수정된 부분
         status: "completed",
         model_main: GEMINI_MODEL,
         created_at: new Date().toISOString()
@@ -110,8 +111,9 @@ app.post("/api/verify", async (req, res) => {
     res.status(500).json({ success: false, message: `서버 오류: ${err.message}` });
   }
 });
+
 // ==========================
-// ⚖️ K-Law 법령 API (선택적 호출)
+// ⚖️ K-Law 법령 API
 // ==========================
 app.post("/api/klaw", async (req, res) => {
   const { query, klawKey } = req.body;
@@ -120,9 +122,7 @@ app.post("/api/klaw", async (req, res) => {
   }
 
   try {
-    const url = `https://www.law.go.kr/DRF/lawSearch.do?OC=${klawKey}&target=law&type=JSON&query=${encodeURIComponent(
-      query
-    )}`;
+    const url = `https://www.law.go.kr/DRF/lawSearch.do?OC=${klawKey}&target=law&type=JSON&query=${encodeURIComponent(query)}`;
     const result = await axios.get(url, { timeout: 10000 });
     res.json({ success: true, message: "✅ K-Law 응답 수신", data: result.data });
   } catch (err) {
@@ -131,7 +131,7 @@ app.post("/api/klaw", async (req, res) => {
 });
 
 // ==========================
-// 🔎 NAVER 요약/검색 API (선택적 호출)
+// 🔎 NAVER 검색 API
 // ==========================
 app.post("/api/naver", async (req, res) => {
   const { query, naverKey, naverSecret } = req.body;
@@ -142,7 +142,10 @@ app.post("/api/naver", async (req, res) => {
   try {
     const response = await axios.get("https://openapi.naver.com/v1/search/news.json", {
       params: { query, display: 5, sort: "sim" },
-      headers: { "X-Naver-Client-Id": naverKey, "X-Naver-Client-Secret": naverSecret },
+      headers: {
+        "X-Naver-Client-Id": naverKey,
+        "X-Naver-Client-Secret": naverSecret
+      },
       timeout: 8000
     });
     res.json({ success: true, message: "✅ NAVER 응답 수신", items: response.data.items });
@@ -155,7 +158,7 @@ app.post("/api/naver", async (req, res) => {
 // 🧾 서버 로그 및 실행부
 // ==========================
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v12.0.8 실행 중 (포트: ${PORT})`);
+  console.log(`🚀 Cross-Verified AI Proxy v12.2.1 실행 중 (포트: ${PORT})`);
   console.log(`🌐 Supabase 연결: ${SUPABASE_URL}`);
   console.log(`🧠 기본 모델: ${GEMINI_MODEL}`);
 });
