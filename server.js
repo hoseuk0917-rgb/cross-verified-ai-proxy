@@ -1,5 +1,5 @@
-// Cross-Verified AI Proxy — v13.6.2 (Full Recovery)
-// Render + Supabase + OAuth + Gemini Flash/Pro + Flash-Lite Keyword Extraction + Verify + DB Test
+// Cross-Verified AI Proxy — v13.7.1 (Full Adaptive Verify Expansion)
+// Render + Supabase + OAuth + Gemini Flash/Pro + Flash-Lite Keyword Extraction + Verify + DB Test + Sentence Confidence
 
 import express from "express";
 import session from "express-session";
@@ -70,12 +70,9 @@ passport.use(new GoogleStrategy({
     const whitelist = process.env.ADMIN_WHITELIST?.split(",") || [];
     if (!whitelist.includes(email))
       return done(new Error("Unauthorized admin user"));
-
     await supabase.from("users").upsert([{ email, name: profile.displayName }], { onConflict: "email" });
     return done(null, { email, name: profile.displayName });
-  } catch (err) {
-    return done(err);
-  }
+  } catch (err) { return done(err); }
 }));
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
@@ -94,7 +91,6 @@ app.get("/auth/admin/callback",
     res.send(`<h2>✅ OAuth Login Success</h2><p>${name} (${email})</p>`);
   });
 app.get("/auth/failure", (req, res) => res.status(401).send("❌ OAuth Failed"));
-
 // ─────────────────────────────
 // ✅ Flash-Lite 핵심어 추출 및 보정 (/api/extract-keywords)
 // ─────────────────────────────
@@ -105,70 +101,40 @@ app.post("/api/extract-keywords", async (req, res) => {
       return res.status(400).json({ success: false, message: "❌ key 또는 query 누락" });
 
     const model = "gemini-2.5-flash-lite";
-
-    // ① Flash-Lite 요청
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-      {
-        contents: [
-          {
-            parts: [
-              { text: `다음 문장에서 핵심 검색어만 나열해줘. 불필요한 단어 제외:\n"${query}"` },
-            ],
-          },
-        ],
-      }
+      { contents: [{ parts: [{ text: `다음 문장에서 핵심 검색어만 나열해줘:\n"${query}"` }] }] }
     );
 
-    // ② 정제(Clean-Up)
-    let rawText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    let clean = rawText
+    let raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    let clean = raw
       .replace(/[#*•`]/g, "")
       .replace(/(핵심|검색|구문|조건|설명)/g, "")
       .replace(/[^\w가-힣\s]/g, "")
       .replace(/\s+/g, " ")
       .trim();
 
-    // ③ 논리 보정 (OR / AND 판별)
     const hasOr = /(또는|or|,|\/)/i.test(query);
     const hasAnd = /(과|및|와|그리고)/i.test(query);
     const mode = hasOr ? "OR" : hasAnd ? "AND" : "AND";
 
-    // ④ 의미 확장 (공통 Prefix 보강)
     const tokens = clean.split(" ").filter((t) => t.length > 1);
-    let expanded = clean;
     const commonPrefix = query.match(/\b(UAM|AI|SmartCity|스마트시티)\b/i);
+    let expanded = clean;
     if (commonPrefix && tokens.length >= 2 && mode === "OR") {
       expanded = `${commonPrefix[0]} ${tokens[0]} OR ${commonPrefix[0]} ${tokens[1]}`;
     }
 
-    // ⑤ 최종 쿼리 구성
     const finalQuery =
       mode === "OR"
         ? expanded.replace(/\s+OR\s+/g, " OR ")
         : expanded.split(" ").join(" AND ");
 
-    // ⑥ Supabase 저장
     await supabase.from("keyword_logs").insert([
-      {
-        query,
-        raw_keywords: rawText,
-        clean_keywords: clean,
-        logic_keywords: finalQuery,
-        mode,
-        engine: model,
-      },
+      { query, raw_keywords: raw, clean_keywords: clean, logic_keywords: finalQuery, mode, engine: model },
     ]);
 
-    // ⑦ 응답
-    res.json({
-      success: true,
-      engine: model,
-      mode,
-      raw: rawText.trim(),
-      clean,
-      final: finalQuery,
-    });
+    res.json({ success: true, engine: model, mode, raw: raw.trim(), clean, final: finalQuery });
   } catch (err) {
     console.error("❌ /api/extract-keywords Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -196,38 +162,80 @@ app.post("/api/test-gemini", async (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ Gemini Flash & Pro 병렬 검증
+// ✅ Adaptive Verify (Flash + Pro / Pro-only / Flash-only)
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
-  const { query, key } = req.body;
+  const { query, key, mode = "auto" } = req.body;
   if (!query || !key)
     return res.status(400).json({ success: false, message: "❌ query 또는 key 누락" });
 
   try {
     const start = Date.now();
-    const models = ["gemini-2.5-flash", "gemini-2.5-pro"];
-    const results = await Promise.allSettled(models.map(async (model) => {
+
+    // 1️⃣ Pro 전용
+    if (mode === "pro-only") {
       const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${key}`,
         { contents: [{ parts: [{ text: query }] }] }
       );
-      return { model, text: response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "" };
-    }));
+      const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      await supabase.from("verification_logs").insert([{ query, engine: "gemini-2.5-pro", result: text }]);
+      return res.json({ success: true, message: "✅ Pro 모드 결과 저장 완료", text });
+    }
+
+    // 2️⃣ Flash 전용
+    if (mode === "flash-only") {
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`,
+        { contents: [{ parts: [{ text: query }] }] }
+      );
+      const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      await supabase.from("verification_logs").insert([{ query, engine: "gemini-2.5-flash", result: text }]);
+      return res.json({ success: true, message: "✅ Flash 모드 결과 저장 완료", text });
+    }
+
+    // 3️⃣ 기본 Auto (Flash + Pro 병렬 검증 + 문장단위 신뢰도)
+    const models = ["gemini-2.5-flash", "gemini-2.5-pro"];
+    const results = await Promise.allSettled(
+      models.map(async (m) => {
+        const r = await axios.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${key}`,
+          { contents: [{ parts: [{ text: query }] }] }
+        );
+        return { model: m, text: r.data?.candidates?.[0]?.content?.parts?.[0]?.text || "" };
+      })
+    );
 
     const merged = results.filter(r => r.status === "fulfilled").map(r => r.value);
+    const flashText = merged.find(m => m.model.includes("flash"))?.text || "";
+    const proText = merged.find(m => m.model.includes("pro"))?.text || "";
+
+    const sentences = proText.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
+    const partial = sentences.map((s, i) => {
+      const normalized = s.toLowerCase().replace(/\s+/g, " ");
+      const match = flashText.toLowerCase().includes(normalized.split(" ").slice(0, 5).join(" "));
+      const confidence = match ? "high" : "medium";
+      const icon = match ? "✔️" : "❓";
+      return { id: i + 1, sentence: s, confidence, icon };
+    });
+    const avg = (partial.filter(p => p.confidence === "high").length / partial.length) || 0;
     const elapsed = `${Date.now() - start} ms`;
 
-    await supabase.from("verification_logs").insert(merged.map(m => ({
-      query, engine: m.model, result: m.text, elapsed
-    })));
+    await supabase.from("verification_logs").insert(
+      merged.map(m => ({ query, engine: m.model, result: m.text, elapsed, confidence: avg }))
+    );
+    await supabase.from("sentence_logs").insert(
+      partial.map(p => ({ query, sentence: p.sentence, confidence: p.confidence, icon: p.icon }))
+    );
 
     res.json({
       success: true,
-      message: "✅ Gemini Flash & Pro 검증 완료 및 DB 저장됨",
+      message: "✅ Adaptive Verify 완료 및 DB 저장됨",
       query,
+      mode,
       elapsed,
-      models: merged.map(m => m.model),
-      preview: merged.map(m => ({ engine: m.model, result: m.text.slice(0, 150) })),
+      summary_confidence: avg.toFixed(2),
+      sentences: partial,
     });
   } catch (err) {
     console.error("❌ /api/verify Error:", err.message);
@@ -255,19 +263,17 @@ app.get("/api/test-db", async (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ Health Check
+// ✅ Health Check 및 서버 실행
 // ─────────────────────────────
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
-});
+app.get("/health", (req, res) =>
+  res.status(200).json({ status: "ok", timestamp: new Date().toISOString() })
+);
 
-// ─────────────────────────────
-// ✅ 서버 실행
-// ─────────────────────────────
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v13.6.2 running on port ${PORT}`);
+  console.log(`🚀 Cross-Verified AI Proxy v13.7.1 running on port ${PORT}`);
   console.log(`🌐 Health: http://localhost:${PORT}/health`);
   console.log(`🧠 DB Test: http://localhost:${PORT}/api/test-db`);
   console.log(`🔑 Keyword Extract: POST /api/extract-keywords`);
   console.log(`🤖 Verify: POST /api/verify`);
 });
+
