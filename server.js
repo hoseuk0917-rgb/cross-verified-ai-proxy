@@ -49,7 +49,10 @@ const pgPool = new pg.Pool({
 
 app.use(
   session({
-    store: new PgStore({ pool: pgPool, tableName: "sessions" }),
+    store: new PgStore({
+      pool: pgPool,
+      tableName: "session_store" // 기존 sessions → 변경
+    }),
     secret: process.env.SESSION_SECRET || "dev-secret",
     resave: false,
     saveUninitialized: false,
