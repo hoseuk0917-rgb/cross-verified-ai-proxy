@@ -1,7 +1,7 @@
 {
   "name": "cross-verified-ai-proxy",
-  "version": "12.0.7",
-  "description": "Cross-Verified AI Proxy Server (Gemini 2.5 + TruthScore + Keep-Alive Optimized + Render Stable)",
+  "version": "12.5.0",
+  "description": "Cross-Verified AI Proxy Server (Dual Google OAuth + Supabase Admin Dashboard + TruthScore + Render Stable)",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -16,10 +16,13 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
+    "express-session": "^1.17.3",
     "google-auth-library": "^10.5.0",
     "https": "^1.0.0",
     "morgan": "^1.10.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0"
   },
   "engines": {
     "node": ">=20.x"
@@ -31,9 +34,11 @@
     "Render",
     "Express",
     "Proxy",
-    "Keep-Alive",
+    "Supabase",
+    "Google-OAuth",
+    "Admin-Dashboard",
     "TruthScore",
-    "SPA-Routing"
+    "Keep-Alive"
   ],
   "author": "Ho Seok Goh",
   "license": "MIT"
