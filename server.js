@@ -156,20 +156,34 @@ app.get("/auth/failure", (req, res) =>
 );
 
 // ─────────────────────────────
-// ✅ /health — Render용 서버 상태 점검
+// ✅ /health — Render용 서버 상태 점검 (안정형)
 // ─────────────────────────────
 app.get("/health", async (req, res) => {
   try {
-    const { error } = await supabase.from("verification_logs").select("id").limit(1);
+    // 임시 테스트용: 존재하는 테이블로 변경 (예: users 또는 sessions)
+    const { data, error } = await supabase.from("users").select("id").limit(1);
+
+    if (error) {
+      console.warn("⚠️ Supabase query error:", error.message);
+      return res.status(200).json({
+        status: "ok",
+        db: "partial",
+        message: error.message,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     res.status(200).json({
       status: "ok",
-      db: error ? "partial" : "connected",
+      db: "connected",
+      rows: data?.length || 0,
       timestamp: new Date().toISOString(),
     });
-  } catch {
-    res.status(200).json({
-      status: "ok",
-      db: "unverified",
+  } catch (err) {
+    console.error("❌ /health fatal error:", err.message);
+    res.status(500).json({
+      status: "error",
+      message: err.message,
       timestamp: new Date().toISOString(),
     });
   }
