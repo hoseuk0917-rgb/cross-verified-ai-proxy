@@ -1,139 +1,191 @@
-// ===============================================
-// Cross-Verified AI Proxy v13.2.0 (Supabase + OAuth + SessionStore)
-// ===============================================
+// ============================================
+// Cross-Verified AI Proxy v13.2.1
+// (Render + Supabase + Google OAuth + Health Fix)
+// ============================================
+
 import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
+import dotenv from "dotenv";
 import morgan from "morgan";
 import session from "express-session";
+import pgSession from "connect-pg-simple";
 import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
-import pg from "pg";
-import connectPgSimple from "connect-pg-simple";
-import dotenv from "dotenv";
-import axios from "axios";
-import fetch from "node-fetch";
-import { createClient } from "@supabase/supabase-js";
+import pkg from "@supabase/supabase-js";
+const { createClient } = pkg;
 
+// ===========================
+// ✅ 환경설정 로드
+// ===========================
 dotenv.config();
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
+const APP_VERSION = process.env.APP_VERSION || "v13.2.1";
 
-// ------------------------
-// Core Middleware
-// ------------------------
+// ===========================
+// ✅ 미들웨어
+// ===========================
 app.use(cors({ origin: "*", credentials: true }));
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: "5mb" }));
 app.use(morgan("dev"));
 
-// ------------------------
-// PostgreSQL & Supabase 설정
-// ------------------------
-const { Pool } = pg;
-const PgSession = connectPgSimple(session);
+// ===========================
+// ✅ PostgreSQL 세션 스토어 설정
+// ===========================
+const PgSession = pgSession(session);
 
-const pgPool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+const pgStore = new PgSession({
+  conString: process.env.SUPABASE_DB_URL, // IPv4 연결용 .net 도메인 사용
+  createTableIfMissing: true,
 });
 
-pgPool.connect()
-  .then(() => console.log("🟢 PostgreSQL (Supabase SessionStore) 연결 완료"))
-  .catch(err => console.error("🔴 PostgreSQL 연결 실패:", err.message));
+app.use(
+  session({
+    store: pgStore,
+    secret: process.env.SESSION_SECRET || "my-session-secret",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: process.env.NODE_ENV === "production",
+      httpOnly: true,
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30일
+    },
+  })
+);
 
-app.use(session({
-  store: new PgSession({ pool: pgPool, tableName: "sessions" }),
-  secret: process.env.SESSION_SECRET || "default_secret",
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    secure: false, // Render에서는 자동 HTTPS 적용됨
-    maxAge: 24 * 60 * 60 * 1000, // 1일
-  },
-}));
-
-// ------------------------
-// Passport (Google OAuth Admin)
-// ------------------------
-app.use(passport.initialize());
-app.use(passport.session());
-
-passport.use("google-admin", new GoogleStrategy({
-  clientID: process.env.GOOGLE_ADMIN_CLIENT_ID,
-  clientSecret: process.env.GOOGLE_ADMIN_CLIENT_SECRET,
-  callbackURL: process.env.GOOGLE_ADMIN_CALLBACK_URL,
-}, (accessToken, refreshToken, profile, done) => {
-  if (process.env.ADMIN_WHITELIST?.split(",").includes(profile.emails[0].value)) {
-    return done(null, profile);
-  }
-  return done(new Error("허용되지 않은 사용자 접근"), null);
-}));
+// ===========================
+// ✅ Passport (Google OAuth)
+// ===========================
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_ADMIN_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_ADMIN_CLIENT_SECRET,
+      callbackURL: process.env.GOOGLE_ADMIN_CALLBACK_URL,
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      const allowedAdmins = (process.env.ADMIN_WHITELIST || "").split(",");
+      if (allowedAdmins.includes(profile.emails[0].value)) {
+        return done(null, profile);
+      } else {
+        return done(null, false, { message: "허용되지 않은 관리자 계정" });
+      }
+    }
+  )
+);
 
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((obj, done) => done(null, obj));
 
-// ------------------------
-// Supabase Client
-// ------------------------
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+app.use(passport.initialize());
+app.use(passport.session());
 
-// ------------------------
-// Routes
-// ------------------------
+// ===========================
+// ✅ Supabase 연결
+// ===========================
+let supabase = null;
+try {
+  supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY
+  );
+  console.log(`🟢 Supabase 연결 완료: ${process.env.SUPABASE_URL}`);
+} catch (err) {
+  console.error("🔴 Supabase 연결 실패:", err.message);
+}
 
-// Health check
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", version: "v13.2.0", time: new Date().toISOString() });
+// ===========================
+// ✅ Health Check (Render용 고정 경로)
+// ===========================
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    version: APP_VERSION,
+    timestamp: new Date().toISOString(),
+  });
 });
 
-// Google OAuth (Admin)
-app.get("/auth/admin", passport.authenticate("google-admin", {
-  scope: ["profile", "email"],
-}));
-app.get("/auth/admin/callback",
-  passport.authenticate("google-admin", {
-    failureRedirect: "/auth/fail",
-    session: true,
-  }),
-  (req, res) => res.send(`<h2>✅ 로그인 성공</h2><p>${req.user.displayName}</p>`)
+// ===========================
+// ✅ 루트 페이지
+// ===========================
+app.get("/", (req, res) => {
+  res.send(
+    `<h2>🚀 Cross-Verified AI Proxy (${APP_VERSION})</h2><p>Server is running at ${new Date().toISOString()}</p>`
+  );
+});
+
+// ===========================
+// ✅ 관리자 로그인 (Google OAuth)
+// ===========================
+app.get("/auth/admin", passport.authenticate("google", { scope: ["email", "profile"] }));
+
+app.get(
+  "/auth/admin/callback",
+  passport.authenticate("google", {
+    failureRedirect: "/auth/failure",
+    successRedirect: "/admin/dashboard",
+  })
 );
-app.get("/auth/fail", (req, res) => res.status(401).send("❌ 로그인 실패"));
 
-// Main verification endpoint
-app.post("/api/verify", async (req, res) => {
-  const { query, key } = req.body;
-  if (!query) return res.status(400).json({ error: "Missing query" });
+app.get("/auth/failure", (req, res) => {
+  res.status(403).send("❌ 관리자 인증 실패");
+});
 
+// ===========================
+// ✅ 관리자 대시보드
+// ===========================
+app.get("/admin/dashboard", async (req, res) => {
+  if (!req.isAuthenticated()) {
+    return res.status(401).send("❌ 관리자 로그인이 필요합니다.");
+  }
   try {
-    const response = await axios.post(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + key,
-      { contents: [{ parts: [{ text: query }] }] }
-    );
+    const { data, error } = await supabase
+      .from("verification_logs")
+      .select("id, query, model, cross_score, elapsed, status, created_at")
+      .order("id", { ascending: false })
+      .limit(10);
 
-    const resultText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "No result";
-    await supabase.from("verification_logs").insert([
-      { query, result: resultText, created_at: new Date() },
-    ]);
+    if (error) throw error;
 
-    res.json({
-      success: true,
-      result: resultText,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("Gemini API Error:", error.message);
-    res.status(500).json({ error: "Internal verification error" });
+    const rows = data
+      .map(
+        (r) => `<tr>
+          <td>${r.id}</td><td>${r.query?.slice(0, 40) || "-"}</td>
+          <td>${r.model || "-"}</td><td>${r.cross_score || "-"}</td>
+          <td>${r.elapsed || "-"}</td><td>${r.status || "-"}</td>
+          <td>${r.created_at}</td></tr>`
+      )
+      .join("");
+
+    res.send(`
+      <html><head><meta charset="utf-8">
+      <title>Admin Dashboard</title>
+      <style>
+      body{font-family:Arial,sans-serif;padding:16px}
+      table{border-collapse:collapse;width:100%}
+      td,th{border:1px solid #ccc;padding:6px;text-align:center}
+      th{background:#f5f5f5}
+      </style></head>
+      <body>
+      <h2>✅ Cross-Verified Admin Dashboard</h2>
+      <p>Logged in as <b>${req.user.displayName}</b> (${req.user.emails[0].value})</p>
+      <table>
+      <thead><tr><th>ID</th><th>Query</th><th>Model</th><th>Score</th><th>Elapsed</th><th>Status</th><th>Created</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      </body></html>
+    `);
+  } catch (err) {
+    console.error("❌ Dashboard Error:", err.message);
+    res.status(500).send("서버 오류");
   }
 });
 
-// ------------------------
-// Start Server
-// ------------------------
-app.listen(port, () => {
-  console.log(`🚀 Cross-Verified AI Proxy (v13.2.0) 실행 중 - 포트: ${port}`);
-  console.log(`🌐 Health: http://localhost:${port}/api/health`);
+// ===========================
+// ✅ 서버 실행
+// ===========================
+app.listen(PORT, () => {
+  console.log(`🚀 Cross-Verified AI Proxy (${APP_VERSION}) 실행 중 - 포트: ${PORT}`);
+  console.log(`🌐 Health: http://localhost:${PORT}/health`);
   console.log(`🔑 OAuth Admin: ${process.env.GOOGLE_ADMIN_CALLBACK_URL}`);
 });
