@@ -1,209 +1,218 @@
-/**
- * Cross-Verified AI Proxy v12.6.1
- * Features:
- *  - Google OAuth 2.0 로그인 (관리자 대시보드)
- *  - Supabase DB 세션 및 로그 연동
- *  - Token 기반 관리자 접근 (/admin)
- *  - Render Health Check (/health) 통합 고정
- */
-
 import express from "express";
-import session from "express-session";
-import passport from "passport";
-import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import bodyParser from "body-parser";
+import axios from "axios";
 import cors from "cors";
 import dotenv from "dotenv";
-import pkg from "pg";
-import connectPgSimple from "connect-pg-simple";
 import { createClient } from "@supabase/supabase-js";
+import passport from "passport";
+import { Strategy as GoogleStrategy } from "passport-google-oauth20";
+import morgan from "morgan";
 
 dotenv.config();
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-//────────────────────────────
-// 📦 Supabase 연결
-//────────────────────────────
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
-
-const { Pool } = pkg;
-const PgSession = connectPgSimple(session);
-const pgPool = new Pool({
-  connectionString: process.env.SUPABASE_DB_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
-//────────────────────────────
-// 🧩 미들웨어 설정
-//────────────────────────────
+app.use(bodyParser.json({ limit: "5mb" }));
 app.use(cors());
-app.use(bodyParser.json());
-app.use(
-  session({
-    store: new PgSession({
-      pool: pgPool,
-      tableName: "session",
-      createTableIfMissing: true,
-    }),
-    secret: process.env.SESSION_SECRET || "cross-verified-secret",
-    resave: false,
-    saveUninitialized: false,
-    cookie: { maxAge: 3600000 }, // 1시간
-  })
-);
-app.use(passport.initialize());
-app.use(passport.session());
+app.use(morgan("dev"));
 
-//────────────────────────────
-// 🔑 Passport Google OAuth 설정
-//────────────────────────────
+// ================================
+// 🔧 환경 변수
+// ================================
+const PORT = process.env.PORT || 3000;
+const GEMINI_MODEL = process.env.DEFAULT_MODEL || "gemini-2.5-flash";
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL; // 마스터 관리자 이메일
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const GOOGLE_CALLBACK_URL = process.env.GOOGLE_CALLBACK_URL;
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+
+// ================================
+// 🧠 Google OAuth 설정
+// ================================
 passport.use(
   new GoogleStrategy(
     {
-      clientID: process.env.GOOGLE_ADMIN_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_ADMIN_CLIENT_SECRET,
-      callbackURL: process.env.GOOGLE_ADMIN_CALLBACK_URL,
+      clientID: GOOGLE_CLIENT_ID,
+      clientSecret: GOOGLE_CLIENT_SECRET,
+      callbackURL: GOOGLE_CALLBACK_URL,
     },
     async (accessToken, refreshToken, profile, done) => {
-      const email = profile.emails?.[0]?.value;
-      if (email === process.env.ADMIN_WHITELIST) return done(null, profile);
-      return done(null, false, { message: "Unauthorized" });
+      const email = profile.emails[0].value;
+      try {
+        // Supabase 세션 저장
+        await supabase.from("sessions").insert([
+          {
+            user_email: email,
+            access_token: accessToken,
+            refresh_token: refreshToken,
+            expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          },
+        ]);
+        return done(null, { email });
+      } catch (err) {
+        console.error("❌ Supabase 세션 저장 실패:", err.message);
+        return done(err, null);
+      }
     }
   )
 );
 
-passport.serializeUser((user, done) => done(null, user));
-passport.deserializeUser((obj, done) => done(null, obj));
+app.use(passport.initialize());
 
-//────────────────────────────
-// 🌐 OAuth 라우트
-//────────────────────────────
-app.get("/auth/admin", passport.authenticate("google", { scope: ["email", "profile"] }));
+// ================================
+// 🚀 기본 헬스체크
+// ================================
+app.get("/health", (req, res) => {
+  res.json({ success: true, message: "✅ Proxy Server Healthy", version: "v12.8.0" });
+});
+
+// ================================
+// 🔗 Google OAuth 엔드포인트
+// ================================
+app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
 
 app.get(
-  "/auth/admin/callback",
-  passport.authenticate("google", {
-    failureRedirect: "/auth/failure",
-    successRedirect: "/admin",
-  })
+  "/auth/google/callback",
+  passport.authenticate("google", { failureRedirect: "/auth/fail" }),
+  async (req, res) => {
+    res.redirect("/admin");
+  }
 );
 
-app.get("/auth/failure", (req, res) => res.status(403).send("❌ OAuth 인증 실패"));
-app.get("/logout", (req, res) => req.logout(() => res.redirect("/")));
-
-//────────────────────────────
-// 🧠 관리자 페이지 (/admin)
-//────────────────────────────
-app.get("/admin", async (req, res) => {
-  // ✅ 1단계: 토큰 인증 확인
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.split(" ")[1];
-  if (token === process.env.ADMIN_SECRET) {
-    const { data, error } = await supabase
-      .from("verification_logs")
-      .select("*")
-      .order("id", { ascending: false })
-      .limit(5);
-    if (error) return res.status(500).send("DB 조회 오류");
-
-    const rows = data
-      .map(
-        (r) => `
-        <tr>
-          <td>${r.id}</td>
-          <td>${r.question?.slice(0, 40) || ""}</td>
-          <td>${r.model_main || ""}</td>
-          <td>${r.cross_score || ""}</td>
-          <td>${r.elapsed || ""}</td>
-          <td>${r.status || ""}</td>
-          <td>${r.created_at || ""}</td>
-        </tr>`
-      )
-      .join("");
-
-    return res.send(`
-      <!doctype html>
-      <html><head><meta charset="utf-8"><title>Admin Dashboard</title>
-      <style>body{font-family:Arial,Helvetica,sans-serif;padding:16px;background:#fafafa}
-      table{border-collapse:collapse;width:100%}
-      th,td{border:1px solid #ddd;padding:8px;text-align:left}
-      th{background:#eee}</style></head><body>
-      <h2>✅ Cross-Verified Admin Dashboard</h2>
-      <table><thead><tr><th>ID</th><th>Query</th><th>Model</th><th>Score</th><th>Time</th><th>Status</th><th>Created</th></tr></thead>
-      <tbody>${rows}</tbody></table>
-      <p style="margin-top:20px;font-size:12px;color:#666;">Access via Bearer Token</p>
-      </body></html>
-    `);
-  }
-
-  // ✅ 2단계: OAuth 세션 인증
-  if (req.isAuthenticated() && req.user) {
-    const { data } = await supabase
-      .from("verification_logs")
-      .select("*")
-      .order("id", { ascending: false })
-      .limit(5);
-
-    const rows = data
-      .map(
-        (r) => `
-        <tr>
-          <td>${r.id}</td>
-          <td>${r.question?.slice(0, 40) || ""}</td>
-          <td>${r.model_main || ""}</td>
-          <td>${r.cross_score || ""}</td>
-          <td>${r.elapsed || ""}</td>
-          <td>${r.status || ""}</td>
-          <td>${r.created_at || ""}</td>
-        </tr>`
-      )
-      .join("");
-
-    return res.send(`
-      <!doctype html>
-      <html><head><meta charset="utf-8"><title>Admin Dashboard</title></head>
-      <body><h2>✅ OAuth 로그인 성공 (${req.user.emails[0].value})</h2>
-      <table border="1" cellpadding="6"><tr><th>ID</th><th>Query</th><th>Model</th><th>Score</th><th>Time</th><th>Status</th><th>Created</th></tr>
-      ${rows}</table></body></html>
-    `);
-  }
-
-  res.status(401).send("Unauthorized: 로그인 필요");
+app.get("/auth/fail", (req, res) => {
+  res.status(401).send("❌ Google OAuth 인증 실패");
 });
 
-//────────────────────────────
-// 💓 통합 Health Check (/health 고정)
-//────────────────────────────
-app.get("/health", async (req, res) => {
+// ================================
+// ⚙️ Supabase 세션 검증 함수
+// ================================
+async function verifySession(email) {
+  const { data, error } = await supabase
+    .from("sessions")
+    .select("*")
+    .eq("user_email", email)
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (error || !data || data.length === 0) return false;
+  const session = data[0];
+  if (new Date(session.expires_at) < new Date()) return false;
+  return true;
+}
+
+// ================================
+// 🧾 Admin Dashboard
+// ================================
+app.get("/admin", async (req, res) => {
+  const userEmail = req.query.email;
+  if (!userEmail) {
+    return res.status(400).send("❌ 이메일 정보가 필요합니다 (예: /admin?email=user@gmail.com)");
+  }
+
+  if (userEmail !== ADMIN_EMAIL) {
+    return res.status(403).send("❌ 관리자 접근 거부 (허용되지 않은 이메일)");
+  }
+
+  const isValid = await verifySession(userEmail);
+  if (!isValid) {
+    return res.status(401).send("❌ 세션 만료 또는 유효하지 않음. 다시 로그인 필요");
+  }
+
+  const { data: logs, error } = await supabase
+    .from("verification_logs")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  if (error) {
+    return res.status(500).send(`❌ Supabase 쿼리 실패: ${error.message}`);
+  }
+
+  const html = `
+  <html><head><meta charset="utf-8"><title>Admin Dashboard</title>
+  <style>
+  body{font-family:Arial;padding:16px;background:#f9f9f9;color:#222}
+  table{border-collapse:collapse;width:100%;margin-top:16px}
+  th,td{border:1px solid #ccc;padding:8px}
+  th{background:#eee}
+  </style></head>
+  <body>
+  <h2>🧭 Cross-Verified AI Admin Dashboard</h2>
+  <p>관리자: <b>${userEmail}</b></p>
+  <table>
+  <tr><th>ID</th><th>질문</th><th>모델</th><th>점수</th><th>시간</th><th>상태</th><th>날짜</th></tr>
+  ${logs
+    .map(
+      (l) => `
+    <tr>
+      <td>${l.id}</td>
+      <td>${l.question?.slice(0, 30) || "-"}</td>
+      <td>${l.model_main}</td>
+      <td>${l.cross_score}</td>
+      <td>${l.elapsed}</td>
+      <td>${l.status}</td>
+      <td>${new Date(l.created_at).toLocaleString()}</td>
+    </tr>`
+    )
+    .join("")}
+  </table>
+  </body></html>`;
+  res.send(html);
+});
+
+// ================================
+// 🧠 Gemini 검증 엔드포인트
+// ================================
+app.post("/api/verify", async (req, res) => {
+  const { query, key } = req.body;
+  if (!query || !key) {
+    return res.status(400).json({ success: false, message: "❌ 요청 파라미터 부족 (query/key 필요)" });
+  }
+
   try {
-    const { count, error } = await supabase
-      .from("verification_logs")
-      .select("*", { count: "exact", head: true });
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`;
+    const startTime = Date.now();
+
+    const result = await axios.post(endpoint, {
+      contents: [{ role: "user", parts: [{ text: query }] }],
+    });
+
+    const resultText = result.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const elapsed = Date.now() - startTime;
+
+    const { error } = await supabase.from("verification_logs").insert([
+      {
+        question: query,
+        model_main: GEMINI_MODEL,
+        cross_score: 1,
+        elapsed,
+        status: "completed",
+        created_at: new Date().toISOString(),
+      },
+    ]);
+
     if (error) throw error;
-    res.status(200).json({
+
+    res.json({
       success: true,
-      message: "✅ Proxy Server Healthy",
-      version: process.env.APP_VERSION || "v12.6.1",
-      supabase: { connected: true, rows: count ?? "unknown" },
-      timestamp: new Date().toISOString(),
+      message: "✅ Gemini 검증 완료 및 Supabase 저장됨",
+      query,
+      elapsed,
+      resultPreview: resultText.slice(0, 200),
     });
   } catch (err) {
-    res.status(500).json({
-      success: false,
-      message: "❌ Health Check Failed",
-      error: err.message,
-    });
+    console.error("❌ Gemini 요청 실패:", err.message);
+    res.status(500).json({ success: false, message: `서버 오류: ${err.message}` });
   }
 });
 
-//────────────────────────────
-// 🧾 서버 실행
-//────────────────────────────
+// ================================
+// 🚀 서버 시작
+// ================================
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy (v12.6.1) running on port ${PORT}`);
-  console.log(`🌐 OAuth Login: ${process.env.GOOGLE_ADMIN_CALLBACK_URL}`);
-  console.log(`💓 Health Check: /health`);
+  console.log(`🚀 Cross-Verified AI Proxy (v12.8.0) 실행 중 (포트: ${PORT})`);
+  console.log(`🌐 Supabase 연결: ${SUPABASE_URL}`);
+  console.log(`🔑 관리자 계정: ${ADMIN_EMAIL}`);
 });
