@@ -1,6 +1,6 @@
 // ============================================
-// Cross-Verified AI Proxy v13.2.1
-// (Render + Supabase + Google OAuth + Health Fix)
+// Cross-Verified AI Proxy v13.2.2
+// (Render + Supabase + Google OAuth + Lazy DB Connect)
 // ============================================
 
 import express from "express";
@@ -16,12 +16,12 @@ import pkg from "@supabase/supabase-js";
 const { createClient } = pkg;
 
 // ===========================
-// ✅ 환경설정 로드
+// ✅ 환경설정
 // ===========================
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = process.env.APP_VERSION || "v13.2.1";
+const APP_VERSION = process.env.APP_VERSION || "v13.2.2";
 
 // ===========================
 // ✅ 미들웨어
@@ -31,28 +31,34 @@ app.use(bodyParser.json({ limit: "5mb" }));
 app.use(morgan("dev"));
 
 // ===========================
-// ✅ PostgreSQL 세션 스토어 설정
+// ✅ PostgreSQL 세션 스토어 (Lazy 모드)
 // ===========================
 const PgSession = pgSession(session);
+let pgStore;
 
-const pgStore = new PgSession({
-  conString: process.env.SUPABASE_DB_URL, // IPv4 연결용 .net 도메인 사용
-  createTableIfMissing: true,
-});
+try {
+  pgStore = new PgSession({
+    conString: process.env.SUPABASE_DB_URL, // 반드시 .net 주소
+    createTableIfMissing: false, // 🚀 lazy connect (Render 타임아웃 방지)
+  });
 
-app.use(
-  session({
-    store: pgStore,
-    secret: process.env.SESSION_SECRET || "my-session-secret",
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: process.env.NODE_ENV === "production",
-      httpOnly: true,
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30일
-    },
-  })
-);
+  app.use(
+    session({
+      store: pgStore,
+      secret: process.env.SESSION_SECRET || "my-session-secret",
+      resave: false,
+      saveUninitialized: false,
+      cookie: {
+        secure: process.env.NODE_ENV === "production",
+        httpOnly: true,
+        maxAge: 30 * 24 * 60 * 60 * 1000,
+      },
+    })
+  );
+  console.log("🟢 SessionStore 초기화 완료 (lazy mode)");
+} catch (err) {
+  console.error("⚠️ SessionStore 초기화 실패:", err.message);
+}
 
 // ===========================
 // ✅ Passport (Google OAuth)
@@ -65,8 +71,8 @@ passport.use(
       callbackURL: process.env.GOOGLE_ADMIN_CALLBACK_URL,
     },
     async (accessToken, refreshToken, profile, done) => {
-      const allowedAdmins = (process.env.ADMIN_WHITELIST || "").split(",");
-      if (allowedAdmins.includes(profile.emails[0].value)) {
+      const whitelist = (process.env.ADMIN_WHITELIST || "").split(",");
+      if (whitelist.includes(profile.emails[0].value)) {
         return done(null, profile);
       } else {
         return done(null, false, { message: "허용되지 않은 관리자 계정" });
@@ -96,7 +102,7 @@ try {
 }
 
 // ===========================
-// ✅ Health Check (Render용 고정 경로)
+// ✅ Health Check (Render 고정 경로)
 // ===========================
 app.get("/health", (req, res) => {
   res.status(200).json({
@@ -111,12 +117,12 @@ app.get("/health", (req, res) => {
 // ===========================
 app.get("/", (req, res) => {
   res.send(
-    `<h2>🚀 Cross-Verified AI Proxy (${APP_VERSION})</h2><p>Server is running at ${new Date().toISOString()}</p>`
+    `<h2>🚀 Cross-Verified AI Proxy (${APP_VERSION})</h2><p>Server active at ${new Date().toISOString()}</p>`
   );
 });
 
 // ===========================
-// ✅ 관리자 로그인 (Google OAuth)
+// ✅ 관리자 인증
 // ===========================
 app.get("/auth/admin", passport.authenticate("google", { scope: ["email", "profile"] }));
 
@@ -128,9 +134,7 @@ app.get(
   })
 );
 
-app.get("/auth/failure", (req, res) => {
-  res.status(403).send("❌ 관리자 인증 실패");
-});
+app.get("/auth/failure", (req, res) => res.status(403).send("❌ 관리자 인증 실패"));
 
 // ===========================
 // ✅ 관리자 대시보드
@@ -139,6 +143,7 @@ app.get("/admin/dashboard", async (req, res) => {
   if (!req.isAuthenticated()) {
     return res.status(401).send("❌ 관리자 로그인이 필요합니다.");
   }
+
   try {
     const { data, error } = await supabase
       .from("verification_logs")
@@ -151,10 +156,10 @@ app.get("/admin/dashboard", async (req, res) => {
     const rows = data
       .map(
         (r) => `<tr>
-          <td>${r.id}</td><td>${r.query?.slice(0, 40) || "-"}</td>
-          <td>${r.model || "-"}</td><td>${r.cross_score || "-"}</td>
-          <td>${r.elapsed || "-"}</td><td>${r.status || "-"}</td>
-          <td>${r.created_at}</td></tr>`
+        <td>${r.id}</td><td>${r.query?.slice(0, 40) || "-"}</td>
+        <td>${r.model || "-"}</td><td>${r.cross_score || "-"}</td>
+        <td>${r.elapsed || "-"}</td><td>${r.status || "-"}</td>
+        <td>${r.created_at}</td></tr>`
       )
       .join("");
 
@@ -182,7 +187,7 @@ app.get("/admin/dashboard", async (req, res) => {
 });
 
 // ===========================
-// ✅ 서버 실행
+// ✅ 서버 시작
 // ===========================
 app.listen(PORT, () => {
   console.log(`🚀 Cross-Verified AI Proxy (${APP_VERSION}) 실행 중 - 포트: ${PORT}`);
