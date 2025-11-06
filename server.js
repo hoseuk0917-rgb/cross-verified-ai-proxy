@@ -26,7 +26,7 @@ const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/
 const GEMINI_TIMEOUT_MS = parseInt(process.env.API_TIMEOUT_MS || "20000", 10);
 
 // ==========================
-// 🧩 Render Health Check
+// 🩺 Render Health Check
 // ==========================
 app.get("/health", (req, res) => {
   res.status(200).send("OK");
@@ -39,7 +39,7 @@ app.get("/api/check-health", (req, res) => {
   res.json({
     success: true,
     message: "✅ Proxy 서버 동작 중",
-    version: process.env.APP_VERSION || "v12.3.0",
+    version: process.env.APP_VERSION || "v12.4.0",
   });
 });
 
@@ -56,7 +56,7 @@ app.get("/api/check-supabase", async (req, res) => {
 });
 
 // ==========================
-// 🧪 DB 연결/쓰기/읽기 테스트용 엔드포인트
+// 🧪 DB 연결/쓰기/읽기 테스트
 // ==========================
 app.get("/api/test-db", async (req, res) => {
   try {
@@ -133,10 +133,7 @@ app.post("/api/verify", async (req, res) => {
       },
     ]);
 
-    if (error) {
-      console.error("Supabase 저장 실패:", error.message);
-      return res.status(500).json({ success: false, message: `❌ Supabase 저장 실패: ${error.message}` });
-    }
+    if (error) throw new Error(error.message);
 
     res.json({
       success: true,
@@ -152,7 +149,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 // ==========================
-// 📊 간단한 Admin Dashboard
+// 📊 Admin Dashboard (표 + 그래프)
 // ==========================
 app.get("/admin", async (req, res) => {
   try {
@@ -178,20 +175,50 @@ app.get("/admin", async (req, res) => {
       )
       .join("");
 
+    const labels = data.map((r) => new Date(r.created_at).toLocaleTimeString());
+    const values = data.map((r) => r.elapsed || 0);
+
     res.send(`
       <html>
         <head>
           <title>Cross-Verified AI Dashboard</title>
+          <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
           <style>
             body { font-family: Arial, sans-serif; margin: 20px; background: #fafafa; }
-            table { border-collapse: collapse; width: 100%; }
+            table { border-collapse: collapse; width: 100%; margin-top: 20px; }
             th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
             th { background: #333; color: #fff; }
             tr:nth-child(even) { background: #f2f2f2; }
+            canvas { max-width: 100%; margin-top: 30px; }
           </style>
         </head>
         <body>
           <h1>✅ Cross-Verified AI - Recent Logs</h1>
+          <canvas id="elapsedChart" height="100"></canvas>
+          <script>
+            const ctx = document.getElementById('elapsedChart').getContext('2d');
+            new Chart(ctx, {
+              type: 'line',
+              data: {
+                labels: ${JSON.stringify(labels)},
+                datasets: [{
+                  label: '응답 시간 (ms)',
+                  data: ${JSON.stringify(values)},
+                  borderColor: '#007bff',
+                  backgroundColor: 'rgba(0,123,255,0.2)',
+                  fill: true,
+                  tension: 0.3
+                }]
+              },
+              options: {
+                scales: {
+                  y: { beginAtZero: true, title: { display: true, text: 'Milliseconds' } },
+                  x: { title: { display: true, text: 'Timestamp' } }
+                }
+              }
+            });
+          </script>
+
           <table>
             <tr>
               <th>ID</th><th>Question</th><th>Model</th><th>Cross Score</th><th>Elapsed</th><th>Created At</th>
@@ -210,7 +237,7 @@ app.get("/admin", async (req, res) => {
 // 🧾 서버 실행부
 // ==========================
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v12.3.0 실행 중 (포트: ${PORT})`);
+  console.log(`🚀 Cross-Verified AI Proxy v12.4.0 실행 중 (포트: ${PORT})`);
   console.log(`🌐 Supabase 연결: ${SUPABASE_URL}`);
   console.log(`🧠 기본 모델: ${GEMINI_MODEL}`);
 });
