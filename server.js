@@ -1,6 +1,6 @@
 // ============================================
-// Cross-Verified AI Proxy v13.2.2
-// (Render + Supabase + Google OAuth + Lazy DB Connect)
+// Cross-Verified AI Proxy v13.2.3
+// (Render + Supabase IPv4 + OAuth + Lazy DB Connect + Fixed /health)
 // ============================================
 
 import express from "express";
@@ -21,7 +21,7 @@ const { createClient } = pkg;
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = process.env.APP_VERSION || "v13.2.2";
+const APP_VERSION = process.env.APP_VERSION || "v13.2.3";
 
 // ===========================
 // ✅ 미들웨어
@@ -31,15 +31,15 @@ app.use(bodyParser.json({ limit: "5mb" }));
 app.use(morgan("dev"));
 
 // ===========================
-// ✅ PostgreSQL 세션 스토어 (Lazy 모드)
+// ✅ PostgreSQL 세션 스토어 (Lazy 모드 + IPv4 전용)
 // ===========================
 const PgSession = pgSession(session);
 let pgStore;
 
 try {
   pgStore = new PgSession({
-    conString: process.env.SUPABASE_DB_URL, // 반드시 .net 주소
-    createTableIfMissing: false, // 🚀 lazy connect (Render 타임아웃 방지)
+    conString: process.env.SUPABASE_DB_URL, // 반드시 .net 주소 (IPv4)
+    createTableIfMissing: false, // Lazy connect (Render timeout 방지)
   });
 
   app.use(
@@ -51,7 +51,7 @@ try {
       cookie: {
         secure: process.env.NODE_ENV === "production",
         httpOnly: true,
-        maxAge: 30 * 24 * 60 * 60 * 1000,
+        maxAge: 30 * 24 * 60 * 60 * 1000, // 30일
       },
     })
   );
@@ -113,7 +113,7 @@ app.get("/health", (req, res) => {
 });
 
 // ===========================
-// ✅ 루트 페이지
+// ✅ 기본 루트
 // ===========================
 app.get("/", (req, res) => {
   res.send(
@@ -187,7 +187,7 @@ app.get("/admin/dashboard", async (req, res) => {
 });
 
 // ===========================
-// ✅ 서버 시작
+// ✅ 서버 실행
 // ===========================
 app.listen(PORT, () => {
   console.log(`🚀 Cross-Verified AI Proxy (${APP_VERSION}) 실행 중 - 포트: ${PORT}`);
