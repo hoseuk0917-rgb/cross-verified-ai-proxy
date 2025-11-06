@@ -162,19 +162,22 @@ app.post("/api/extract-keywords", async (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ Gemini Flash / Pro / Verify / Health / DB Test
+// ✅ Health Check (항상 listen보다 위에 있어야 함!)
 // ─────────────────────────────
-// 기존 v13.5 코드 전체 유지 (test-gemini, verify, health, test-db 그대로)
-// ─────────────────────────────
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+  });
+});
 
+// ─────────────────────────────
+// ✅ 서버 실행 (항상 맨 마지막)
+// ─────────────────────────────
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v13.6.0 running on port ${PORT}`);
+  console.log(`🚀 Cross-Verified AI Proxy v13.6.1 running on port ${PORT}`);
   console.log(`🌐 Health: http://localhost:${PORT}/health`);
   console.log(`🔑 Keyword Extract: POST /api/extract-keywords`);
   console.log(`🤖 Verify: POST /api/verify`);
 });
 
-// ✅ Health Check
-app.get("/health", async (req, res) => {
-  res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
-});
