@@ -4,9 +4,8 @@ import axios from "axios";
 import cors from "cors";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
-import passport from "passport";
-import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import morgan from "morgan";
+import { google } from "googleapis";
 
 dotenv.config();
 const app = express();
@@ -15,13 +14,13 @@ app.use(cors());
 app.use(morgan("dev"));
 
 // ================================
-// 🔧 환경 변수
+// 🔧 환경 변수 설정
 // ================================
 const PORT = process.env.PORT || 3000;
 const GEMINI_MODEL = process.env.DEFAULT_MODEL || "gemini-2.5-flash";
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL; // 마스터 관리자 이메일
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_CALLBACK_URL = process.env.GOOGLE_CALLBACK_URL;
@@ -29,64 +28,79 @@ const GOOGLE_CALLBACK_URL = process.env.GOOGLE_CALLBACK_URL;
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 // ================================
-// 🧠 Google OAuth 설정
+// 🧠 Google OAuth 클라이언트 초기화
 // ================================
-passport.use(
-  new GoogleStrategy(
-    {
-      clientID: GOOGLE_CLIENT_ID,
-      clientSecret: GOOGLE_CLIENT_SECRET,
-      callbackURL: GOOGLE_CALLBACK_URL,
-    },
-    async (accessToken, refreshToken, profile, done) => {
-      const email = profile.emails[0].value;
-      try {
-        // Supabase 세션 저장
-        await supabase.from("sessions").insert([
-          {
-            user_email: email,
-            access_token: accessToken,
-            refresh_token: refreshToken,
-            expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-          },
-        ]);
-        return done(null, { email });
-      } catch (err) {
-        console.error("❌ Supabase 세션 저장 실패:", err.message);
-        return done(err, null);
-      }
-    }
-  )
+const oauth2Client = new google.auth.OAuth2(
+  GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET,
+  GOOGLE_CALLBACK_URL
 );
 
-app.use(passport.initialize());
-
 // ================================
-// 🚀 기본 헬스체크
+// 🩺 헬스체크
 // ================================
 app.get("/health", (req, res) => {
-  res.json({ success: true, message: "✅ Proxy Server Healthy", version: "v12.8.0" });
+  res.json({
+    success: true,
+    message: "✅ Cross-Verified AI Proxy Healthy",
+    version: "v12.9.0",
+  });
 });
 
 // ================================
-// 🔗 Google OAuth 엔드포인트
+// 🔗 OAuth 시작 (Google 로그인 요청)
 // ================================
-app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
+app.get("/auth/google", (req, res) => {
+  const url = oauth2Client.generateAuthUrl({
+    access_type: "offline",
+    scope: ["https://www.googleapis.com/auth/userinfo.email"],
+  });
+  res.redirect(url);
+});
 
-app.get(
-  "/auth/google/callback",
-  passport.authenticate("google", { failureRedirect: "/auth/fail" }),
-  async (req, res) => {
-    res.redirect("/admin");
+// ================================
+// 🔙 OAuth 콜백 (토큰 + 세션 저장)
+// ================================
+app.get("/auth/google/callback", async (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.status(400).send("❌ Missing OAuth code");
+
+  try {
+    // Google 토큰 교환
+    const { tokens } = await oauth2Client.getToken(code);
+    oauth2Client.setCredentials(tokens);
+
+    // 사용자 정보 가져오기
+    const oauth2 = google.oauth2({ version: "v2", auth: oauth2Client });
+    const { data: user } = await oauth2.userinfo.get();
+
+    // Supabase 세션 저장
+    const { error } = await supabase.from("sessions").insert([
+      {
+        user_email: user.email,
+        access_token: tokens.access_token || null,
+        refresh_token: tokens.refresh_token || null,
+        expires_at: tokens.expiry_date
+          ? new Date(tokens.expiry_date).toISOString()
+          : null,
+      },
+    ]);
+
+    if (error) {
+      console.error("❌ [Supabase Insert Error]", error.message);
+      return res.status(500).send("Supabase insert error");
+    }
+
+    console.log(`🟢 [Supabase] Session stored for ${user.email}`);
+    return res.redirect(`/admin?email=${encodeURIComponent(user.email)}`);
+  } catch (err) {
+    console.error("❌ OAuth Callback Error:", err.message);
+    return res.status(500).send("Internal Server Error");
   }
-);
-
-app.get("/auth/fail", (req, res) => {
-  res.status(401).send("❌ Google OAuth 인증 실패");
 });
 
 // ================================
-// ⚙️ Supabase 세션 검증 함수
+// 🔍 세션 검증 함수
 // ================================
 async function verifySession(email) {
   const { data, error } = await supabase
@@ -98,7 +112,9 @@ async function verifySession(email) {
 
   if (error || !data || data.length === 0) return false;
   const session = data[0];
-  if (new Date(session.expires_at) < new Date()) return false;
+  if (session.expires_at && new Date(session.expires_at) < new Date()) {
+    return false;
+  }
   return true;
 }
 
@@ -106,19 +122,14 @@ async function verifySession(email) {
 // 🧾 Admin Dashboard
 // ================================
 app.get("/admin", async (req, res) => {
-  const userEmail = req.query.email;
-  if (!userEmail) {
-    return res.status(400).send("❌ 이메일 정보가 필요합니다 (예: /admin?email=user@gmail.com)");
-  }
+  const email = req.query.email;
+  if (!email) return res.status(400).send("❌ Missing email");
+  if (email !== ADMIN_EMAIL)
+    return res.status(403).send("❌ Unauthorized admin email");
 
-  if (userEmail !== ADMIN_EMAIL) {
-    return res.status(403).send("❌ 관리자 접근 거부 (허용되지 않은 이메일)");
-  }
-
-  const isValid = await verifySession(userEmail);
-  if (!isValid) {
-    return res.status(401).send("❌ 세션 만료 또는 유효하지 않음. 다시 로그인 필요");
-  }
+  const valid = await verifySession(email);
+  if (!valid)
+    return res.status(401).send("❌ Session invalid or expired. Login again.");
 
   const { data: logs, error } = await supabase
     .from("verification_logs")
@@ -126,21 +137,19 @@ app.get("/admin", async (req, res) => {
     .order("created_at", { ascending: false })
     .limit(10);
 
-  if (error) {
-    return res.status(500).send(`❌ Supabase 쿼리 실패: ${error.message}`);
-  }
+  if (error) return res.status(500).send("Supabase query failed");
 
   const html = `
   <html><head><meta charset="utf-8"><title>Admin Dashboard</title>
   <style>
-  body{font-family:Arial;padding:16px;background:#f9f9f9;color:#222}
+  body{font-family:Arial;padding:16px;background:#fafafa;color:#333}
   table{border-collapse:collapse;width:100%;margin-top:16px}
   th,td{border:1px solid #ccc;padding:8px}
   th{background:#eee}
   </style></head>
   <body>
   <h2>🧭 Cross-Verified AI Admin Dashboard</h2>
-  <p>관리자: <b>${userEmail}</b></p>
+  <p>관리자: <b>${email}</b></p>
   <table>
   <tr><th>ID</th><th>질문</th><th>모델</th><th>점수</th><th>시간</th><th>상태</th><th>날짜</th></tr>
   ${logs
@@ -157,28 +166,24 @@ app.get("/admin", async (req, res) => {
     </tr>`
     )
     .join("")}
-  </table>
-  </body></html>`;
+  </table></body></html>`;
   res.send(html);
 });
 
 // ================================
-// 🧠 Gemini 검증 엔드포인트
+// 🧠 Gemini 검증 API
 // ================================
 app.post("/api/verify", async (req, res) => {
   const { query, key } = req.body;
-  if (!query || !key) {
-    return res.status(400).json({ success: false, message: "❌ 요청 파라미터 부족 (query/key 필요)" });
-  }
+  if (!query || !key)
+    return res.status(400).json({ success: false, message: "❌ Missing query/key" });
 
   try {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`;
     const startTime = Date.now();
-
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`;
     const result = await axios.post(endpoint, {
       contents: [{ role: "user", parts: [{ text: query }] }],
     });
-
     const resultText = result.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
     const elapsed = Date.now() - startTime;
 
@@ -203,7 +208,7 @@ app.post("/api/verify", async (req, res) => {
       resultPreview: resultText.slice(0, 200),
     });
   } catch (err) {
-    console.error("❌ Gemini 요청 실패:", err.message);
+    console.error("Gemini 요청 실패:", err.message);
     res.status(500).json({ success: false, message: `서버 오류: ${err.message}` });
   }
 });
@@ -212,7 +217,7 @@ app.post("/api/verify", async (req, res) => {
 // 🚀 서버 시작
 // ================================
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy (v12.8.0) 실행 중 (포트: ${PORT})`);
+  console.log(`🚀 Cross-Verified AI Proxy (v12.9.0) 실행 중 (포트: ${PORT})`);
   console.log(`🌐 Supabase 연결: ${SUPABASE_URL}`);
   console.log(`🔑 관리자 계정: ${ADMIN_EMAIL}`);
 });
