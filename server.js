@@ -1,209 +1,174 @@
-// server.js (토큰 방식 / ping / test-db / admin 포함)
+// server.js — Cross-Verified AI Proxy v12.5.0 (Dual OAuth + Supabase Admin Dashboard)
 import express from "express";
-import bodyParser from "body-parser";
-import axios from "axios";
 import cors from "cors";
-import dotenv from "dotenv";
+import passport from "passport";
+import session from "express-session";
+import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import { createClient } from "@supabase/supabase-js";
+import dotenv from "dotenv";
 
 dotenv.config();
 const app = express();
-app.use(bodyParser.json({ limit: "5mb" }));
-app.use(cors());
-
-// ==========================
-// 환경 변수
-// ==========================
 const PORT = process.env.PORT || 3000;
-const GEMINI_MODEL = process.env.DEFAULT_MODEL || "gemini-2.5-flash";
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const ADMIN_SECRET = process.env.ADMIN_SECRET || ""; // 필수: admin 보호용 토큰
-const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/";
-const GEMINI_TIMEOUT_MS = parseInt(process.env.API_TIMEOUT_MS || "20000", 10);
 
-// Supabase 초기화
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+// ----------------------------
+// 기본 미들웨어
+// ----------------------------
+app.use(cors({ origin: "*", credentials: true }));
+app.use(express.json());
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "session-secret",
+    resave: false,
+    saveUninitialized: false,
+  })
+);
+app.use(passport.initialize());
+app.use(passport.session());
 
-// ==========================
-// 헬스체크
-// ==========================
-app.get("/api/check-health", (req, res) => {
-  res.json({ success: true, message: "✅ Proxy 서버 동작 중", version: process.env.APP_VERSION || "v12.x" });
-});
+// ----------------------------
+// Supabase 연결
+// ----------------------------
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+console.log("🌐 Supabase 연결 완료:", process.env.SUPABASE_URL);
 
-// ==========================
-// Keep-alive / UptimeRobot용 Ping
-// ==========================
-app.get("/api/ping", (req, res) => {
-  // 단순 200 응답 — UptimeRobot 이나 다른 서비스가 주기적 ping 가능
-  res.json({ success: true, message: "pong", ts: new Date().toISOString() });
-});
+// ----------------------------
+// Passport 설정
+// ----------------------------
 
-// ==========================
-// Supabase 연결 테스트 (DB 읽기 권한으로 간단 확인)
-// ==========================
-app.get("/api/test-db", async (req, res) => {
-  try {
-    // verification_logs 존재 유무 & 레코드 수 확인
-    const { count, error } = await supabase
-      .from("verification_logs")
-      .select("*", { count: "exact", head: true });
-
-    if (error) {
-      console.error("Test DB - query error:", error);
-      return res.status(500).json({ success: false, message: `DB 쿼리 실패: ${error.message}` });
+// 1️⃣ 일반 사용자 로그인
+passport.use(
+  "user-google",
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: process.env.GOOGLE_CALLBACK_URL,
+    },
+    (accessToken, refreshToken, profile, done) => {
+      console.log("✅ 일반 사용자 로그인:", profile.emails[0].value);
+      return done(null, profile);
     }
+  )
+);
 
-    res.json({ success: true, message: "Supabase 연결 성공", rows: count });
-  } catch (err) {
-    console.error("Test DB - exception:", err);
-    res.status(500).json({ success: false, message: `DB 연결 실패: ${err.message}` });
-  }
-});
-
-// ==========================
-// 간단한 Admin 인증 미들웨어 (Bearer token)
-// ==========================
-function requireAdmin(req, res, next) {
-  const auth = req.headers["authorization"] || "";
-  if (!ADMIN_SECRET) {
-    console.warn("ADMIN_SECRET 미설정: /admin 접근 불가");
-    return res.status(403).send("Admin not configured on server.");
-  }
-  if (!auth.startsWith("Bearer ")) {
-    return res.status(401).send("Unauthorized: Bearer token required");
-  }
-  const token = auth.split(" ")[1];
-  if (token !== ADMIN_SECRET) {
-    return res.status(401).send("Unauthorized: invalid token");
-  }
-  next();
-}
-
-// ==========================
-// 관리 대시보드 (토큰 필요)
-// ==========================
-app.get("/admin", requireAdmin, async (req, res) => {
-  try {
-    // 최근 5개 로그와 전체 카운트 가져오기
-    const { data: recent, error: e1 } = await supabase
-      .from("verification_logs")
-      .select("id, question, model_main, cross_score, elapsed, status, created_at")
-      .order("created_at", { ascending: false })
-      .limit(5);
-
-    const { count, error: e2 } = await supabase
-      .from("verification_logs")
-      .select("*", { count: "exact", head: true });
-
-    if (e1 || e2) {
-      console.error("Admin Supabase error", e1 || e2);
-      return res.status(500).send("DB 조회 중 오류 발생");
-    }
-
-    // 간단한 HTML 응답
-    const rowsHtml = (recent || []).map(r => `
-      <tr>
-        <td>${r.id}</td>
-        <td>${(r.question || "").replace(/</g,'&lt;').slice(0,80)}</td>
-        <td>${r.model_main || ""}</td>
-        <td>${r.cross_score ?? ""}</td>
-        <td>${r.elapsed ?? ""}</td>
-        <td>${r.status ?? ""}</td>
-        <td>${r.created_at}</td>
-      </tr>`).join("");
-
-    const html = `<!doctype html>
-      <html><head><meta charset="utf-8"><title>Admin Dashboard</title>
-      <style>body{font-family:Arial,Helvetica,sans-serif;padding:16px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:8px}</style>
-      </head><body>
-      <h2>Admin Dashboard</h2>
-      <p>Total verification_logs rows: <strong>${count ?? 0}</strong></p>
-      <h3>Recent 5 logs</h3>
-      <table><thead><tr>
-      <th>id</th><th>question(앞부분)</th><th>model</th><th>cross_score</th><th>elapsed</th><th>status</th><th>created_at</th>
-      </tr></thead><tbody>${rowsHtml}</tbody></table>
-      <p>Generated at ${new Date().toISOString()}</p>
-      </body></html>`;
-
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.send(html);
-  } catch (err) {
-    console.error("Admin error:", err);
-    res.status(500).send("서버 오류");
-  }
-});
-
-// ==========================
-// 검증 엔드포인트 (Gemini 호출 예전 로직 유지)
-// ==========================
-app.post("/api/verify", async (req, res) => {
-  const { query, key } = req.body;
-  if (!query || !key) {
-    return res.status(400).json({ success: false, message: "❌ 요청 파라미터 부족 (query/key 필요)" });
-  }
-
-  const startTime = Date.now();
-  const endpoint = `${GEMINI_API_URL}${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(key)}`;
-  const payload = {
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: query }]
+// 2️⃣ 관리자 로그인
+passport.use(
+  "admin-google",
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_ADMIN_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_ADMIN_CLIENT_SECRET,
+      callbackURL: process.env.GOOGLE_ADMIN_CALLBACK_URL,
+    },
+    (accessToken, refreshToken, profile, done) => {
+      const email = profile.emails[0].value.toLowerCase();
+      const whitelist = process.env.ADMIN_WHITELIST?.toLowerCase();
+      if (email === whitelist) {
+        console.log("🛡️ 관리자 인증 성공:", email);
+        return done(null, profile);
+      } else {
+        console.warn("🚫 관리자 인증 실패:", email);
+        return done(null, false, { message: "Unauthorized" });
       }
-    ]
-  };
-
-  try {
-    const response = await axios.post(endpoint, payload, { timeout: GEMINI_TIMEOUT_MS });
-    const resultText =
-      response.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
-      response.data?.output || "";
-
-    const elapsedMs = Date.now() - startTime;
-
-    // 간단 요약
-    const summary = resultText.length > 300 ? resultText.slice(0, 300) + "..." : resultText;
-    const crossScore = parseFloat((Math.min(resultText.length / 1000, 1) * 0.9 + 0.1).toFixed(3));
-
-    // Supabase에 저장
-    const { error } = await supabase.from("verification_logs").insert([
-      {
-        question: query,
-        cross_score: crossScore,
-        truth_score: null,
-        summary,
-        elapsed: elapsedMs, // 숫자형으로 저장 (ms)
-        status: "completed",
-        model_main: GEMINI_MODEL,
-        created_at: new Date().toISOString()
-      }
-    ]);
-
-    if (error) {
-      console.error("Supabase 저장 실패:", error.message);
-      return res.status(500).json({ success: false, message: `❌ Supabase 저장 실패: ${error.message}` });
     }
+  )
+);
 
-    res.json({
-      success: true,
-      message: "✅ Gemini 검증 완료 및 Supabase 저장됨",
-      query,
-      elapsed: elapsedMs,
-      resultPreview: summary
-    });
-  } catch (err) {
-    console.error("Gemini 요청 실패:", err.message || err);
-    res.status(500).json({ success: false, message: `서버 오류: ${err.message || err}` });
+passport.serializeUser((user, done) => done(null, user));
+passport.deserializeUser((user, done) => done(null, user));
+
+// ----------------------------
+// 라우트 구성
+// ----------------------------
+
+// 기본 페이지
+app.get("/", (req, res) =>
+  res.send("<h2>Cross-Verified AI Proxy Server (v12.5.0)</h2>")
+);
+
+// ✅ 일반 사용자 로그인
+app.get("/auth/google", passport.authenticate("user-google", { scope: ["profile", "email"] }));
+app.get(
+  "/auth/google/callback",
+  passport.authenticate("user-google", { failureRedirect: "/" }),
+  (req, res) => res.send(`<h3>✅ 일반 로그인 완료 (${req.user.displayName})</h3>`)
+);
+
+// ✅ 관리자 로그인
+app.get("/auth/admin", passport.authenticate("admin-google", { scope: ["profile", "email"] }));
+app.get(
+  "/auth/admin/callback",
+  passport.authenticate("admin-google", { failureRedirect: "/" }),
+  (req, res) => res.redirect("/admin")
+);
+
+// ✅ 관리자 대시보드
+app.get("/admin", async (req, res) => {
+  if (!req.user) return res.status(401).send("Unauthorized: 로그인 필요");
+  if (req.user.emails[0].value.toLowerCase() !== process.env.ADMIN_WHITELIST.toLowerCase())
+    return res.status(403).send("Forbidden: 관리자만 접근 가능");
+
+  const { data, error } = await supabase
+    .from("verification_logs")
+    .select("id, query, model, cross_score, elapsed, status, created_at")
+    .order("id", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    console.error("❌ Supabase 조회 오류:", error.message);
+    return res.status(500).send("DB 조회 실패");
   }
+
+  // HTML 렌더링
+  const rows = data
+    .map(
+      (r) => `
+        <tr>
+          <td>${r.id}</td>
+          <td>${r.query || "-"}</td>
+          <td>${r.model || "-"}</td>
+          <td>${r.cross_score ?? "-"}</td>
+          <td>${r.elapsed ?? "-"}</td>
+          <td>${r.status || "-"}</td>
+          <td>${r.created_at}</td>
+        </tr>`
+    )
+    .join("");
+
+  res.send(`
+    <html><head>
+      <meta charset="utf-8" />
+      <title>Admin Dashboard</title>
+      <style>
+        body { font-family: Arial; padding: 24px; background: #fafafa; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ccc; padding: 6px; text-align: left; }
+        th { background: #eee; }
+      </style>
+    </head>
+    <body>
+      <h2>🔐 Admin Dashboard (Supabase)</h2>
+      <p>관리자: ${req.user.displayName} (${req.user.emails[0].value})</p>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Query</th><th>Model</th><th>CrossScore</th><th>Elapsed</th><th>Status</th><th>Created</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p style="margin-top:16px;font-size:13px;color:#666;">Generated at ${new Date().toISOString()}</p>
+    </body></html>
+  `);
 });
 
-// ==========================
-// 서버 시작
-// ==========================
+// ----------------------------
+// 서버 실행
+// ----------------------------
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy (token-admin) 실행 중 (포트: ${PORT})`);
-  console.log(`🌐 Supabase 연결: ${SUPABASE_URL}`);
-  console.log(`🔒 Admin token required for /admin (set ADMIN_SECRET)`);
+  console.log(`🚀 Cross-Verified AI Proxy (v12.5.0) 실행 중 - 포트: ${PORT}`);
 });
