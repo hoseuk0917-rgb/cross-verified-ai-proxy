@@ -26,7 +26,14 @@ const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/
 const GEMINI_TIMEOUT_MS = parseInt(process.env.API_TIMEOUT_MS || "20000", 10);
 
 // ==========================
-// 🧩 헬스체크 엔드포인트
+// 🧩 Render Health Check 호환용 엔드포인트
+// ==========================
+app.get("/health", (req, res) => {
+  res.status(200).send("OK");
+});
+
+// ==========================
+// 🧩 헬스체크 엔드포인트 (내부용)
 // ==========================
 app.get("/api/check-health", (req, res) => {
   res.json({ success: true, message: "✅ Proxy 서버 동작 중", version: process.env.APP_VERSION });
@@ -87,7 +94,7 @@ app.post("/api/verify", async (req, res) => {
         cross_score: crossScore,
         truth_score: null,
         summary,
-        elapsed: elapsedMs,              // ✅ 수정된 부분
+        elapsed: elapsedMs, // 숫자형
         status: "completed",
         model_main: GEMINI_MODEL,
         created_at: new Date().toISOString()
@@ -158,7 +165,7 @@ app.post("/api/naver", async (req, res) => {
 // 🧾 서버 로그 및 실행부
 // ==========================
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v12.2.1 실행 중 (포트: ${PORT})`);
+  console.log(`🚀 Cross-Verified AI Proxy v12.2.2 실행 중 (포트: ${PORT})`);
   console.log(`🌐 Supabase 연결: ${SUPABASE_URL}`);
   console.log(`🧠 기본 모델: ${GEMINI_MODEL}`);
 });
