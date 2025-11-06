@@ -94,8 +94,9 @@ app.get("/auth/admin/callback",
     res.send(`<h2>✅ OAuth Login Success</h2><p>${name} (${email})</p>`);
   });
 app.get("/auth/failure", (req, res) => res.status(401).send("❌ OAuth Failed"));
+
 // ─────────────────────────────
-// ✅ Flash-Lite 핵심어 추출 (/api/extract-keywords)
+// ✅ Flash-Lite 핵심어 추출 및 보정 (/api/extract-keywords)
 // ─────────────────────────────
 app.post("/api/extract-keywords", async (req, res) => {
   try {
@@ -104,17 +105,70 @@ app.post("/api/extract-keywords", async (req, res) => {
       return res.status(400).json({ success: false, message: "❌ key 또는 query 누락" });
 
     const model = "gemini-2.5-flash-lite";
-    const hasOr = /(또는|or|\/|,)/i.test(query);
-    const mode = hasOr ? "OR" : "AND";
 
+    // ① Flash-Lite 요청
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-      { contents: [{ parts: [{ text: `아래 문장에서 핵심 검색구문을 ${mode} 조건으로 출력:\n"${query}"` }] }] }
+      {
+        contents: [
+          {
+            parts: [
+              { text: `다음 문장에서 핵심 검색어만 나열해줘. 불필요한 단어 제외:\n"${query}"` },
+            ],
+          },
+        ],
+      }
     );
 
-    const keywords = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "키워드 없음";
-    await supabase.from("keyword_logs").insert([{ query, keywords, mode, engine: model }]);
-    res.json({ success: true, engine: model, mode, keywords: keywords.trim() });
+    // ② 정제(Clean-Up)
+    let rawText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    let clean = rawText
+      .replace(/[#*•`]/g, "")
+      .replace(/(핵심|검색|구문|조건|설명)/g, "")
+      .replace(/[^\w가-힣\s]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    // ③ 논리 보정 (OR / AND 판별)
+    const hasOr = /(또는|or|,|\/)/i.test(query);
+    const hasAnd = /(과|및|와|그리고)/i.test(query);
+    const mode = hasOr ? "OR" : hasAnd ? "AND" : "AND";
+
+    // ④ 의미 확장 (공통 Prefix 보강)
+    const tokens = clean.split(" ").filter((t) => t.length > 1);
+    let expanded = clean;
+    const commonPrefix = query.match(/\b(UAM|AI|SmartCity|스마트시티)\b/i);
+    if (commonPrefix && tokens.length >= 2 && mode === "OR") {
+      expanded = `${commonPrefix[0]} ${tokens[0]} OR ${commonPrefix[0]} ${tokens[1]}`;
+    }
+
+    // ⑤ 최종 쿼리 구성
+    const finalQuery =
+      mode === "OR"
+        ? expanded.replace(/\s+OR\s+/g, " OR ")
+        : expanded.split(" ").join(" AND ");
+
+    // ⑥ Supabase 저장
+    await supabase.from("keyword_logs").insert([
+      {
+        query,
+        raw_keywords: rawText,
+        clean_keywords: clean,
+        logic_keywords: finalQuery,
+        mode,
+        engine: model,
+      },
+    ]);
+
+    // ⑦ 응답
+    res.json({
+      success: true,
+      engine: model,
+      mode,
+      raw: rawText.trim(),
+      clean,
+      final: finalQuery,
+    });
   } catch (err) {
     console.error("❌ /api/extract-keywords Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
