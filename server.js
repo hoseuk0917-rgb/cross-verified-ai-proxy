@@ -1,8 +1,9 @@
-// server.js — Cross-Verified AI Proxy v12.5.0 (Dual OAuth + Supabase Admin Dashboard)
+// server.js — Cross-Verified AI Proxy v12.5.1 (Persistent Session + Dual OAuth + Supabase Dashboard)
 import express from "express";
 import cors from "cors";
 import passport from "passport";
 import session from "express-session";
+import pgSession from "connect-pg-simple";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
@@ -16,30 +17,42 @@ const PORT = process.env.PORT || 3000;
 // ----------------------------
 app.use(cors({ origin: "*", credentials: true }));
 app.use(express.json());
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || "session-secret",
-    resave: false,
-    saveUninitialized: false,
-  })
-);
-app.use(passport.initialize());
-app.use(passport.session());
 
 // ----------------------------
 // Supabase 연결
 // ----------------------------
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 console.log("🌐 Supabase 연결 완료:", process.env.SUPABASE_URL);
 
 // ----------------------------
-// Passport 설정
+// PostgreSQL 세션 스토어 연결 (connect-pg-simple)
+// ----------------------------
+const PgSession = pgSession(session);
+const dbConnectionString =
+  process.env.SUPABASE_DB_URL ||
+  process.env.SUPABASE_URL.replace("https://", "postgres://") + "?sslmode=require";
+
+app.use(
+  session({
+    store: new PgSession({
+      conString: dbConnectionString,
+      createTableIfMissing: true,
+    }),
+    secret: process.env.SESSION_SECRET || "session-secret",
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: false }, // HTTPS 전용 시 true로 변경
+  })
+);
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+// ----------------------------
+// Passport 설정 (Dual OAuth)
 // ----------------------------
 
-// 1️⃣ 일반 사용자 로그인
+// 일반 사용자 로그인
 passport.use(
   "user-google",
   new GoogleStrategy(
@@ -55,7 +68,7 @@ passport.use(
   )
 );
 
-// 2️⃣ 관리자 로그인
+// 관리자 로그인
 passport.use(
   "admin-google",
   new GoogleStrategy(
@@ -82,15 +95,14 @@ passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
 
 // ----------------------------
-// 라우트 구성
+// 라우팅
 // ----------------------------
 
-// 기본 페이지
 app.get("/", (req, res) =>
-  res.send("<h2>Cross-Verified AI Proxy Server (v12.5.0)</h2>")
+  res.send("<h2>Cross-Verified AI Proxy Server (v12.5.1) — Persistent Session</h2>")
 );
 
-// ✅ 일반 사용자 로그인
+// ✅ 일반 사용자 OAuth
 app.get("/auth/google", passport.authenticate("user-google", { scope: ["profile", "email"] }));
 app.get(
   "/auth/google/callback",
@@ -98,7 +110,7 @@ app.get(
   (req, res) => res.send(`<h3>✅ 일반 로그인 완료 (${req.user.displayName})</h3>`)
 );
 
-// ✅ 관리자 로그인
+// ✅ 관리자 OAuth
 app.get("/auth/admin", passport.authenticate("admin-google", { scope: ["profile", "email"] }));
 app.get(
   "/auth/admin/callback",
@@ -123,7 +135,6 @@ app.get("/admin", async (req, res) => {
     return res.status(500).send("DB 조회 실패");
   }
 
-  // HTML 렌더링
   const rows = data
     .map(
       (r) => `
@@ -151,7 +162,7 @@ app.get("/admin", async (req, res) => {
       </style>
     </head>
     <body>
-      <h2>🔐 Admin Dashboard (Supabase)</h2>
+      <h2>🔐 Admin Dashboard (Supabase Persistent Session)</h2>
       <p>관리자: ${req.user.displayName} (${req.user.emails[0].value})</p>
       <table>
         <thead>
@@ -170,5 +181,5 @@ app.get("/admin", async (req, res) => {
 // 서버 실행
 // ----------------------------
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy (v12.5.0) 실행 중 - 포트: ${PORT}`);
+  console.log(`🚀 Cross-Verified AI Proxy (v12.5.1) 실행 중 - 포트: ${PORT}`);
 });
