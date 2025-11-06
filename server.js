@@ -173,3 +173,8 @@ app.listen(PORT, () => {
   console.log(`🔑 Keyword Extract: POST /api/extract-keywords`);
   console.log(`🤖 Verify: POST /api/verify`);
 });
+
+// ✅ Health Check
+app.get("/health", async (req, res) => {
+  res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
+});
