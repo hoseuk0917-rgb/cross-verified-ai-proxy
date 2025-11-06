@@ -1,6 +1,6 @@
 // ============================================
-// Cross-Verified AI Proxy v13.2.3
-// (Render + Supabase IPv4 + OAuth + Lazy DB Connect + Fixed /health)
+// Cross-Verified AI Proxy v13.2.5
+// (Render + Supabase IPv4 only + OAuth + Lazy Session + /health 고정)
 // ============================================
 
 import express from "express";
@@ -10,6 +10,7 @@ import dotenv from "dotenv";
 import morgan from "morgan";
 import session from "express-session";
 import pgSession from "connect-pg-simple";
+import pg from "pg";
 import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import pkg from "@supabase/supabase-js";
@@ -21,7 +22,7 @@ const { createClient } = pkg;
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = process.env.APP_VERSION || "v13.2.3";
+const APP_VERSION = process.env.APP_VERSION || "v13.2.5";
 
 // ===========================
 // ✅ 미들웨어
@@ -31,15 +32,19 @@ app.use(bodyParser.json({ limit: "5mb" }));
 app.use(morgan("dev"));
 
 // ===========================
-// ✅ PostgreSQL 세션 스토어 (Lazy 모드 + IPv4 전용)
+// ✅ PostgreSQL 세션 스토어 (IPv4 + TLS + Lazy 모드)
 // ===========================
+pg.defaults.ssl = { rejectUnauthorized: false };
+pg.defaults.host = "0.0.0.0"; // ✅ IPv4-only 강제
+
 const PgSession = pgSession(session);
 let pgStore;
 
 try {
   pgStore = new PgSession({
-    conString: process.env.SUPABASE_DB_URL, // 반드시 .net 주소 (IPv4)
-    createTableIfMissing: false, // Lazy connect (Render timeout 방지)
+    conString: process.env.SUPABASE_DB_URL,
+    createTableIfMissing: false,
+    ssl: { rejectUnauthorized: false },
   });
 
   app.use(
@@ -51,13 +56,15 @@ try {
       cookie: {
         secure: process.env.NODE_ENV === "production",
         httpOnly: true,
+        sameSite: "lax",
         maxAge: 30 * 24 * 60 * 60 * 1000, // 30일
       },
     })
   );
-  console.log("🟢 SessionStore 초기화 완료 (lazy mode)");
+
+  console.log("🟢 SessionStore 연결 (IPv4 only, TLS enabled)");
 } catch (err) {
-  console.error("⚠️ SessionStore 초기화 실패:", err.message);
+  console.error("🔴 SessionStore 초기화 실패:", err.message);
 }
 
 // ===========================
@@ -102,7 +109,7 @@ try {
 }
 
 // ===========================
-// ✅ Health Check (Render 고정 경로)
+// ✅ Health Check (/health 고정)
 // ===========================
 app.get("/health", (req, res) => {
   res.status(200).json({
@@ -122,7 +129,7 @@ app.get("/", (req, res) => {
 });
 
 // ===========================
-// ✅ 관리자 인증
+// ✅ 관리자 인증 라우트
 // ===========================
 app.get("/auth/admin", passport.authenticate("google", { scope: ["email", "profile"] }));
 
@@ -156,10 +163,14 @@ app.get("/admin/dashboard", async (req, res) => {
     const rows = data
       .map(
         (r) => `<tr>
-        <td>${r.id}</td><td>${r.query?.slice(0, 40) || "-"}</td>
-        <td>${r.model || "-"}</td><td>${r.cross_score || "-"}</td>
-        <td>${r.elapsed || "-"}</td><td>${r.status || "-"}</td>
-        <td>${r.created_at}</td></tr>`
+          <td>${r.id}</td>
+          <td>${r.query?.slice(0, 40) || "-"}</td>
+          <td>${r.model || "-"}</td>
+          <td>${r.cross_score || "-"}</td>
+          <td>${r.elapsed || "-"}</td>
+          <td>${r.status || "-"}</td>
+          <td>${r.created_at}</td>
+        </tr>`
       )
       .join("");
 
@@ -167,22 +178,25 @@ app.get("/admin/dashboard", async (req, res) => {
       <html><head><meta charset="utf-8">
       <title>Admin Dashboard</title>
       <style>
-      body{font-family:Arial,sans-serif;padding:16px}
-      table{border-collapse:collapse;width:100%}
-      td,th{border:1px solid #ccc;padding:6px;text-align:center}
-      th{background:#f5f5f5}
+        body{font-family:Arial,sans-serif;padding:16px}
+        table{border-collapse:collapse;width:100%}
+        td,th{border:1px solid #ccc;padding:6px;text-align:center}
+        th{background:#f5f5f5}
       </style></head>
       <body>
-      <h2>✅ Cross-Verified Admin Dashboard</h2>
-      <p>Logged in as <b>${req.user.displayName}</b> (${req.user.emails[0].value})</p>
-      <table>
-      <thead><tr><th>ID</th><th>Query</th><th>Model</th><th>Score</th><th>Elapsed</th><th>Status</th><th>Created</th></tr></thead>
-      <tbody>${rows}</tbody></table>
+        <h2>✅ Cross-Verified Admin Dashboard</h2>
+        <p>Logged in as <b>${req.user.displayName}</b> (${req.user.emails[0].value})</p>
+        <table>
+          <thead>
+            <tr><th>ID</th><th>Query</th><th>Model</th><th>Score</th><th>Elapsed</th><th>Status</th><th>Created</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
       </body></html>
     `);
   } catch (err) {
     console.error("❌ Dashboard Error:", err.message);
-    res.status(500).send("서버 오류");
+    res.status(500).send("서버 오류 발생");
   }
 });
 
