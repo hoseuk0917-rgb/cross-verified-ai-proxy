@@ -1,5 +1,5 @@
 // =======================================================
-// Cross-Verified AI Proxy — v14.0.0 (Full Admin Dashboard Stable)
+// Cross-Verified AI Proxy — v14.0.1 (Admin + Whitelist + Gemini Test)
 // =======================================================
 import express from "express";
 import session from "express-session";
@@ -74,7 +74,6 @@ passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
 app.use(passport.initialize());
 app.use(passport.session());
-
 // ─────────────────────────────
 // ✅ Admin Dashboard Routes
 // ─────────────────────────────
@@ -89,13 +88,6 @@ app.get("/auth/admin/callback",
   (req, res) => res.redirect("/admin/dashboard"));
 app.get("/auth/failure", (req, res) => res.status(401).send("❌ OAuth Failed"));
 
-app.get("/logout", (req, res) => {
-  req.logout(() => res.redirect("/auth/admin"));
-});
-
-// ─────────────────────────────
-// ✅ Dashboard Rendering
-// ─────────────────────────────
 app.get("/admin/dashboard", ensureAuth, async (req, res) => {
   const { data: logs } = await supabase
     .from("api_logs")
@@ -105,13 +97,13 @@ app.get("/admin/dashboard", ensureAuth, async (req, res) => {
 
   const avgTruth = logs?.reduce((a, b) => a + (b.truthscore || 0), 0) / (logs?.length || 1);
   const avgResponse = logs?.reduce((a, b) => a + (b.response_time || 0), 0) / (logs?.length || 1);
-
   res.render("dashboard", {
     user: req.user,
     stats: { avgTruth: avgTruth.toFixed(2), avgResponse: avgResponse.toFixed(0), count: logs?.length || 0 },
     logs: logs || [],
   });
 });
+
 // ─────────────────────────────
 // ✅ Naver API + Whitelist Filtering
 // ─────────────────────────────
@@ -154,9 +146,36 @@ function filterByWhitelist(results) {
     allDomains.some(domain => item.link && item.link.includes(domain))
   );
 }
+// ─────────────────────────────
+// ✅ Gemini Flash / Pro 단일 테스트
+// ─────────────────────────────
+app.post("/api/test-gemini", async (req, res) => {
+  try {
+    const { key, query, mode = "flash" } = req.body;
+    if (!key || !query)
+      return res.status(400).json({ success: false, message: "❌ key 또는 query 누락" });
+
+    const model = mode === "pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+      { contents: [{ parts: [{ text: query }] }] }
+    );
+
+    const resultText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "결과 없음";
+    res.json({
+      success: true,
+      model,
+      result: resultText.slice(0, 250),
+      store_local: true,
+    });
+  } catch (err) {
+    console.error("❌ /api/test-gemini Error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // ─────────────────────────────
-// ✅ Gemini + Naver + Whitelist Verify
+// ✅ Verify 엔진 통합 (Gemini + Naver + Whitelist)
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   const { query, key } = req.body;
@@ -211,7 +230,6 @@ app.post("/api/verify", async (req, res) => {
       message: "✅ Adaptive Verify + Naver Whitelist 완료",
       query,
       truthscore: finalTruth,
-      elapsed,
       naver: {
         counts: {
           news: filteredNaver.news.length,
@@ -220,6 +238,7 @@ app.post("/api/verify", async (req, res) => {
         }
       },
       summary_confidence: avg.toFixed(2),
+      elapsed,
       store_local: true,
     });
   } catch (err) {
@@ -227,24 +246,31 @@ app.post("/api/verify", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
-// ✅ Health & DB Test
-app.get("/health", (_, res) => res.status(200).json({ status: "ok", timestamp: new Date().toISOString() }));
-app.get("/api/test-db", async (_, res) => {
+// ✅ PostgreSQL 연결 테스트
+app.get("/api/test-db", async (req, res) => {
   try {
-    const c = await pgPool.connect();
-    const r = await c.query("SELECT NOW()");
-    c.release();
-    res.json({ success: true, message: "✅ PostgreSQL 연결 성공", time: r.rows[0].now });
+    const client = await pgPool.connect();
+    const result = await client.query("SELECT NOW()");
+    client.release();
+    res.json({
+      success: true,
+      message: "✅ PostgreSQL 연결 성공",
+      time: new Date(result.rows[0].now).toISOString(),
+    });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    console.error("DB 연결 오류:", err.message);
+    res.status(500).json({
+      success: false,
+      message: "❌ PostgreSQL 연결 실패",
+      error: err.message,
+    });
   }
 });
 
-// ─────────────────────────────
+// ✅ Health Check
+app.get("/health", (_, res) =>
+  res.status(200).json({ status: "ok", version: "v14.0.1", timestamp: new Date().toISOString() })
+);
+
 // ✅ 서버 실행
-// ─────────────────────────────
-app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v14.0.0 running on port ${PORT}`);
-  console.log(`🌐 http://localhost:${PORT}/auth/admin`);
-});
+app.listen(PORT, () => console.log(`🚀 Cross-Verified AI Proxy v14.0.1 running on ${PORT}`));
