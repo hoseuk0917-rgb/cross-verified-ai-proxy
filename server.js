@@ -1,7 +1,7 @@
 // =======================================================
-// Cross-Verified AI Proxy — v13.7.3 (Fast-XML Unified)
-// Render + Supabase + OAuth + Gemini Flash/Pro
-// + Fast-XML-Parser Integration + Local-First Caching
+// Cross-Verified AI Proxy — v13.8.5 (Naver Integrated)
+// Render + Supabase + OAuth + Gemini Flash/Pro + Fast-XML
+// + Naver Web/News/Ency Integration + Local-First Caching
 // =======================================================
 
 import express from "express";
@@ -62,6 +62,7 @@ app.use(session({
     maxAge: 24 * 60 * 60 * 1000,
   },
 }));
+
 // ─────────────────────────────
 // ✅ Passport (Google OAuth)
 // ─────────────────────────────
@@ -75,17 +76,11 @@ passport.use(new GoogleStrategy({
     const whitelist = process.env.ADMIN_WHITELIST?.split(",") || [];
     if (!whitelist.includes(email))
       return done(new Error("Unauthorized admin user"));
-
-    // ✅ 관리자 인증 성공 시 Supabase users 테이블에 업서트
     await supabase.from("users")
       .upsert([{ email, name: profile.displayName }], { onConflict: "email" });
-
     return done(null, { email, name: profile.displayName });
-  } catch (err) {
-    return done(err);
-  }
+  } catch (err) { return done(err); }
 }));
-
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
 app.use(passport.initialize());
@@ -95,19 +90,16 @@ app.use(passport.session());
 // ✅ OAuth Routes
 // ─────────────────────────────
 app.get("/auth/admin", passport.authenticate("google", { scope: ["email", "profile"] }));
-
 app.get("/auth/admin/callback",
   passport.authenticate("google", { failureRedirect: "/auth/failure", session: true }),
   async (req, res) => {
     const { email, name } = req.user;
     await supabase.from("sessions").insert([{ email, name, provider: "google" }]);
     res.send(`<h2>✅ OAuth Login Success</h2><p>${name} (${email})</p>`);
-  }
-);
-
+  });
 app.get("/auth/failure", (req, res) => res.status(401).send("❌ OAuth Failed"));
 // ─────────────────────────────
-// ✅ Flash-Lite 핵심어 추출 (서버 DB 미저장)
+// ✅ Flash-Lite 핵심어 추출
 // ─────────────────────────────
 app.post("/api/extract-keywords", async (req, res) => {
   try {
@@ -134,7 +126,6 @@ app.post("/api/extract-keywords", async (req, res) => {
     const tokens = clean.split(" ").filter(t => t.length > 1);
     const commonPrefix = query.match(/\b(UAM|AI|SmartCity|스마트시티)\b/i);
     let expanded = clean;
-
     if (commonPrefix && tokens.length >= 2 && mode === "OR")
       expanded = `${commonPrefix[0]} ${tokens[0]} OR ${commonPrefix[0]} ${tokens[1]}`;
 
@@ -150,7 +141,7 @@ app.post("/api/extract-keywords", async (req, res) => {
       clean,
       final: finalQuery,
       cached: true,
-      store_local: true,  // ✅ 앱에서 로컬 저장해야 함
+      store_local: true,
     });
   } catch (err) {
     console.error("❌ /api/extract-keywords Error:", err.message);
@@ -159,25 +150,18 @@ app.post("/api/extract-keywords", async (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ Gemini Flash / Pro 단일 테스트 (DB 저장 → 로컬 캐싱)
+// ✅ Gemini Flash / Pro 단일 테스트
 // ─────────────────────────────
 app.post("/api/test-gemini", async (req, res) => {
   try {
     const { key, query, mode = "flash" } = req.body;
     const model = mode === "pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
-
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
       { contents: [{ parts: [{ text: query || "테스트 요청" }] }] }
     );
-
     const resultText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "결과 없음";
-    res.json({
-      success: true,
-      model,
-      result: resultText.slice(0, 200),
-      store_local: true,
-    });
+    res.json({ success: true, model, result: resultText.slice(0, 200), store_local: true });
   } catch (err) {
     console.error("❌ /api/test-gemini Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -185,7 +169,32 @@ app.post("/api/test-gemini", async (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ Adaptive Verify (Flash + Pro / Pro-only / Flash-only)
+// ✅ Naver Search API (뉴스/백과/웹 통합)
+// ─────────────────────────────
+const NAVER_API_BASE = "https://openapi.naver.com/v1/search";
+const NAVER_HEADERS = {
+  "X-Naver-Client-Id": process.env.NAVER_CLIENT_ID,
+  "X-Naver-Client-Secret": process.env.NAVER_CLIENT_SECRET
+};
+async function callNaverAPIs(query) {
+  const endpoints = {
+    news: `${NAVER_API_BASE}/news.json?query=${encodeURIComponent(query)}&display=5`,
+    ency: `${NAVER_API_BASE}/encyc.json?query=${encodeURIComponent(query)}&display=3`,
+    web: `${NAVER_API_BASE}/webkr.json?query=${encodeURIComponent(query)}&display=3`
+  };
+  const [news, ency, web] = await Promise.allSettled([
+    axios.get(endpoints.news, { headers: NAVER_HEADERS }),
+    axios.get(endpoints.ency, { headers: NAVER_HEADERS }),
+    axios.get(endpoints.web, { headers: NAVER_HEADERS })
+  ]);
+  return {
+    news: news.status === "fulfilled" ? news.value.data.items : [],
+    ency: ency.status === "fulfilled" ? ency.value.data.items : [],
+    web: web.status === "fulfilled" ? web.value.data.items : []
+  };
+}
+// ─────────────────────────────
+// ✅ Adaptive Verify (Gemini Flash + Pro + Naver Sources)
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   const { query, key, mode = "auto" } = req.body;
@@ -195,29 +204,9 @@ app.post("/api/verify", async (req, res) => {
   try {
     const start = Date.now();
 
-    // 1️⃣ Pro 전용
-    if (mode === "pro-only") {
-      const r = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${key}`,
-        { contents: [{ parts: [{ text: query }] }] }
-      );
-      const text = r.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      return res.json({ success: true, message: "✅ Pro 모드 완료", text, store_local: true });
-    }
-
-    // 2️⃣ Flash 전용
-    if (mode === "flash-only") {
-      const r = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`,
-        { contents: [{ parts: [{ text: query }] }] }
-      );
-      const text = r.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      return res.json({ success: true, message: "✅ Flash 모드 완료", text, store_local: true });
-    }
-
-    // 3️⃣ 기본 Auto 모드 (Flash + Pro 병렬)
+    // 1️⃣ Gemini 병렬 (Flash + Pro)
     const models = ["gemini-2.5-flash", "gemini-2.5-pro"];
-    const results = await Promise.allSettled(
+    const geminiResults = await Promise.allSettled(
       models.map(async (m) => {
         const r = await axios.post(
           `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${key}`,
@@ -227,10 +216,14 @@ app.post("/api/verify", async (req, res) => {
       })
     );
 
-    const merged = results.filter(r => r.status === "fulfilled").map(r => r.value);
+    const merged = geminiResults.filter(r => r.status === "fulfilled").map(r => r.value);
     const flashText = merged.find(m => m.model.includes("flash"))?.text || "";
     const proText = merged.find(m => m.model.includes("pro"))?.text || "";
 
+    // 2️⃣ Naver API 호출 (뉴스, 백과, 웹)
+    const naverResults = await callNaverAPIs(query);
+
+    // 3️⃣ 문장 단위 신뢰도 계산
     const sentences = proText.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
     const partial = sentences.map((s, i) => {
       const normalized = s.toLowerCase().replace(/\s+/g, " ");
@@ -240,17 +233,38 @@ app.post("/api/verify", async (req, res) => {
       return { id: i + 1, sentence: s, confidence, icon };
     });
 
+    // 4️⃣ TruthScore 계산 (Naver 가중치 반영)
+    const truthWeights = { news: 0.9, ency: 1.0, web: 0.7 };
+    const naverScore =
+      (naverResults.news.length * truthWeights.news +
+        naverResults.ency.length * truthWeights.ency +
+        naverResults.web.length * truthWeights.web) /
+      (naverResults.news.length + naverResults.ency.length + naverResults.web.length || 1);
+
     const avg = (partial.filter(p => p.confidence === "high").length / partial.length) || 0;
+    const finalTruth = ((avg + naverScore) / 2).toFixed(2);
     const elapsed = `${Date.now() - start} ms`;
 
+    // 5️⃣ 응답
     res.json({
       success: true,
-      message: "✅ Adaptive Verify 완료",
+      message: "✅ Adaptive Verify + Naver 통합 완료",
       query,
       mode,
       elapsed,
+      truthscore: finalTruth,
+      gemini: {
+        flashText: flashText.slice(0, 400),
+        proText: proText.slice(0, 400)
+      },
+      naver: {
+        counts: {
+          news: naverResults.news.length,
+          ency: naverResults.ency.length,
+          web: naverResults.web.length
+        }
+      },
       summary_confidence: avg.toFixed(2),
-      sentences: partial,
       store_local: true,
     });
   } catch (err) {
@@ -258,6 +272,18 @@ app.post("/api/verify", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// ─────────────────────────────
+// ✅ TruthScore 시각화 기준 (UI 참고용)
+// ─────────────────────────────
+const TRUTH_ICONS = {
+  high: "🟢",
+  reliable: "🟡",
+  low: "🟠",
+  unreliable: "🔴",
+  encyclopedia: "📘",
+  web: "🌐"
+};
 // ─────────────────────────────
 // ✅ K-Law (법령정보 통합 API) — fast-xml-parser 기반
 // ─────────────────────────────
@@ -267,7 +293,6 @@ app.post("/api/klaw", async (req, res) => {
     if (!oc || !target)
       return res.status(400).json({ success: false, message: "❌ OC 또는 target 누락" });
 
-    // ✅ 모바일 여부에 따라 URL 구성
     const baseUrl = "https://www.law.go.kr/DRF/lawSearch.do";
     const url = new URL(baseUrl);
     url.searchParams.append("OC", oc);
@@ -280,10 +305,8 @@ app.post("/api/klaw", async (req, res) => {
 
     const response = await axios.get(url.toString(), { responseType: "text" });
     const contentType = response.headers["content-type"] || "";
-
     let data;
 
-    // ✅ fast-xml-parser를 사용해 XML → JSON 변환
     if (contentType.includes("xml") || type.toUpperCase() === "XML") {
       data = parseXMLtoJSON(response.data);
     } else if (contentType.includes("json") || type.toUpperCase() === "JSON") {
@@ -299,27 +322,12 @@ app.post("/api/klaw", async (req, res) => {
       source_url: url.toString(),
       parsed: data,
     });
-
   } catch (err) {
     console.error("❌ /api/klaw Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ─────────────────────────────
-// ✅ K-Law 모바일모드 테스트용 엔드포인트
-// ─────────────────────────────
-app.get("/api/test-klaw", async (req, res) => {
-  try {
-    const url = "https://www.law.go.kr/DRF/lawSearch.do?OC=test&target=prec&type=XML&mobileYn=Y&query=자동차";
-    const response = await axios.get(url, { responseType: "text" });
-    const parsed = parseXMLtoJSON(response.data);
-    res.json({ success: true, parsed });
-  } catch (err) {
-    console.error("❌ /api/test-klaw Error:", err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 // ─────────────────────────────
 // ✅ PostgreSQL 연결 테스트
 // ─────────────────────────────
@@ -357,7 +365,7 @@ app.get("/health", (req, res) =>
 // ✅ 서버 실행
 // ─────────────────────────────
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v13.7.3 (Local-First) running on port ${PORT}`);
+  console.log(`🚀 Cross-Verified AI Proxy v13.8.5 (Naver Integrated) running on port ${PORT}`);
   console.log(`🌐 Health: http://localhost:${PORT}/health`);
   console.log(`🧠 DB Test: http://localhost:${PORT}/api/test-db`);
   console.log(`🔑 Keyword Extract: POST /api/extract-keywords`);
