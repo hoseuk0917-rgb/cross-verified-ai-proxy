@@ -1,7 +1,6 @@
 // =======================================================
-// Cross-Verified AI Proxy — v13.9.0 (Admin Dashboard)
+// Cross-Verified AI Proxy — v14.0.0 (Full Admin Dashboard Stable)
 // =======================================================
-
 import express from "express";
 import session from "express-session";
 import pg from "pg";
@@ -13,6 +12,7 @@ import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { parseXMLtoJSON } from "./utils/xmlParser.js";
@@ -21,7 +21,9 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// EJS + Static 세팅
+// ─────────────────────────────
+// ✅ EJS + Static
+// ─────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 app.set("view engine", "ejs");
@@ -29,10 +31,15 @@ app.set("views", path.join(__dirname, "views"));
 app.use(express.static(path.join(__dirname, "public")));
 
 // ─────────────────────────────
+// ✅ 기본 미들웨어
+// ─────────────────────────────
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(morgan("dev"));
 
+// ─────────────────────────────
+// ✅ Supabase + PostgreSQL 세션
+// ─────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const PgStore = connectPgSimple(session);
 const pgPool = new pg.Pool({
@@ -46,6 +53,7 @@ app.use(session({
   saveUninitialized: false,
   cookie: { secure: false, httpOnly: true, maxAge: 86400000 },
 }));
+
 // ─────────────────────────────
 // ✅ OAuth (Google Admin)
 // ─────────────────────────────
@@ -68,7 +76,7 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // ─────────────────────────────
-// ✅ Admin Dashboard Route
+// ✅ Admin Dashboard Routes
 // ─────────────────────────────
 function ensureAuth(req, res, next) {
   if (req.isAuthenticated()) return next();
@@ -81,6 +89,13 @@ app.get("/auth/admin/callback",
   (req, res) => res.redirect("/admin/dashboard"));
 app.get("/auth/failure", (req, res) => res.status(401).send("❌ OAuth Failed"));
 
+app.get("/logout", (req, res) => {
+  req.logout(() => res.redirect("/auth/admin"));
+});
+
+// ─────────────────────────────
+// ✅ Dashboard Rendering
+// ─────────────────────────────
 app.get("/admin/dashboard", ensureAuth, async (req, res) => {
   const { data: logs } = await supabase
     .from("api_logs")
@@ -90,70 +105,146 @@ app.get("/admin/dashboard", ensureAuth, async (req, res) => {
 
   const avgTruth = logs?.reduce((a, b) => a + (b.truthscore || 0), 0) / (logs?.length || 1);
   const avgResponse = logs?.reduce((a, b) => a + (b.response_time || 0), 0) / (logs?.length || 1);
+
   res.render("dashboard", {
     user: req.user,
     stats: { avgTruth: avgTruth.toFixed(2), avgResponse: avgResponse.toFixed(0), count: logs?.length || 0 },
     logs: logs || [],
   });
 });
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Cross-Verified Admin Dashboard</title>
-  <link rel="stylesheet" href="/css/dashboard.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-</head>
-<body>
-  <header><h2>🧭 Cross-Verified AI Admin Dashboard</h2></header>
-  <section>
-    <h3>Welcome, <%= user.name %> (<%= user.email %>)</h3>
-    <div class="stats">
-      <div>🧠 평균 TruthScore: <b><%= stats.avgTruth %></b></div>
-      <div>⚡ 평균 응답속도: <b><%= stats.avgResponse %> ms</b></div>
-      <div>📈 로그 수: <b><%= stats.count %></b></div>
-    </div>
-    <canvas id="truthChart" width="400" height="150"></canvas>
-  </section>
-  <footer><p>© 2025 Cross-Verified AI</p></footer>
+// ─────────────────────────────
+// ✅ Naver API + Whitelist Filtering
+// ─────────────────────────────
+const NAVER_API_BASE = "https://openapi.naver.com/v1/search";
+const NAVER_HEADERS = {
+  "X-Naver-Client-Id": process.env.NAVER_CLIENT_ID,
+  "X-Naver-Client-Secret": process.env.NAVER_CLIENT_SECRET
+};
 
-  <script>
-  const ctx = document.getElementById('truthChart');
-  const data = <%- JSON.stringify(logs.map(l => l.truthscore || 0)) %>;
-  new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: data.map((_,i)=>i+1),
-      datasets: [{ label: 'TruthScore', data, borderColor:'#3b82f6', fill:false }]
-    },
-    options:{ scales:{ y:{min:0,max:1} } }
-  });
-  </script>
-</body>
-</html>
-body {
-  font-family: "Inter", sans-serif;
-  background: #f8fafc;
-  color: #1e293b;
-  margin: 0;
-  padding: 0;
+async function callNaverAPIs(query) {
+  const endpoints = {
+    news: `${NAVER_API_BASE}/news.json?query=${encodeURIComponent(query)}&display=5`,
+    ency: `${NAVER_API_BASE}/encyc.json?query=${encodeURIComponent(query)}&display=3`,
+    web: `${NAVER_API_BASE}/webkr.json?query=${encodeURIComponent(query)}&display=3`
+  };
+  const [news, ency, web] = await Promise.allSettled([
+    axios.get(endpoints.news, { headers: NAVER_HEADERS }),
+    axios.get(endpoints.ency, { headers: NAVER_HEADERS }),
+    axios.get(endpoints.web, { headers: NAVER_HEADERS })
+  ]);
+  return {
+    news: news.status === "fulfilled" ? news.value.data.items : [],
+    ency: ency.status === "fulfilled" ? ency.value.data.items : [],
+    web: web.status === "fulfilled" ? web.value.data.items : []
+  };
 }
-header {
-  background: #1e293b;
-  color: #fff;
-  padding: 12px 20px;
+
+// ✅ Naver whitelist 불러오기
+const whitelistPath = path.join(__dirname, "data", "naver_whitelist.json");
+let whitelistData = {};
+try {
+  whitelistData = JSON.parse(fs.readFileSync(whitelistPath, "utf-8"));
+} catch (err) {
+  console.warn("⚠️ Naver whitelist 로드 실패:", err.message);
+  whitelistData = { tiers: {} };
 }
-section {
-  padding: 20px;
+const allDomains = Object.values(whitelistData.tiers || {}).flatMap(tier => tier.domains);
+function filterByWhitelist(results) {
+  return results.filter(item =>
+    allDomains.some(domain => item.link && item.link.includes(domain))
+  );
 }
-.stats {
-  display: flex;
-  gap: 20px;
-  margin-bottom: 20px;
-}
-.stats div {
-  background: #fff;
-  padding: 10px 15px;
-  border-radius: 10px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-}
+
+// ─────────────────────────────
+// ✅ Gemini + Naver + Whitelist Verify
+// ─────────────────────────────
+app.post("/api/verify", async (req, res) => {
+  const { query, key } = req.body;
+  if (!query || !key) return res.status(400).json({ success: false, message: "❌ query 또는 key 누락" });
+
+  try {
+    const start = Date.now();
+    const models = ["gemini-2.5-flash", "gemini-2.5-pro"];
+    const geminiResults = await Promise.allSettled(
+      models.map(async (m) => {
+        const r = await axios.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${key}`,
+          { contents: [{ parts: [{ text: query }] }] }
+        );
+        return { model: m, text: r.data?.candidates?.[0]?.content?.parts?.[0]?.text || "" };
+      })
+    );
+
+    const merged = geminiResults.filter(r => r.status === "fulfilled").map(r => r.value);
+    const flashText = merged.find(m => m.model.includes("flash"))?.text || "";
+    const proText = merged.find(m => m.model.includes("pro"))?.text || "";
+
+    const naverResults = await callNaverAPIs(query);
+    const filteredNaver = {
+      news: filterByWhitelist(naverResults.news),
+      ency: naverResults.ency,
+      web: filterByWhitelist(naverResults.web)
+    };
+
+    const sentences = proText.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
+    const partial = sentences.map((s, i) => {
+      const normalized = s.toLowerCase().replace(/\s+/g, " ");
+      const match = flashText.toLowerCase().includes(normalized.split(" ").slice(0, 5).join(" "));
+      const confidence = match ? "high" : "medium";
+      const icon = match ? "✔️" : "❓";
+      return { id: i + 1, sentence: s, confidence, icon };
+    });
+
+    const truthWeights = { news: 0.9, ency: 1.0, web: 0.7 };
+    const naverScore =
+      (filteredNaver.news.length * truthWeights.news +
+        filteredNaver.ency.length * truthWeights.ency +
+        filteredNaver.web.length * truthWeights.web) /
+      (filteredNaver.news.length + filteredNaver.ency.length + filteredNaver.web.length || 1);
+
+    const avg = (partial.filter(p => p.confidence === "high").length / partial.length) || 0;
+    const finalTruth = ((avg + naverScore) / 2).toFixed(2);
+    const elapsed = `${Date.now() - start} ms`;
+
+    res.json({
+      success: true,
+      message: "✅ Adaptive Verify + Naver Whitelist 완료",
+      query,
+      truthscore: finalTruth,
+      elapsed,
+      naver: {
+        counts: {
+          news: filteredNaver.news.length,
+          ency: filteredNaver.ency.length,
+          web: filteredNaver.web.length
+        }
+      },
+      summary_confidence: avg.toFixed(2),
+      store_local: true,
+    });
+  } catch (err) {
+    console.error("❌ /api/verify Error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ✅ Health & DB Test
+app.get("/health", (_, res) => res.status(200).json({ status: "ok", timestamp: new Date().toISOString() }));
+app.get("/api/test-db", async (_, res) => {
+  try {
+    const c = await pgPool.connect();
+    const r = await c.query("SELECT NOW()");
+    c.release();
+    res.json({ success: true, message: "✅ PostgreSQL 연결 성공", time: r.rows[0].now });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────
+// ✅ 서버 실행
+// ─────────────────────────────
+app.listen(PORT, () => {
+  console.log(`🚀 Cross-Verified AI Proxy v14.0.0 running on port ${PORT}`);
+  console.log(`🌐 http://localhost:${PORT}/auth/admin`);
+});

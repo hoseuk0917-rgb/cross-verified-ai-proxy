@@ -1,0 +1,112 @@
+body {
+  font-family: "Inter", "Noto Sans KR", sans-serif;
+  background: #f8fafc;
+  color: #1e293b;
+  margin: 0;
+  padding: 0;
+}
+
+header {
+  background: #1e293b;
+  color: #fff;
+  padding: 16px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+header h1 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.user-info {
+  font-size: 14px;
+}
+
+.logout-btn {
+  color: #fff;
+  background: #ef4444;
+  padding: 6px 12px;
+  margin-left: 10px;
+  border-radius: 6px;
+  text-decoration: none;
+  transition: background 0.2s;
+}
+.logout-btn:hover {
+  background: #dc2626;
+}
+
+main {
+  padding: 24px;
+  max-width: 960px;
+  margin: auto;
+}
+
+/* 통계 카드 */
+.stats {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.stat-card {
+  background: #fff;
+  padding: 16px;
+  border-radius: 12px;
+  flex: 1;
+  text-align: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  transition: transform 0.2s;
+}
+.stat-card:hover {
+  transform: translateY(-3px);
+}
+.stat-card span {
+  display: block;
+  font-size: 14px;
+  color: #64748b;
+}
+.stat-card strong {
+  font-size: 22px;
+  color: #2563eb;
+}
+
+/* 차트 */
+.chart {
+  background: #fff;
+  padding: 20px;
+  border-radius: 12px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.08);
+  margin-bottom: 24px;
+}
+
+/* 로그 테이블 */
+.logs table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.08);
+}
+.logs th, .logs td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 10px;
+  text-align: left;
+}
+.logs th {
+  background: #f1f5f9;
+  font-weight: 600;
+}
+.logs tr:hover {
+  background: #f9fafb;
+}
+
+/* 푸터 */
+footer {
+  text-align: center;
+  padding: 16px;
+  font-size: 13px;
+  color: #94a3b8;
+  border-top: 1px solid #e2e8f0;
+  margin-top: 40px;
+}

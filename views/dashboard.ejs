@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>Cross-Verified AI 관리자 대시보드</title>
+  <link rel="stylesheet" href="/css/dashboard.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script defer src="/js/dashboard.js"></script>
+</head>
+
+<body>
+  <header>
+    <h1>🧭 Cross-Verified AI 관리자 대시보드</h1>
+    <div class="user-info">
+      <span><%= user.name %> (<%= user.email %>)</span>
+      <a href="/logout" class="logout-btn">로그아웃</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="stats">
+      <div class="stat-card">
+        <span>🧠 평균 TruthScore</span>
+        <strong><%= stats.avgTruth %></strong>
+      </div>
+      <div class="stat-card">
+        <span>⚡ 평균 응답속도</span>
+        <strong><%= stats.avgResponse %> ms</strong>
+      </div>
+      <div class="stat-card">
+        <span>📈 로그 수</span>
+        <strong><%= stats.count %></strong>
+      </div>
+    </section>
+
+    <section class="chart">
+      <h3>📊 최근 TruthScore 추이</h3>
+      <canvas id="truthChart" width="600" height="250"></canvas>
+    </section>
+
+    <section class="logs">
+      <h3>🗂 최근 API 로그</h3>
+      <table>
+        <thead>
+          <tr><th>시간</th><th>엔진</th><th>TruthScore</th><th>응답(ms)</th></tr>
+        </thead>
+        <tbody>
+          <% logs.forEach(log => { %>
+          <tr>
+            <td><%= new Date(log.created_at).toLocaleString() %></td>
+            <td><%= log.engine %></td>
+            <td><%= log.truthscore %></td>
+            <td><%= log.response_time %></td>
+          </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer>
+    <p>© 2025 Cross-Verified AI | v14.0.0</p>
+  </footer>
+
+  <script>
+    const ctx = document.getElementById('truthChart');
+    const data = <%- JSON.stringify(logs.map(l => l.truthscore || 0)) %>;
+    new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: data.map((_, i) => i + 1),
+        datasets: [{
+          label: 'TruthScore',
+          data,
+          borderColor: '#2563eb',
+          backgroundColor: 'rgba(37,99,235,0.15)',
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        scales: { y: { min: 0, max: 1 } },
+        plugins: { legend: { display: false } }
+      }
+    });
+  </script>
+</body>
+</html>
