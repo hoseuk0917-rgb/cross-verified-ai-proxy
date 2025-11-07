@@ -1,5 +1,5 @@
 // =======================================================
-// Cross-Verified AI Proxy — v14.0.1 (Admin + Whitelist + Gemini Test)
+// Cross-Verified AI Proxy — v14.0.2 (Admin + K-Law + Whitelist)
 // =======================================================
 import express from "express";
 import session from "express-session";
@@ -74,6 +74,7 @@ passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
 app.use(passport.initialize());
 app.use(passport.session());
+
 // ─────────────────────────────
 // ✅ Admin Dashboard Routes
 // ─────────────────────────────
@@ -103,7 +104,6 @@ app.get("/admin/dashboard", ensureAuth, async (req, res) => {
     logs: logs || [],
   });
 });
-
 // ─────────────────────────────
 // ✅ Naver API + Whitelist Filtering
 // ─────────────────────────────
@@ -146,6 +146,7 @@ function filterByWhitelist(results) {
     allDomains.some(domain => item.link && item.link.includes(domain))
   );
 }
+
 // ─────────────────────────────
 // ✅ Gemini Flash / Pro 단일 테스트
 // ─────────────────────────────
@@ -162,18 +163,12 @@ app.post("/api/test-gemini", async (req, res) => {
     );
 
     const resultText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "결과 없음";
-    res.json({
-      success: true,
-      model,
-      result: resultText.slice(0, 250),
-      store_local: true,
-    });
+    res.json({ success: true, model, result: resultText.slice(0, 250), store_local: true });
   } catch (err) {
     console.error("❌ /api/test-gemini Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
 // ─────────────────────────────
 // ✅ Verify 엔진 통합 (Gemini + Naver + Whitelist)
 // ─────────────────────────────
@@ -230,13 +225,7 @@ app.post("/api/verify", async (req, res) => {
       message: "✅ Adaptive Verify + Naver Whitelist 완료",
       query,
       truthscore: finalTruth,
-      naver: {
-        counts: {
-          news: filteredNaver.news.length,
-          ency: filteredNaver.ency.length,
-          web: filteredNaver.web.length
-        }
-      },
+      naver: { counts: { news: filteredNaver.news.length, ency: filteredNaver.ency.length, web: filteredNaver.web.length } },
       summary_confidence: avg.toFixed(2),
       elapsed,
       store_local: true,
@@ -246,6 +235,52 @@ app.post("/api/verify", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// ─────────────────────────────
+// ✅ K-Law (법령정보 API)
+// ─────────────────────────────
+app.post("/api/klaw", async (req, res) => {
+  try {
+    const { oc, target, query, type = "XML", mobile = true } = req.body;
+    if (!oc || !target)
+      return res.status(400).json({ success: false, message: "❌ OC 또는 target 누락" });
+
+    const baseUrl = "https://www.law.go.kr/DRF/lawSearch.do";
+    const params = new URLSearchParams({
+      OC: oc,
+      target,
+      type,
+      mobileYn: mobile ? "Y" : "N",
+      query: query || "",
+      display: 20,
+      page: 1
+    });
+
+    const response = await axios.get(`${baseUrl}?${params}`, { responseType: "text" });
+    const contentType = response.headers["content-type"] || "";
+    let parsed;
+
+    if (contentType.includes("xml")) {
+      parsed = parseXMLtoJSON(response.data);
+    } else if (contentType.includes("json")) {
+      parsed = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
+    } else {
+      parsed = { raw: response.data };
+    }
+
+    res.json({
+      success: true,
+      target,
+      format: type,
+      parsed,
+      source_url: `${baseUrl}?${params}`,
+    });
+  } catch (err) {
+    console.error("❌ /api/klaw Error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ✅ PostgreSQL 연결 테스트
 app.get("/api/test-db", async (req, res) => {
   try {
@@ -269,8 +304,8 @@ app.get("/api/test-db", async (req, res) => {
 
 // ✅ Health Check
 app.get("/health", (_, res) =>
-  res.status(200).json({ status: "ok", version: "v14.0.1", timestamp: new Date().toISOString() })
+  res.status(200).json({ status: "ok", version: "v14.0.2", timestamp: new Date().toISOString() })
 );
 
 // ✅ 서버 실행
-app.listen(PORT, () => console.log(`🚀 Cross-Verified AI Proxy v14.0.1 running on ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Cross-Verified AI Proxy v14.0.2 running on ${PORT}`));
