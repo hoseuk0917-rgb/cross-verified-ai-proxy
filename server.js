@@ -1,7 +1,8 @@
-// Cross-Verified AI Proxy — v13.8
-// Render + Supabase + OAuth + Gemini Flash/Pro + K-Law API + Keyword Extraction + Local-First
-// 🧩 Local-First Policy: DB 최소화 (keywords, verify logs → 앱 로컬 저장)
-// 📡 XML→JSON 자동 변환, 핵심어 표시 강화
+// =======================================================
+// Cross-Verified AI Proxy — v13.7.3 (Fast-XML Unified)
+// Render + Supabase + OAuth + Gemini Flash/Pro
+// + Fast-XML-Parser Integration + Local-First Caching
+// =======================================================
 
 import express from "express";
 import session from "express-session";
@@ -14,7 +15,7 @@ import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
-import xml2js from "xml2js";
+import { parseXMLtoJSON } from "./utils/xmlParser.js";   // ✅ fast-xml-parser 단일화 버전 사용
 
 dotenv.config();
 const app = express();
@@ -35,7 +36,15 @@ app.use(express.json());
 app.use(morgan("dev"));
 
 // ─────────────────────────────
-// ✅ PostgreSQL + 세션 설정
+// ✅ Supabase 연결 (계정/Key용 최소 테이블만)
+// ─────────────────────────────
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+
+// ─────────────────────────────
+// ✅ PostgreSQL 세션 스토어
 // ─────────────────────────────
 const PgStore = connectPgSimple(session);
 const pgPool = new pg.Pool({
@@ -47,14 +56,12 @@ app.use(session({
   secret: process.env.SESSION_SECRET || "dev-secret",
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, httpOnly: true, maxAge: 86400000 },
+  cookie: {
+    secure: process.env.NODE_ENV === "production",
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000,
+  },
 }));
-
-// ─────────────────────────────
-// ✅ Supabase 연결 (OAuth 계정용 최소 테이블만)
-// ─────────────────────────────
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
-
 // ─────────────────────────────
 // ✅ Passport (Google OAuth)
 // ─────────────────────────────
@@ -68,15 +75,22 @@ passport.use(new GoogleStrategy({
     const whitelist = process.env.ADMIN_WHITELIST?.split(",") || [];
     if (!whitelist.includes(email))
       return done(new Error("Unauthorized admin user"));
+
+    // ✅ 관리자 인증 성공 시 Supabase users 테이블에 업서트
     await supabase.from("users")
       .upsert([{ email, name: profile.displayName }], { onConflict: "email" });
+
     return done(null, { email, name: profile.displayName });
-  } catch (err) { return done(err); }
+  } catch (err) {
+    return done(err);
+  }
 }));
+
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((user, done) => done(null, user));
 app.use(passport.initialize());
 app.use(passport.session());
+
 // ─────────────────────────────
 // ✅ OAuth Routes
 // ─────────────────────────────
@@ -88,12 +102,12 @@ app.get("/auth/admin/callback",
     const { email, name } = req.user;
     await supabase.from("sessions").insert([{ email, name, provider: "google" }]);
     res.send(`<h2>✅ OAuth Login Success</h2><p>${name} (${email})</p>`);
-  });
+  }
+);
 
 app.get("/auth/failure", (req, res) => res.status(401).send("❌ OAuth Failed"));
-
 // ─────────────────────────────
-// ✅ 핵심어 추출 (강화 버전 / Flash-Lite 기반)
+// ✅ Flash-Lite 핵심어 추출 (서버 DB 미저장)
 // ─────────────────────────────
 app.post("/api/extract-keywords", async (req, res) => {
   try {
@@ -104,25 +118,39 @@ app.post("/api/extract-keywords", async (req, res) => {
     const model = "gemini-2.5-flash-lite";
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-      {
-        contents: [
-          { parts: [{ text: `문장에서 핵심 검색어 5개 이하로만 추출:\n"${query}"` }] }
-        ]
-      }
+      { contents: [{ parts: [{ text: `다음 문장에서 핵심 검색어만 나열해줘:\n"${query}"` }] }] }
     );
 
-    const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    const clean = raw.replace(/[#*•`]/g, "").trim();
-    const keywords = clean.split(/[,\s]+/).filter(t => t.length > 1);
+    let raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    let clean = raw.replace(/[#*•`]/g, "")
+      .replace(/(핵심|검색|구문|조건|설명)/g, "")
+      .replace(/[^\w가-힣\s]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const hasOr = /(또는|or|,|\/)/i.test(query);
+    const hasAnd = /(과|및|와|그리고)/i.test(query);
+    const mode = hasOr ? "OR" : hasAnd ? "AND" : "AND";
+    const tokens = clean.split(" ").filter(t => t.length > 1);
+    const commonPrefix = query.match(/\b(UAM|AI|SmartCity|스마트시티)\b/i);
+    let expanded = clean;
+
+    if (commonPrefix && tokens.length >= 2 && mode === "OR")
+      expanded = `${commonPrefix[0]} ${tokens[0]} OR ${commonPrefix[0]} ${tokens[1]}`;
+
+    const finalQuery = (mode === "OR")
+      ? expanded.replace(/\s+OR\s+/g, " OR ")
+      : expanded.split(" ").join(" AND ");
 
     res.json({
       success: true,
       engine: model,
-      keywords,
-      display_keywords: keywords.join(", "),
-      store_local: true,      // 앱 로컬에 캐싱
+      mode,
+      raw: raw.trim(),
+      clean,
+      final: finalQuery,
       cached: true,
-      message: "✅ 핵심어 추출 성공 (앱 UI 표시 가능)"
+      store_local: true,  // ✅ 앱에서 로컬 저장해야 함
     });
   } catch (err) {
     console.error("❌ /api/extract-keywords Error:", err.message);
@@ -131,12 +159,33 @@ app.post("/api/extract-keywords", async (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ K-Law API 프록시 라우트 연결
+// ✅ Gemini Flash / Pro 단일 테스트 (DB 저장 → 로컬 캐싱)
 // ─────────────────────────────
-import klawRouter from "./routes/klaw.js";
-app.use("/proxy/klaw", klawRouter);
+app.post("/api/test-gemini", async (req, res) => {
+  try {
+    const { key, query, mode = "flash" } = req.body;
+    const model = mode === "pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
+
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+      { contents: [{ parts: [{ text: query || "테스트 요청" }] }] }
+    );
+
+    const resultText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "결과 없음";
+    res.json({
+      success: true,
+      model,
+      result: resultText.slice(0, 200),
+      store_local: true,
+    });
+  } catch (err) {
+    console.error("❌ /api/test-gemini Error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─────────────────────────────
-// ✅ Adaptive Verify (Gemini Flash + Pro 병렬 검증 + 문장단위 신뢰도)
+// ✅ Adaptive Verify (Flash + Pro / Pro-only / Flash-only)
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   const { query, key, mode = "auto" } = req.body;
@@ -146,37 +195,27 @@ app.post("/api/verify", async (req, res) => {
   try {
     const start = Date.now();
 
-    // 1️⃣ Pro 전용 모드
+    // 1️⃣ Pro 전용
     if (mode === "pro-only") {
-      const response = await axios.post(
+      const r = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${key}`,
         { contents: [{ parts: [{ text: query }] }] }
       );
-      const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      return res.json({
-        success: true,
-        message: "✅ Pro 모드 완료 (로컬 저장 필요)",
-        text,
-        store_local: true,
-      });
+      const text = r.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      return res.json({ success: true, message: "✅ Pro 모드 완료", text, store_local: true });
     }
 
-    // 2️⃣ Flash 전용 모드
+    // 2️⃣ Flash 전용
     if (mode === "flash-only") {
-      const response = await axios.post(
+      const r = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`,
         { contents: [{ parts: [{ text: query }] }] }
       );
-      const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      return res.json({
-        success: true,
-        message: "✅ Flash 모드 완료 (로컬 저장 필요)",
-        text,
-        store_local: true,
-      });
+      const text = r.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      return res.json({ success: true, message: "✅ Flash 모드 완료", text, store_local: true });
     }
 
-    // 3️⃣ Auto 모드 — Flash + Pro 병렬 검증
+    // 3️⃣ 기본 Auto 모드 (Flash + Pro 병렬)
     const models = ["gemini-2.5-flash", "gemini-2.5-pro"];
     const results = await Promise.allSettled(
       models.map(async (m) => {
@@ -192,7 +231,6 @@ app.post("/api/verify", async (req, res) => {
     const flashText = merged.find(m => m.model.includes("flash"))?.text || "";
     const proText = merged.find(m => m.model.includes("pro"))?.text || "";
 
-    // 문장 단위 Confidence 계산
     const sentences = proText.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
     const partial = sentences.map((s, i) => {
       const normalized = s.toLowerCase().replace(/\s+/g, " ");
@@ -207,7 +245,7 @@ app.post("/api/verify", async (req, res) => {
 
     res.json({
       success: true,
-      message: "✅ Adaptive Verify 완료 (로컬 저장 필요)",
+      message: "✅ Adaptive Verify 완료",
       query,
       mode,
       elapsed,
@@ -220,7 +258,68 @@ app.post("/api/verify", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+// ─────────────────────────────
+// ✅ K-Law (법령정보 통합 API) — fast-xml-parser 기반
+// ─────────────────────────────
+app.post("/api/klaw", async (req, res) => {
+  try {
+    const { oc, target, query, type = "JSON", mobile = true, display = 20, page = 1 } = req.body;
+    if (!oc || !target)
+      return res.status(400).json({ success: false, message: "❌ OC 또는 target 누락" });
 
+    // ✅ 모바일 여부에 따라 URL 구성
+    const baseUrl = "https://www.law.go.kr/DRF/lawSearch.do";
+    const url = new URL(baseUrl);
+    url.searchParams.append("OC", oc);
+    url.searchParams.append("target", target);
+    url.searchParams.append("type", type.toUpperCase());
+    if (mobile) url.searchParams.append("mobileYn", "Y");
+    if (query) url.searchParams.append("query", query);
+    url.searchParams.append("display", display);
+    url.searchParams.append("page", page);
+
+    const response = await axios.get(url.toString(), { responseType: "text" });
+    const contentType = response.headers["content-type"] || "";
+
+    let data;
+
+    // ✅ fast-xml-parser를 사용해 XML → JSON 변환
+    if (contentType.includes("xml") || type.toUpperCase() === "XML") {
+      data = parseXMLtoJSON(response.data);
+    } else if (contentType.includes("json") || type.toUpperCase() === "JSON") {
+      data = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
+    } else {
+      data = { raw: response.data };
+    }
+
+    res.json({
+      success: true,
+      target,
+      format: type.toUpperCase(),
+      source_url: url.toString(),
+      parsed: data,
+    });
+
+  } catch (err) {
+    console.error("❌ /api/klaw Error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────
+// ✅ K-Law 모바일모드 테스트용 엔드포인트
+// ─────────────────────────────
+app.get("/api/test-klaw", async (req, res) => {
+  try {
+    const url = "https://www.law.go.kr/DRF/lawSearch.do?OC=test&target=prec&type=XML&mobileYn=Y&query=자동차";
+    const response = await axios.get(url, { responseType: "text" });
+    const parsed = parseXMLtoJSON(response.data);
+    res.json({ success: true, parsed });
+  } catch (err) {
+    console.error("❌ /api/test-klaw Error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 // ─────────────────────────────
 // ✅ PostgreSQL 연결 테스트
 // ─────────────────────────────
@@ -236,7 +335,11 @@ app.get("/api/test-db", async (req, res) => {
     });
   } catch (err) {
     console.error("DB 연결 오류:", err.message);
-    res.status(500).json({ success: false, message: "❌ PostgreSQL 연결 실패", error: err.message });
+    res.status(500).json({
+      success: false,
+      message: "❌ PostgreSQL 연결 실패",
+      error: err.message,
+    });
   }
 });
 
@@ -244,20 +347,20 @@ app.get("/api/test-db", async (req, res) => {
 // ✅ Health Check
 // ─────────────────────────────
 app.get("/health", (req, res) =>
-  res.status(200).json({ status: "ok", timestamp: new Date().toISOString() })
+  res.status(200).json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+  })
 );
+
 // ─────────────────────────────
-// ✅ 서버 실행 (Health / Log 안내)
+// ✅ 서버 실행
 // ─────────────────────────────
 app.listen(PORT, () => {
-  console.log("─────────────────────────────");
-  console.log(`🚀 Cross-Verified AI Proxy v13.8 (Local-First)`);
-  console.log(`🌐 서버 실행 중: http://localhost:${PORT}`);
-  console.log("─────────────────────────────");
-  console.log(`🧠 DB Test: GET  → /api/test-db`);
-  console.log(`🤖 Verify: POST → /api/verify`);
-  console.log(`🔍 Keywords: POST → /api/extract-keywords`);
-  console.log(`⚖️  K-Law Proxy: GET  → /proxy/klaw/search?target=law&type=JSON&query=자동차`);
-  console.log(`💚 Health Check: GET  → /health`);
-  console.log("─────────────────────────────");
+  console.log(`🚀 Cross-Verified AI Proxy v13.7.3 (Local-First) running on port ${PORT}`);
+  console.log(`🌐 Health: http://localhost:${PORT}/health`);
+  console.log(`🧠 DB Test: http://localhost:${PORT}/api/test-db`);
+  console.log(`🔑 Keyword Extract: POST /api/extract-keywords`);
+  console.log(`🤖 Verify: POST /api/verify`);
+  console.log(`⚖️ K-Law API: POST /api/klaw`);
 });
