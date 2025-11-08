@@ -1,5 +1,5 @@
 // =======================================================
-// Cross-Verified AI Proxy — v14.0.4 (Render + Admin + Naver + Verify + K-Law)
+// Cross-Verified AI Proxy — v14.1.0 (User-Key Federated Proxy)
 // =======================================================
 import express from "express";
 import session from "express-session";
@@ -21,19 +21,25 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ✅ EJS + Static (절대경로 보정)
+// ─────────────────────────────
+// ✅ EJS + Static
+// ─────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-app.set("views", path.join(__dirname, "views"));
 app.set("view engine", "ejs");
+app.set("views", path.join(__dirname, "views"));
 app.use(express.static(path.join(__dirname, "public")));
 
-// ✅ 미들웨어
+// ─────────────────────────────
+// ✅ 기본 미들웨어
+// ─────────────────────────────
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(morgan("dev"));
 
+// ─────────────────────────────
 // ✅ Supabase + PostgreSQL 세션
+// ─────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const PgStore = connectPgSimple(session);
 const pgPool = new pg.Pool({
@@ -48,7 +54,9 @@ app.use(session({
   cookie: { secure: false, httpOnly: true, maxAge: 86400000 },
 }));
 
+// ─────────────────────────────
 // ✅ OAuth (Google Admin)
+// ─────────────────────────────
 passport.use(new GoogleStrategy({
   clientID: process.env.GOOGLE_ADMIN_CLIENT_ID,
   clientSecret: process.env.GOOGLE_ADMIN_CLIENT_SECRET,
@@ -67,37 +75,43 @@ passport.deserializeUser((user, done) => done(null, user));
 app.use(passport.initialize());
 app.use(passport.session());
 
-// ✅ Admin Dashboard
+// ─────────────────────────────
+// ✅ Admin Dashboard Routes
+// ─────────────────────────────
 function ensureAuth(req, res, next) {
   if (req.isAuthenticated()) return next();
   return res.redirect("/auth/admin");
 }
+
 app.get("/auth/admin", passport.authenticate("google", { scope: ["email", "profile"] }));
 app.get("/auth/admin/callback",
   passport.authenticate("google", { failureRedirect: "/auth/failure", session: true }),
   (req, res) => res.redirect("/admin/dashboard"));
 app.get("/auth/failure", (req, res) => res.status(401).send("❌ OAuth Failed"));
+
 app.get("/admin/dashboard", ensureAuth, async (req, res) => {
   const { data: logs } = await supabase
     .from("api_logs")
     .select("created_at, engine, truthscore, response_time")
     .order("created_at", { ascending: false })
     .limit(20);
+
   const avgTruth = logs?.reduce((a, b) => a + (b.truthscore || 0), 0) / (logs?.length || 1);
   const avgResponse = logs?.reduce((a, b) => a + (b.response_time || 0), 0) / (logs?.length || 1);
+
   res.render("dashboard", {
     user: req.user,
-    stats: { avgTruth: avgTruth.toFixed(2), avgResponse: avgResponse.toFixed(0), count: logs?.length || 0 },
+    stats: {
+      avgTruth: avgTruth.toFixed(2),
+      avgResponse: avgResponse.toFixed(0),
+      count: logs?.length || 0
+    },
     logs: logs || [],
   });
 });
-
-// ✅ Naver API + Whitelist
-const NAVER_API_BASE = "https://openapi.naver.com/v1/search";
-const NAVER_HEADERS = {
-  "X-Naver-Client-Id": process.env.NAVER_CLIENT_ID,
-  "X-Naver-Client-Secret": process.env.NAVER_CLIENT_SECRET
-};
+// ─────────────────────────────
+// ✅ Naver API (User-Key 기반) + Whitelist 필터
+// ─────────────────────────────
 const whitelistPath = path.join(__dirname, "data", "naver_whitelist.json");
 let whitelistData = {};
 try {
@@ -107,29 +121,62 @@ try {
   whitelistData = { tiers: {} };
 }
 const allDomains = Object.values(whitelistData.tiers || {}).flatMap(t => t.domains);
-const filterByWhitelist = (arr) => arr.filter(i => allDomains.some(d => i.link?.includes(d)));
-async function callNaverAPIs(query) {
+const filterByWhitelist = (arr) =>
+  arr.filter(i => allDomains.some(d => i.link?.includes(d)));
+
+async function callNaverAPIs(query, id, secret) {
+  if (!id || !secret) throw new Error("Naver API 키 누락");
+
+  const headers = { "X-Naver-Client-Id": id, "X-Naver-Client-Secret": secret };
+  const NAVER_API_BASE = "https://openapi.naver.com/v1/search";
   const endpoints = {
     news: `${NAVER_API_BASE}/news.json?query=${encodeURIComponent(query)}&display=5`,
     ency: `${NAVER_API_BASE}/encyc.json?query=${encodeURIComponent(query)}&display=3`,
     web: `${NAVER_API_BASE}/webkr.json?query=${encodeURIComponent(query)}&display=3`
   };
+
   const [news, ency, web] = await Promise.allSettled([
-    axios.get(endpoints.news, { headers: NAVER_HEADERS }),
-    axios.get(endpoints.ency, { headers: NAVER_HEADERS }),
-    axios.get(endpoints.web, { headers: NAVER_HEADERS })
+    axios.get(endpoints.news, { headers }),
+    axios.get(endpoints.ency, { headers }),
+    axios.get(endpoints.web, { headers })
   ]);
+
   return {
     news: news.status === "fulfilled" ? news.value.data.items : [],
     ency: ency.status === "fulfilled" ? ency.value.data.items : [],
     web: web.status === "fulfilled" ? web.value.data.items : []
   };
 }
+
+// ✅ Gemini Test (User-Key 기반)
+app.post("/api/test-gemini", async (req, res) => {
+  try {
+    const { gemini_key, query, mode = "flash" } = req.body;
+    if (!gemini_key || !query)
+      return res.status(400).json({ success: false, message: "❌ Gemini 키 또는 query 누락" });
+
+    const model = mode === "pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${gemini_key}`,
+      { contents: [{ parts: [{ text: query }] }] }
+    );
+
+    const resultText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "결과 없음";
+    res.json({ success: true, model, result: resultText.slice(0, 250), source: "user-key" });
+  } catch (err) {
+    console.error("❌ /api/test-gemini Error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ✅ Naver 단일 테스트 (User-Key 기반)
 app.post("/api/test-naver", async (req, res) => {
   try {
-    const { query } = req.body;
-    if (!query) return res.status(400).json({ success: false, message: "❌ query 누락" });
-    const result = await callNaverAPIs(query);
+    const { query, naver_id, naver_secret } = req.body;
+    if (!query || !naver_id || !naver_secret)
+      return res.status(400).json({ success: false, message: "❌ Naver 키 또는 query 누락" });
+
+    const result = await callNaverAPIs(query, naver_id, naver_secret);
     res.json({
       success: true,
       counts: {
@@ -141,18 +188,19 @@ app.post("/api/test-naver", async (req, res) => {
         news: result.news[0]?.title,
         ency: result.ency[0]?.title,
         web: result.web[0]?.title
-      }
+      },
+      source: "user-key"
     });
   } catch (err) {
     console.error("❌ /api/test-naver Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
-// ✅ Verify 엔진 통합 (Gemini + Naver + Whitelist)
+// ✅ Verify (Gemini + Naver + Whitelist + User Key)
 app.post("/api/verify", async (req, res) => {
-  const { query, key } = req.body;
-  if (!query || !key)
-    return res.status(400).json({ success: false, message: "❌ query 또는 key 누락" });
+  const { query, gemini_key, naver_id, naver_secret } = req.body;
+  if (!query || !gemini_key)
+    return res.status(400).json({ success: false, message: "❌ query 또는 Gemini 키 누락" });
 
   try {
     const start = Date.now();
@@ -160,58 +208,38 @@ app.post("/api/verify", async (req, res) => {
     const geminiResults = await Promise.allSettled(
       models.map(async (m) => {
         const r = await axios.post(
-          `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${key}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${gemini_key}`,
           { contents: [{ parts: [{ text: query }] }] }
         );
         return { model: m, text: r.data?.candidates?.[0]?.content?.parts?.[0]?.text || "" };
       })
     );
 
-    const merged = geminiResults.filter(r => r.status === "fulfilled").map(r => r.value);
-    const flashText = merged.find(m => m.model.includes("flash"))?.text || "";
-    const proText = merged.find(m => m.model.includes("pro"))?.text || "";
+    const flashText = geminiResults.find(r => r.value?.model.includes("flash"))?.value?.text || "";
+    const proText = geminiResults.find(r => r.value?.model.includes("pro"))?.value?.text || "";
 
-    const naverResults = await callNaverAPIs(query);
-    const filteredNaver = {
+    const naverResults = await callNaverAPIs(query, naver_id, naver_secret);
+    const filtered = {
       news: filterByWhitelist(naverResults.news),
       ency: naverResults.ency,
       web: filterByWhitelist(naverResults.web)
     };
 
-    const sentences = proText.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
-    const partial = sentences.map((s, i) => {
-      const normalized = s.toLowerCase().replace(/\s+/g, " ");
-      const match = flashText.toLowerCase().includes(normalized.split(" ").slice(0, 5).join(" "));
-      const confidence = match ? "high" : "medium";
-      return { id: i + 1, sentence: s, confidence, icon: match ? "✔️" : "❓" };
-    });
-
     const truthWeights = { news: 0.9, ency: 1.0, web: 0.7 };
     const naverScore =
-      (filteredNaver.news.length * truthWeights.news +
-        filteredNaver.ency.length * truthWeights.ency +
-        filteredNaver.web.length * truthWeights.web) /
-      (filteredNaver.news.length + filteredNaver.ency.length + filteredNaver.web.length || 1);
+      (filtered.news.length * truthWeights.news +
+        filtered.ency.length * truthWeights.ency +
+        filtered.web.length * truthWeights.web) /
+      (filtered.news.length + filtered.ency.length + filtered.web.length || 1);
 
-    const avg = (partial.filter(p => p.confidence === "high").length / partial.length) || 0;
-    const finalTruth = ((avg + naverScore) / 2).toFixed(2);
     const elapsed = `${Date.now() - start} ms`;
-
     res.json({
       success: true,
-      message: "✅ Adaptive Verify + Naver Whitelist 완료",
+      message: "✅ Verify 성공 (User-Key Mode)",
       query,
-      truthscore: finalTruth,
-      naver: {
-        counts: {
-          news: filteredNaver.news.length,
-          ency: filteredNaver.ency.length,
-          web: filteredNaver.web.length
-        }
-      },
-      summary_confidence: avg.toFixed(2),
+      truthscore: naverScore.toFixed(2),
       elapsed,
-      store_local: true,
+      source: "user-key"
     });
   } catch (err) {
     console.error("❌ /api/verify Error:", err.message);
@@ -219,57 +247,45 @@ app.post("/api/verify", async (req, res) => {
   }
 });
 
-// ✅ K-Law (법령정보 API)
+// ✅ K-Law (User-Key 기반)
 app.post("/api/klaw", async (req, res) => {
   try {
-    const { oc, target, query, type = "XML", mobile = true } = req.body;
-    if (!oc || !target)
-      return res.status(400).json({ success: false, message: "❌ OC 또는 target 누락" });
+    const { klaw_key, target, query, type = "XML", mobile = true } = req.body;
+    if (!klaw_key || !target)
+      return res.status(403).json({ success: false, message: "❌ K-Law 키 또는 target 누락" });
 
-    const baseUrl = "https://www.law.go.kr/DRF/lawSearch.do";
-    const params = new URLSearchParams({
-      OC: oc,
-      target,
-      type,
-      mobileYn: mobile ? "Y" : "N",
-      query: query || "",
-      display: 20,
-      page: 1
-    });
+    const url = new URL("https://www.law.go.kr/DRF/lawSearch.do");
+    url.searchParams.append("OC", klaw_key);
+    url.searchParams.append("target", target);
+    url.searchParams.append("type", type);
+    if (mobile) url.searchParams.append("mobileYn", "Y");
+    if (query) url.searchParams.append("query", query);
 
-    const response = await axios.get(`${baseUrl}?${params}`, { responseType: "text" });
+    const response = await axios.get(url.toString(), { responseType: "text" });
     const contentType = response.headers["content-type"] || "";
-    let parsed;
+    let parsed = contentType.includes("xml") ? parseXMLtoJSON(response.data) : response.data;
 
-    if (contentType.includes("xml")) parsed = parseXMLtoJSON(response.data);
-    else if (contentType.includes("json")) parsed = JSON.parse(response.data);
-    else parsed = { raw: response.data };
-
-    res.json({ success: true, target, format: type, parsed, source_url: `${baseUrl}?${params}` });
+    res.json({ success: true, source: "user-key", parsed });
   } catch (err) {
     console.error("❌ /api/klaw Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ✅ PostgreSQL 연결 테스트
-app.get("/api/test-db", async (req, res) => {
+// ✅ Health + DB
+app.get("/api/test-db", async (_, res) => {
   try {
-    const client = await pgPool.connect();
-    const result = await client.query("SELECT NOW()");
-    client.release();
-    res.json({ success: true, message: "✅ PostgreSQL 연결 성공", time: new Date(result.rows[0].now).toISOString() });
-  } catch (err) {
-    res.status(500).json({ success: false, message: "❌ PostgreSQL 연결 실패", error: err.message });
-  }
+    const c = await pgPool.connect();
+    const r = await c.query("SELECT NOW()");
+    c.release();
+    res.json({ success: true, message: "✅ DB 연결 성공", time: r.rows[0].now });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
-// ✅ Health Check & Server Start
 app.get("/health", (_, res) =>
-  res.status(200).json({ status: "ok", version: "v14.0.4", timestamp: new Date().toISOString() })
+  res.status(200).json({ status: "ok", version: "v14.1.0", timestamp: new Date().toISOString() })
 );
-const port = process.env.PORT || 3000;
-app.listen(port, "0.0.0.0", () => {
-  console.log(`🚀 Cross-Verified AI Proxy v14.0.4 running on port ${port}`);
-  console.log(`🌐 Health: http://localhost:${port}/health`);
-});
+
+app.listen(PORT, () =>
+  console.log(`🚀 Cross-Verified AI Proxy v14.1.0 running on ${PORT}`)
+);
