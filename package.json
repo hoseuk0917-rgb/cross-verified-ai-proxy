@@ -1,6 +1,6 @@
 {
   "name": "cross-verified-ai-proxy",
-  "version": "14.2.0",
+  "version": "14.2.1",
   "description": "Cross-Verified AI Proxy Server (Render + Supabase + Google OAuth + Multi-Engine Verify: CrossRef, OpenAlex, GDELT, WikiData, GitHub, K-Law + Naver + TruthScore + User-Key Federated Proxy)",
   "main": "server.js",
   "type": "module",
@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.80.0",
-    "axios": "^1.13.3",
+    "axios": "^1.13.2",
     "connect-pg-simple": "^9.0.1",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
