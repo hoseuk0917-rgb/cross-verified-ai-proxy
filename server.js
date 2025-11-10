@@ -1,6 +1,5 @@
 // =======================================================
-// Cross-Verified AI Proxy — v14.8.0
-// (Multi-Mode Verify System: QV/FV/DV/CV/LV + Supabase Weight Calibration)
+// Cross-Verified AI Proxy — v15.0.0 (Full + Mail + Reliability Approval)
 // =======================================================
 import express from "express";
 import session from "express-session";
@@ -13,32 +12,29 @@ import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
+import xml2js from "xml2js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { parseXMLtoJSON } from "./utils/xmlParser.js";
+import ejs from "ejs";
+import nodemailer from "nodemailer";
+import { google } from "googleapis";
 
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// ─────────────────────────────
-// ✅ Static & Middleware
-// ─────────────────────────────
+const DEBUG = process.env.DEBUG_MODE === "true";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-app.set("view engine", "ejs");
-app.set("views", path.join(__dirname, "views"));
-app.use(express.static(path.join(__dirname, "public")));
+
+// ─────────────────────────────
+// ✅ Middleware
+// ─────────────────────────────
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
-app.use((req, _, next) => {
-  if (["POST", "PUT"].includes(req.method))
-    console.log("📦 [DEBUG] Body:", req.body);
-  next();
-});
+if (DEBUG) console.log("🧩 Debug mode enabled");
 
 // ─────────────────────────────
 // ✅ Supabase + PostgreSQL 세션
@@ -58,350 +54,452 @@ app.use(session({
 }));
 
 // ─────────────────────────────
-// ✅ OAuth (Google Admin)
+// ✅ XML Parser Utility
+// ─────────────────────────────
+async function parseXMLtoJSON(xml) {
+  return new Promise((resolve, reject) => {
+    xml2js.parseString(xml, { explicitArray: false }, (err, res) =>
+      err ? reject(err) : resolve(res)
+    );
+  });
+}
+
+// ─────────────────────────────
+// ✅ Gmail OAuth2 Mailer (Admin Notice)
+// ─────────────────────────────
+const oAuth2Client = new google.auth.OAuth2(
+  process.env.GMAIL_CLIENT_ID,
+  process.env.GMAIL_CLIENT_SECRET,
+  process.env.GMAIL_REDIRECT_URI
+);
+oAuth2Client.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
+
+async function sendAdminNotice(subject, html) {
+  try {
+    const accessToken = await oAuth2Client.getAccessToken();
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        type: "OAuth2",
+        user: process.env.GMAIL_USER,
+        clientId: process.env.GMAIL_CLIENT_ID,
+        clientSecret: process.env.GMAIL_CLIENT_SECRET,
+        refreshToken: process.env.GMAIL_REFRESH_TOKEN,
+        accessToken
+      }
+    });
+    await transporter.sendMail({
+      from: `"Cross-Verified AI Notifier" <${process.env.GMAIL_USER}>`,
+      to: process.env.ADMIN_EMAIL,
+      subject,
+      html
+    });
+    console.log(`📨 Mail notice sent → ${process.env.ADMIN_EMAIL}`);
+  } catch (err) {
+    console.error("❌ Mail send fail:", err.message);
+  }
+}
+
+// ─────────────────────────────
+// ✅ Admin OAuth
 // ─────────────────────────────
 passport.use(new GoogleStrategy({
   clientID: process.env.GOOGLE_ADMIN_CLIENT_ID,
   clientSecret: process.env.GOOGLE_ADMIN_CLIENT_SECRET,
   callbackURL: process.env.GOOGLE_ADMIN_CALLBACK_URL,
-}, async (accessToken, refreshToken, profile, done) => {
-  try {
-    const email = profile.emails?.[0]?.value;
-    const whitelist = process.env.ADMIN_WHITELIST?.split(",") || [];
-    if (!whitelist.includes(email)) return done(new Error("Unauthorized admin user"));
-    await supabase.from("users").upsert([{ email, name: profile.displayName }], { onConflict: "email" });
-    return done(null, { email, name: profile.displayName });
-  } catch (err) { return done(err); }
+}, async (_, __, profile, done) => {
+  const email = profile.emails?.[0]?.value;
+  const allow = process.env.ADMIN_WHITELIST?.split(",") || [];
+  if (!allow.includes(email)) return done(new Error("Unauthorized"));
+  await supabase.from("users").upsert([{ email, name: profile.displayName }], { onConflict: "email" });
+  done(null, { email, name: profile.displayName });
 }));
 passport.serializeUser((u, d) => d(null, u));
 passport.deserializeUser((u, d) => d(null, u));
 app.use(passport.initialize());
 app.use(passport.session());
-
-// ─────────────────────────────
-// ✅ Admin Dashboard
-// ─────────────────────────────
 function ensureAuth(req, res, next) {
   if (req.isAuthenticated()) return next();
-  return res.redirect("/auth/admin");
+  res.redirect("/auth/admin");
 }
 app.get("/auth/admin", passport.authenticate("google", { scope: ["email", "profile"] }));
 app.get("/auth/admin/callback",
   passport.authenticate("google", { failureRedirect: "/auth/failure", session: true }),
-  (req, res) => res.redirect("/admin/dashboard"));
+  (_, res) => res.redirect("/admin/dashboard"));
 app.get("/auth/failure", (_, res) => res.status(401).send("❌ OAuth Failed"));
-app.get("/admin/dashboard", ensureAuth, async (req, res) => {
-  const { data: logs } = await supabase.from("engine_stats").select("*").order("updated_at", { ascending: false });
-  res.render("dashboard", { user: req.user, stats: logs || [] });
-});
+
 // ─────────────────────────────
-// ✅ Naver Whitelist & API
+// ✅ Naver Whitelist Tier System
 // ─────────────────────────────
 const whitelistPath = path.join(__dirname, "data", "naver_whitelist.json");
 let whitelistData = {};
 try {
   whitelistData = JSON.parse(fs.readFileSync(whitelistPath, "utf-8"));
-} catch { whitelistData = { tiers: {} }; }
-const allDomains = Object.values(whitelistData.tiers || {}).flatMap(t => t.domains);
-function filterByWhitelist(items = []) {
-  return items.filter(i => {
-    const link = i.originallink || i.link || "";
-    return allDomains.some(d => link.includes(d));
-  });
+} catch {
+  whitelistData = { tiers: {} };
+  if (DEBUG) console.warn("⚠️ whitelist not found, using empty");
 }
-
-async function callNaverAPIs(query, id, secret) {
-  if (!id || !secret) throw new Error("Naver API 키 누락");
+const tierWeights = Object.entries(whitelistData.tiers || {}).map(([k, v]) => ({
+  tier: k, weight: v.weight || 1, domains: v.domains || []
+}));
+function filterByWhitelist(items = []) {
+  const scored = [];
+  for (const i of items) {
+    const link = i.originallink || i.link || "";
+    let maxW = 0;
+    for (const t of tierWeights) {
+      if (t.domains.some(d => link.includes(d))) maxW = Math.max(maxW, t.weight);
+    }
+    if (maxW > 0) scored.push({ ...i, weight: maxW });
+  }
+  return scored.sort((a, b) => b.weight - a.weight);
+}
+// ─────────────────────────────
+// ✅ Naver API (body 키 사용 + 화이트리스트 반영)
+// ─────────────────────────────
+async function callNaver(query, id, secret) {
+  if (!id || !secret) throw new Error("Naver 키 누락");
+  const base = "https://openapi.naver.com/v1/search";
   const headers = {
     "X-Naver-Client-Id": id,
     "X-Naver-Client-Secret": secret,
-    "User-Agent": "CrossVerifiedAI/1.0",
   };
-  const base = "https://openapi.naver.com/v1/search";
   const endpoints = {
     news: `${base}/news.json?query=${encodeURIComponent(query)}&display=5`,
+    web: `${base}/webkr.json?query=${encodeURIComponent(query)}&display=5`,
     ency: `${base}/encyc.json?query=${encodeURIComponent(query)}&display=3`,
-    web:  `${base}/webkr.json?query=${encodeURIComponent(query)}&display=5`,
   };
-  const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
-  const results={};
-  for(const [key,url] of Object.entries(endpoints)){
-    try{
-      await sleep(300);
-      const r=await axios.get(url,{headers});
-      results[key]=filterByWhitelist(r.data.items||[]);
-    }catch{results[key]=[];}
+  const results = {};
+  for (const [key, url] of Object.entries(endpoints)) {
+    for (let i = 0; i < 2; i++) {
+      try {
+        const r = await axios.get(url, { headers, timeout: 6000 });
+        results[key] = filterByWhitelist(r.data.items || []);
+        break;
+      } catch (err) {
+        if (i === 1) {
+          if (DEBUG) console.warn(`⚠️ Naver ${key} 실패:`, err.message);
+          results[key] = [];
+          await supabase.from("engine_fails").insert([
+            { engine: "naver", query, error: err.message, created_at: new Date() },
+          ]);
+        }
+      }
+    }
   }
   return results;
 }
 
 // ─────────────────────────────
-// ✅ Gemini / Naver Test
+// ✅ External Engines + Fail-Grace Wrapper
 // ─────────────────────────────
-app.post("/api/test-gemini",async(req,res)=>{
-  try{
-    const{gemini_key,query,mode="flash"}=req.body;
-    if(!gemini_key||!query)return res.status(400).json({success:false,message:"❌ Gemini 키 또는 query 누락"});
-    const model=mode==="pro"?"gemini-2.5-pro":"gemini-2.5-flash";
-    const r=await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${gemini_key}`,
-      {contents:[{parts:[{text:query}]}]}
-    );
-    const text=r.data?.candidates?.[0]?.content?.parts?.[0]?.text||"결과 없음";
-    res.json({success:true,model,result:text.slice(0,250),source:"user-key"});
-  }catch(e){res.status(500).json({success:false,error:e.message});}
-});
+async function safeFetch(name, fn, q) {
+  for (let i = 0; i < 2; i++) {
+    try {
+      return await fn(q);
+    } catch (err) {
+      if (i === 1) {
+        if (DEBUG) console.warn(`⚠️ ${name} 실패:`, err.message);
+        await supabase.from("engine_fails").insert([
+          { engine: name, query: q, error: err.message, created_at: new Date() },
+        ]);
+        return [];
+      }
+    }
+  }
+}
 
-app.post("/api/test-naver",async(req,res)=>{
-  try{
-    const{query,naver_id,naver_secret}=req.body;
-    if(!query||!naver_id||!naver_secret)
-      return res.status(400).json({success:false,message:"❌ Naver 키 또는 query 누락"});
-    const result=await callNaverAPIs(query,naver_id,naver_secret);
-    res.json({
-      success:true,
-      counts:{news:result.news.length,ency:result.ency.length,web:result.web.length},
-      sample:{news:result.news[0]?.title,ency:result.ency[0]?.title,web:result.web[0]?.title},
-      full:result,source:"local"
-    });
-  }catch(e){res.status(500).json({success:false,error:e.message});}
-});
-
-// ─────────────────────────────
-// ✅ External Engines (CrossRef ~ K-Law)
-// ─────────────────────────────
-async function fetchCrossref(q){
-  const{data}=await axios.get(`https://api.crossref.org/works?query=${encodeURIComponent(q)}&rows=3`);
-  return data?.message?.items?.map(i=>i.title?.[0])||[];
+async function fetchCrossref(q) {
+  const { data } = await axios.get(
+    `https://api.crossref.org/works?query=${encodeURIComponent(q)}&rows=3`
+  );
+  return data?.message?.items?.map((i) => i.title?.[0]) || [];
 }
-async function fetchOpenAlex(q){
-  const{data}=await axios.get(`https://api.openalex.org/works?search=${encodeURIComponent(q)}&per-page=3`);
-  return data?.results?.map(i=>i.display_name)||[];
+async function fetchOpenAlex(q) {
+  const { data } = await axios.get(
+    `https://api.openalex.org/works?search=${encodeURIComponent(q)}&per-page=3`
+  );
+  return data?.results?.map((i) => i.display_name) || [];
 }
-async function fetchWikidata(q){
-  const{data}=await axios.get(`https://www.wikidata.org/w/api.php?action=wbsearchentities&language=ko&format=json&search=${encodeURIComponent(q)}`);
-  return data?.search?.map(i=>i.label)||[];
+async function fetchWikidata(q) {
+  const { data } = await axios.get(
+    `https://www.wikidata.org/w/api.php?action=wbsearchentities&language=ko&format=json&search=${encodeURIComponent(q)}`
+  );
+  return data?.search?.map((i) => i.label) || [];
 }
-async function fetchGDELT(q){
-  const{data}=await axios.get(`https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&format=json&maxrecords=3`);
-  return data?.articles?.map(i=>i.title)||[];
+async function fetchGDELT(q) {
+  const { data } = await axios.get(
+    `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&format=json&maxrecords=3`
+  );
+  return data?.articles?.map((i) => i.title) || [];
 }
-async function fetchGitHub(q){
-  const{data}=await axios.get(`https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=3`,
-    {headers:{"User-Agent":"CrossVerifiedAI"}});
-  return data?.items?.map(i=>i.full_name)||[];
+async function fetchGitHub(q) {
+  const { data } = await axios.get(
+    `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=3`,
+    { headers: { "User-Agent": "CrossVerifiedAI" } }
+  );
+  return data?.items?.map((i) => i.full_name) || [];
 }
-async function fetchKLaw(k,q){
-  const{data}=await axios.get(
+async function fetchKLaw(k, q) {
+  const { data } = await axios.get(
     `https://www.law.go.kr/DRF/lawSearch.do?OC=${k}&target=law&type=XML&query=${encodeURIComponent(q)}`,
-    {responseType:"text"});
+    { responseType: "text" }
+  );
   return parseXMLtoJSON(data);
 }
+
 // ─────────────────────────────
-// ✅ TruthScore 전역 가중치 보정 관리 (Supabase 기반)
+// ✅ Weight + History + Logging
 // ─────────────────────────────
-async function updateGlobalWeight(engine, truth, responseTime) {
+async function updateWeight(engine, truth, time) {
   try {
     const { data: prev } = await supabase
       .from("engine_stats")
       .select("*")
       .eq("engine_name", engine)
       .single();
-
+    const α = 0.8;
     const prevTruth = prev?.avg_truth || 0.7;
     const prevResp = prev?.avg_response || 1000;
-    const prevRuns = prev?.total_runs || 0;
-
-    const α = 0.8;
     const newTruth = prevTruth * α + truth * (1 - α);
-    const newResp = prevResp * α + responseTime * (1 - α);
-
+    const newResp = prevResp * α + time * (1 - α);
     await supabase.from("engine_stats").upsert([
       {
         engine_name: engine,
-        total_runs: prevRuns + 1,
-        avg_truth: +newTruth.toFixed(3),
-        avg_response: +newResp.toFixed(0),
+        avg_truth: newTruth,
+        avg_response: newResp,
+        total_runs: (prev?.total_runs || 0) + 1,
         updated_at: new Date(),
       },
     ]);
-
-    // 전체 10회 기록 관리 (가중치 변동 추적)
     await supabase.from("weight_history").insert([
-      { engine, truth, response_time: responseTime, created_at: new Date() },
+      { engine, truth, response_time: time, created_at: new Date() },
     ]);
-
-    // 10회 초과 시 자동 삭제 (FIFO)
     const { data: rows } = await supabase
       .from("weight_history")
       .select("id")
       .eq("engine", engine)
       .order("created_at", { ascending: true });
-
     if (rows?.length > 10) {
-      const toDelete = rows.slice(0, rows.length - 10).map(r => r.id);
+      const toDelete = rows.slice(0, rows.length - 10).map((r) => r.id);
       await supabase.from("weight_history").delete().in("id", toDelete);
     }
-  } catch (err) {
-    console.warn(`⚠️ Weight update failed for ${engine}:`, err.message);
+  } catch (e) {
+    if (DEBUG) console.warn("⚠️ Weight update fail:", e.message);
   }
 }
 
 // ─────────────────────────────
-// ✅ 모드별 Verify Core Function
+// ✅ Verify Core (All Modes + Log)
 // ─────────────────────────────
-async function handleVerify(req, res) {
-  const { query, mode, gemini_key, naver_local_result, klaw_key, user_answer } = req.body;
+app.post("/api/verify", async (req, res) => {
+  const {
+    query,
+    mode,
+    gemini_key,
+    naver_id,
+    naver_secret,
+    klaw_key,
+    user_answer,
+  } = req.body;
   if (!query || !gemini_key)
-    return res.status(400).json({ success: false, message: "❌ query 또는 Gemini 키 누락" });
+    return res
+      .status(400)
+      .json({ success: false, message: "❌ query 또는 Gemini 키 누락" });
 
-  const start = Date.now();
   const engines = [];
-  const externalData = {};
+  const external = {};
+  const start = Date.now();
 
   try {
-    // --- Step 1: 모드별 외부엔진 호출 ---
     switch (mode) {
-      case "qv": // Question Verification
+      case "qv":
+      case "fv":
         engines.push("crossref", "openalex", "wikidata", "gdelt");
-        externalData.crossref = await fetchCrossref(query);
-        externalData.openalex = await fetchOpenAlex(query);
-        externalData.wikidata = await fetchWikidata(query);
-        externalData.gdelt = await fetchGDELT(query);
-        if (naver_local_result) {
+        [external.crossref, external.openalex, external.wikidata, external.gdelt] =
+          await Promise.all([
+            safeFetch("crossref", fetchCrossref, query),
+            safeFetch("openalex", fetchOpenAlex, query),
+            safeFetch("wikidata", fetchWikidata, query),
+            safeFetch("gdelt", fetchGDELT, query),
+          ]);
+        if (naver_id && naver_secret) {
+          external.naver = await callNaver(query, naver_id, naver_secret);
           engines.push("naver");
-          externalData.naver = naver_local_result;
         }
         break;
-
-      case "fv": // Fact Verification
-        engines.push("crossref", "openalex", "wikidata", "gdelt");
-        externalData.crossref = await fetchCrossref(query);
-        externalData.openalex = await fetchOpenAlex(query);
-        externalData.wikidata = await fetchWikidata(query);
-        externalData.gdelt = await fetchGDELT(query);
-        break;
-
-      case "dv": // Developer Verification
-      case "cv": // Code Validation
+      case "dv":
+      case "cv":
         engines.push("gdelt", "github");
-        externalData.gdelt = await fetchGDELT(query);
-        externalData.github = await fetchGitHub(query);
+        [external.gdelt, external.github] = await Promise.all([
+          safeFetch("gdelt", fetchGDELT, query),
+          safeFetch("github", fetchGitHub, query),
+        ]);
         break;
-
-      case "lv": // Legal Verification
-        if (!klaw_key)
-          return res.status(400).json({ success: false, message: "❌ K-Law 키 누락 (LV)" });
+      case "lv":
         engines.push("klaw");
-        externalData.klaw = await fetchKLaw(klaw_key, query);
+        external.klaw = await fetchKLaw(klaw_key, query);
         break;
-
       default:
-        return res.status(400).json({ success: false, message: "❌ 잘못된 모드 입력" });
+        return res
+          .status(400)
+          .json({ success: false, message: "❌ 잘못된 모드" });
     }
 
-    // --- Step 2: Gemini 호출 (Flash → Pro 교차검증) ---
-    const flashPrompt =
-      mode === "qv"
-        ? `질문 검증 요청: "${query}"\n관련 외부자료: ${JSON.stringify(externalData)}`
-        : `내용 검증 요청: "${user_answer || query}"\n참조자료: ${JSON.stringify(externalData)}`;
-
+    const flashPrompt = `[${mode.toUpperCase()}] ${query}\n참조자료: ${JSON.stringify(
+      external
+    ).slice(0, 800)}`;
     const flashRes = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
       { contents: [{ parts: [{ text: flashPrompt }] }] }
     );
-    const flashText =
+    const flash =
       flashRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-    // Pro는 Flash 결과를 검증함
-    const verifyPrompt = `
-      [Cross-Verification Mode: ${mode.toUpperCase()}]
-      질문 또는 응답:
-      ${user_answer || query}
-
-      외부엔진 근거 요약:
-      ${JSON.stringify(externalData)}
-
-      Flash 1차 응답:
-      ${flashText}
-
-      위 정보를 종합하여 정확성, 일관성, 신뢰도를 평가하시오.
-      평가항목: [정확성, 근거일치, 표현일관성, 논리성]
-      결과는 0~1 범위의 신뢰도 점수로 환산하시오.
-    `;
-
+    const verifyPrompt = `검증모드:${mode}\n${user_answer || query}\n${flash}`;
     const proRes = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${gemini_key}`,
       { contents: [{ parts: [{ text: verifyPrompt }] }] }
     );
-    const verifyText =
+    const verify =
       proRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
-    // --- Step 3: TruthScore 계산 ---
     const elapsed = Date.now() - start;
-    const truthBase = 0.65 + engines.length * 0.05 + Math.random() * 0.1;
-    const truthscore = Math.min(truthBase, 0.98).toFixed(3);
+    const score = Math.min(0.97, 0.65 + engines.length * 0.05 + Math.random() * 0.1);
 
-    for (const e of engines)
-      await updateGlobalWeight(e, parseFloat(truthscore), elapsed);
+    for (const e of engines) await updateWeight(e, score, elapsed);
+    await supabase.from("verify_logs").insert([
+      {
+        query,
+        mode,
+        truthscore: score,
+        elapsed,
+        engines: JSON.stringify(engines),
+        created_at: new Date(),
+      },
+    ]);
 
-    // --- Step 4: 결과 반환 ---
-    return res.json({
+    res.json({
       success: true,
-      message: `✅ Verify 성공 (${mode.toUpperCase()} 모드)`,
-      query,
       mode,
-      truthscore,
+      truthscore: score.toFixed(3),
       engines,
-      elapsed: `${elapsed} ms`,
-      flash_summary: flashText.slice(0, 250),
-      verification_summary: verifyText.slice(0, 350),
-      external_sources: Object.keys(externalData),
-      naver_used: Boolean(naver_local_result),
-      source: "cross-verified-proxy",
+      elapsed,
+      flash_summary: flash.slice(0, 250),
+      verify_summary: verify.slice(0, 350),
+      whitelist_domains: tierWeights.flatMap((t) => t.domains).length,
+      timestamp: new Date().toISOString(),
     });
-  } catch (err) {
-    console.error("❌ Verify Error:", err.message);
-    return res.status(500).json({ success: false, error: err.message });
+  } catch (e) {
+    if (DEBUG) console.error("❌ Verify Error:", e.message);
+    await supabase
+      .from("verify_logs")
+      .insert([{ query, mode, error: e.message, created_at: new Date() }]);
+    res.status(500).json({ success: false, error: e.message });
   }
-}
+});
 
 // ─────────────────────────────
-// ✅ Verify Route
+// ✅ 신뢰도 데이터 승인 라우트 (메일 알림 연동)
 // ─────────────────────────────
-app.post("/api/verify", async (req, res) => {
-  await handleVerify(req, res);
+app.post("/admin/approve-reliability", ensureAuth, async (req, res) => {
+  try {
+    const pending = path.join(__dirname, "data", "media_reliability_pending.json");
+    const target = path.join(__dirname, "data", "media_reliability.json");
+    if (!fs.existsSync(pending))
+      return res.status(404).json({ success: false, message: "대기 파일 없음" });
+    fs.copyFileSync(pending, target);
+    await sendAdminNotice(
+      "✅ 신뢰도 데이터 승인 완료",
+      `<p>새로운 <b>media_reliability.json</b> 이 적용되었습니다.<br/>승인자: ${req.user.email}</p>`
+    );
+    res.json({ success: true, message: "✅ 신뢰도 데이터 갱신 적용됨" });
+  } catch (e) {
+    console.error("❌ 승인 오류:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
 });
 // ─────────────────────────────
-// ✅ DB / Health Check
+// ✅ Admin Dashboard Routes (EJS View + Stats + Logs)
+// ─────────────────────────────
+import { dirname, join } from "path";
+
+app.set("view engine", "ejs");
+app.set("views", join(__dirname, "views"));
+app.use(express.static(join(__dirname, "public")));
+
+app.get("/admin/dashboard", ensureAuth, async (req, res) => {
+  try {
+    const { data: stats } = await supabase
+      .from("engine_stats")
+      .select("*")
+      .order("updated_at", { ascending: false });
+    const { data: history } = await supabase
+      .from("weight_history")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(20);
+    const { data: logs } = await supabase
+      .from("verify_logs")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(20);
+    res.render("dashboard", {
+      user: req.user,
+      stats: stats || [],
+      history: history || [],
+      logs: logs || [],
+    });
+  } catch (err) {
+    res.status(500).send("Dashboard load error: " + err.message);
+  }
+});
+
+// ─────────────────────────────
+// ✅ Admin JSON APIs
+// ─────────────────────────────
+app.get("/api/admin/stats", ensureAuth, async (_, res) => {
+  const { data } = await supabase.from("engine_stats").select("*");
+  res.json(data || []);
+});
+app.get("/api/admin/history", ensureAuth, async (_, res) => {
+  const { data } = await supabase
+    .from("weight_history")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(10);
+  res.json(data || []);
+});
+app.get("/api/admin/logs", ensureAuth, async (_, res) => {
+  const { data } = await supabase
+    .from("verify_logs")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(20);
+  res.json(data || []);
+});
+
+// ─────────────────────────────
+// ✅ DB / Health
 // ─────────────────────────────
 app.get("/api/test-db", async (_, res) => {
   try {
     const c = await pgPool.connect();
     const r = await c.query("SELECT NOW()");
     c.release();
-    res.json({
-      success: true,
-      message: "✅ DB 연결 성공",
-      time: r.rows[0].now,
-    });
+    res.json({ success: true, message: "✅ DB 연결 성공", time: r.rows[0].now });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
-
 app.get("/health", (_, res) =>
-  res.status(200).json({
-    status: "ok",
-    version: "v14.8.0",
-    timestamp: new Date().toISOString(),
-  })
+  res
+    .status(200)
+    .json({ status: "ok", version: "v15.0.0", timestamp: new Date().toISOString() })
 );
 
 // ─────────────────────────────
-// ✅ 서버 실행
+// ✅ Server Start
 // ─────────────────────────────
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v14.8.0 running on port ${PORT}`);
+  console.log(`🚀 Cross-Verified AI Proxy v15.0.0 running on port ${PORT}`);
 });
-

@@ -1,35 +1,69 @@
 <!DOCTYPE html>
-<html>
+<html lang="ko">
 <head>
-  <meta charset="utf-8">
-  <title>Cross-Verified Admin Dashboard</title>
-  <link rel="stylesheet" href="/css/dashboard.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<meta charset="UTF-8" />
+<title>Admin Dashboard</title>
+<link rel="stylesheet" href="/admin.css" />
+<style>
+  body {font-family:sans-serif;background:#f5f7fa;margin:40px;}
+  button {padding:10px 20px;border:none;border-radius:6px;cursor:pointer;}
+  .approve {background:#2b7cff;color:#fff;}
+</style>
 </head>
 <body>
-  <header><h2>🧭 Cross-Verified AI Admin Dashboard</h2></header>
-  <section>
-    <h3>Welcome, <%= user.name %> (<%= user.email %>)</h3>
-    <div class="stats">
-      <div>🧠 평균 TruthScore: <b><%= stats.avgTruth %></b></div>
-      <div>⚡ 평균 응답속도: <b><%= stats.avgResponse %> ms</b></div>
-      <div>📈 로그 수: <b><%= stats.count %></b></div>
-    </div>
-    <canvas id="truthChart" width="400" height="150"></canvas>
-  </section>
-  <footer><p>© 2025 Cross-Verified AI</p></footer>
+<h2>Cross-Verified AI Admin</h2>
+<p>👤 <%= user.name %> (<%= user.email %>)</p>
 
-  <script>
-  const ctx = document.getElementById('truthChart');
-  const data = <%- JSON.stringify(logs.map(l => l.truthscore || 0)) %>;
-  new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: data.map((_,i)=>i+1),
-      datasets: [{ label: 'TruthScore', data, borderColor:'#3b82f6', fill:false }]
-    },
-    options:{ scales:{ y:{min:0,max:1} } }
-  });
-  </script>
+<!-- ✅ 추가된 승인 섹션 -->
+<section>
+  <h3>신뢰도 데이터 승인</h3>
+  <form action="/admin/approve-reliability" method="post">
+    <button type="submit" class="approve">📈 media_reliability_pending.json 승인 적용</button>
+  </form>
+</section>
+
+<section>
+<h3>엔진 통계</h3>
+<table>
+<tr><th>엔진</th><th>평균 신뢰도</th><th>응답(ms)</th><th>총 실행</th><th>갱신일</th></tr>
+<% stats.forEach(s=>{ %>
+<tr>
+<td><%= s.engine_name %></td>
+<td><%= s.avg_truth.toFixed(3) %></td>
+<td><%= s.avg_response %></td>
+<td><%= s.total_runs %></td>
+<td><%= s.updated_at %></td>
+</tr><% }) %>
+</table>
+</section>
+
+<section>
+<h3>가중치 이력 (최근 20회)</h3>
+<table>
+<tr><th>엔진</th><th>신뢰도</th><th>응답시간</th><th>시간</th></tr>
+<% history.forEach(h=>{ %>
+<tr>
+<td><%= h.engine %></td>
+<td><%= h.truth.toFixed(3) %></td>
+<td><%= h.response_time %></td>
+<td><%= h.created_at %></td>
+</tr><% }) %>
+</table>
+</section>
+
+<section>
+<h3>최근 검증 로그</h3>
+<table>
+<tr><th>질문</th><th>모드</th><th>신뢰도</th><th>엔진</th><th>시간</th></tr>
+<% logs.forEach(l=>{ %>
+<tr>
+<td><%= l.query %></td>
+<td><%= l.mode %></td>
+<td><%= l.truthscore ? l.truthscore.toFixed(3):'-' %></td>
+<td><%= l.engines %></td>
+<td><%= l.created_at %></td>
+</tr><% }) %>
+</table>
+</section>
 </body>
 </html>
