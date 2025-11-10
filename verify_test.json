@@ -1,0 +1,12 @@
+{
+  "query": "UAM 안전운항 핵심기술",
+  "mode": "qv",
+  "gemini_key": "AIzaSyAqt_hh5aYuPVVLakQ77weLsALqqtxC-Ig",
+  "naver_local_result": {
+    "success": true,
+    "counts": { "news": 0, "ency": 0, "web": 0 },
+    "sample": {},
+    "full": { "news": [], "ency": [], "web": [] },
+    "source": "local"
+  }
+}

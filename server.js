@@ -1,5 +1,5 @@
 // =======================================================
-// Cross-Verified AI Proxy — v14.6.0
+// Cross-Verified AI Proxy — v14.7.0
 // (User-Key Federated Proxy + Multi-Engine Verify Integration
 //  + Local Naver Merge + GeoIP + Admin Dashboard + Engine Calibration)
 // =======================================================
@@ -189,12 +189,29 @@ app.post("/api/verify",async(req,res)=>{
   if(!query||!gemini_key)return res.status(400).json({success:false,message:"❌ query 또는 Gemini 키 누락"});
   try{
     const start=Date.now();
-    const models=["gemini-2.5-flash","gemini-2.5-pro"];
-    const geminiResults=await Promise.allSettled(models.map(async m=>{
-      const r=await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${gemini_key}`,{contents:[{parts:[{text:query}]}]});
-      return{model:m,text:r.data?.candidates?.[0]?.content?.parts?.[0]?.text||""};
-    }));
-    const flashText=geminiResults.find(r=>r.value?.model.includes("flash"))?.value?.text||"";
+    // 🔧 Gemini 순차 호출 (403 방지)
+const models = ["gemini-2.5-flash", "gemini-2.5-pro"];
+let geminiResults = [];
+
+for (const m of models) {
+  try {
+    const r = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${gemini_key}`,
+      { contents: [{ parts: [{ text: query }] }] }
+    );
+    geminiResults.push({
+      model: m,
+      text: r.data?.candidates?.[0]?.content?.parts?.[0]?.text || "",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1000)); // 1초 대기 (rate-limit 완화)
+  } catch (err) {
+    console.warn(`⚠️ Gemini ${m} 호출 실패:`, err.message);
+  }
+}
+
+const flashText =
+  geminiResults.find((r) => r.model.includes("flash"))?.text || "";
+
     let engines=[],externalData={},now=Date.now();
     if(mode==="qv"||mode==="fv"){
       engines=["crossref","openalex","wikidata","gdelt"];
@@ -227,4 +244,4 @@ app.get("/api/test-db",async(_,res)=>{
 app.get("/health",(_,res)=>res.status(200).json({status:"ok",version:"v14.6.0",timestamp:new Date().toISOString()}));
 
 // ✅ 서버 실행
-app.listen(PORT,()=>console.log(`🚀 Cross-Verified AI Proxy v14.6.0 running on port ${PORT}`));
+app.listen(PORT,()=>console.log(`🚀 Cross-Verified AI Proxy v14.7.0 running on port ${PORT}`));
