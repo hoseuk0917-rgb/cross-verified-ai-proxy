@@ -1,6 +1,9 @@
 // =======================================================
-// Cross-Verified AI Proxy — v15.0.0 (Full + Mail + Reliability Approval)
+// Cross-Verified AI Proxy — v15.0.2 (Full Extended Edition)
 // =======================================================
+process.on("unhandledRejection", r => console.error("⚠️ Unhandled:", r));
+process.on("uncaughtException", e => console.error("💥 Crash:", e));
+
 import express from "express";
 import session from "express-session";
 import pg from "pg";
@@ -27,14 +30,18 @@ const DEBUG = process.env.DEBUG_MODE === "true";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// ─────────────────────────────
 // ✅ Middleware
+// ─────────────────────────────
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
 if (DEBUG) console.log("🧩 Debug mode enabled");
 
+// ─────────────────────────────
 // ✅ Supabase + PostgreSQL 세션
+// ─────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const PgStore = connectPgSimple(session);
 const pgPool = new pg.Pool({
@@ -49,7 +56,9 @@ app.use(session({
   cookie: { secure: false, httpOnly: true, maxAge: 86400000 },
 }));
 
+// ─────────────────────────────
 // ✅ XML Parser Utility
+// ─────────────────────────────
 async function parseXMLtoJSON(xml) {
   return new Promise((resolve, reject) => {
     xml2js.parseString(xml, { explicitArray: false }, (err, res) =>
@@ -58,13 +67,16 @@ async function parseXMLtoJSON(xml) {
   });
 }
 
-// ✅ Gmail OAuth2 Mailer (Admin Notice)
+// ─────────────────────────────
+// ✅ Gmail OAuth2 Mailer (Admin Notice + Fail-Grace)
+// ─────────────────────────────
 const oAuth2Client = new google.auth.OAuth2(
   process.env.GMAIL_CLIENT_ID,
   process.env.GMAIL_CLIENT_SECRET,
   process.env.GMAIL_REDIRECT_URI
 );
 oAuth2Client.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
+
 async function sendAdminNotice(subject, html) {
   try {
     const accessToken = await oAuth2Client.getAccessToken();
@@ -85,13 +97,27 @@ async function sendAdminNotice(subject, html) {
       subject,
       html
     });
-    console.log(`📨 Mail notice sent → ${process.env.ADMIN_EMAIL}`);
+    console.log(`📨 Mail sent → ${process.env.ADMIN_EMAIL}`);
   } catch (err) {
-    console.error("❌ Mail send fail:", err.message);
+    console.error("❌ Mail fail:", err.message);
+  }
+}
+let failCount = 0;
+async function handleEngineFail(engine, query, error) {
+  failCount++;
+  await supabase.from("engine_fails").insert([{ engine, query, error, created_at: new Date() }]);
+  if (failCount >= 3) {
+    await sendAdminNotice(
+      "⚠️ Engine Fail-Grace Trigger",
+      `<p>3회 이상 엔진 오류 발생<br/>마지막 엔진: <b>${engine}</b><br/>메시지: ${error}</p>`
+    );
+    failCount = 0;
   }
 }
 
+// ─────────────────────────────
 // ✅ Admin OAuth
+// ─────────────────────────────
 passport.use(new GoogleStrategy({
   clientID: process.env.GOOGLE_ADMIN_CLIENT_ID,
   clientSecret: process.env.GOOGLE_ADMIN_CLIENT_SECRET,
@@ -116,8 +142,9 @@ app.get("/auth/admin/callback",
   passport.authenticate("google", { failureRedirect: "/auth/failure", session: true }),
   (_, res) => res.redirect("/admin/dashboard"));
 app.get("/auth/failure", (_, res) => res.status(401).send("❌ OAuth Failed"));
-
+// ─────────────────────────────
 // ✅ Naver Whitelist Tier System
+// ─────────────────────────────
 const whitelistPath = path.join(__dirname, "data", "naver_whitelist.json");
 let whitelistData = {};
 try {
@@ -127,20 +154,24 @@ try {
   if (DEBUG) console.warn("⚠️ whitelist not found, using empty");
 }
 const tierWeights = Object.entries(whitelistData.tiers || {}).map(([k, v]) => ({
-  tier: k, weight: v.weight || 1, domains: v.domains || []
+  tier: k,
+  weight: v.weight || 1,
+  domains: v.domains || [],
 }));
+
 function filterByWhitelist(items = []) {
   const scored = [];
   for (const i of items) {
     const link = i.originallink || i.link || "";
     let maxW = 0;
-    for (const t of tierWeights) {
-      if (t.domains.some(d => link.includes(d))) maxW = Math.max(maxW, t.weight);
-    }
+    for (const t of tierWeights)
+      if (t.domains.some((d) => link.includes(d)))
+        maxW = Math.max(maxW, t.weight);
     if (maxW > 0) scored.push({ ...i, weight: maxW });
   }
   return scored.sort((a, b) => b.weight - a.weight);
 }
+
 async function callNaver(query, id, secret) {
   if (!id || !secret) throw new Error("Naver 키 누락");
   const base = "https://openapi.naver.com/v1/search";
@@ -162,15 +193,15 @@ async function callNaver(query, id, secret) {
         break;
       } catch (err) {
         if (i === 1) {
-          if (DEBUG) console.warn(`⚠️ Naver ${key} 실패:`, err.message);
+          await handleEngineFail("naver", query, err.message);
           results[key] = [];
-          await supabase.from("engine_fails").insert([{ engine: "naver", query, error: err.message, created_at: new Date() }]);
         }
       }
     }
   }
   return results;
 }
+
 // ─────────────────────────────
 // ✅ External Engines + Fail-Grace Wrapper
 // ─────────────────────────────
@@ -180,15 +211,13 @@ async function safeFetch(name, fn, q) {
       return await fn(q);
     } catch (err) {
       if (i === 1) {
-        if (DEBUG) console.warn(`⚠️ ${name} 실패:`, err.message);
-        await supabase.from("engine_fails").insert([
-          { engine: name, query: q, error: err.message, created_at: new Date() },
-        ]);
+        await handleEngineFail(name, q, err.message);
         return [];
       }
     }
   }
 }
+
 async function fetchCrossref(q) {
   const { data } = await axios.get(
     `https://api.crossref.org/works?query=${encodeURIComponent(q)}&rows=3`
@@ -211,14 +240,22 @@ async function fetchGDELT(q) {
   const { data } = await axios.get(
     `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&format=json&maxrecords=3`
   );
-  return data?.articles?.map((i) => i.title) || [];
+  return data?.articles?.map((i) => ({
+    title: i.title,
+    date: i.seendate,
+  })) || [];
 }
 async function fetchGitHub(q) {
   const { data } = await axios.get(
     `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=3`,
     { headers: { "User-Agent": "CrossVerifiedAI" } }
   );
-  return data?.items?.map((i) => i.full_name) || [];
+  return data?.items?.map((i) => ({
+    name: i.full_name,
+    stars: i.stargazers_count,
+    forks: i.forks_count,
+    updated: i.updated_at,
+  })) || [];
 }
 async function fetchKLaw(k, q) {
   const { data } = await axios.get(
@@ -229,7 +266,33 @@ async function fetchKLaw(k, q) {
 }
 
 // ─────────────────────────────
-// ✅ Weight + History + Logging
+// ✅ 시의성 (GDELT) + 유효성 (GitHub) 보정 루틴
+// ─────────────────────────────
+function calcRecencyScore(gdeltItems = []) {
+  if (!gdeltItems.length) return 0.5;
+  const now = new Date();
+  const scores = gdeltItems.map((a) => {
+    const diffDays = (now - new Date(a.date)) / (1000 * 60 * 60 * 24);
+    return Math.exp(-diffDays / 90); // 90일 감쇠 기준
+  });
+  const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+  return Math.min(1, Math.max(0, avg));
+}
+
+function calcValidityScore(gitItems = []) {
+  if (!gitItems.length) return 0.5;
+  const norm = gitItems.map((r) => {
+    const stars = Math.min(r.stars || 0, 5000) / 5000;
+    const forks = Math.min(r.forks || 0, 1000) / 1000;
+    const freshness =
+      1 - Math.min((new Date() - new Date(r.updated)) / (1000 * 60 * 60 * 24 * 365), 1);
+    return 0.5 * stars + 0.3 * forks + 0.2 * freshness;
+  });
+  return norm.reduce((a, b) => a + b, 0) / norm.length;
+}
+
+// ─────────────────────────────
+// ✅ Weight + History + Logging (λ 보정 포함)
 // ─────────────────────────────
 async function updateWeight(engine, truth, time) {
   try {
@@ -238,11 +301,11 @@ async function updateWeight(engine, truth, time) {
       .select("*")
       .eq("engine_name", engine)
       .single();
-    const α = 0.8;
+    const λ = 0.8;
     const prevTruth = prev?.avg_truth || 0.7;
     const prevResp = prev?.avg_response || 1000;
-    const newTruth = prevTruth * α + truth * (1 - α);
-    const newResp = prevResp * α + time * (1 - α);
+    const newTruth = prevTruth * λ + truth * (1 - λ);
+    const newResp = prevResp * λ + time * (1 - λ);
     await supabase.from("engine_stats").upsert([
       {
         engine_name: engine,
@@ -261,16 +324,15 @@ async function updateWeight(engine, truth, time) {
       .eq("engine", engine)
       .order("created_at", { ascending: true });
     if (rows?.length > 10) {
-      const toDelete = rows.slice(0, rows.length - 10).map((r) => r.id);
-      await supabase.from("weight_history").delete().in("id", toDelete);
+      const del = rows.slice(0, rows.length - 10).map((r) => r.id);
+      await supabase.from("weight_history").delete().in("id", del);
     }
   } catch (e) {
     if (DEBUG) console.warn("⚠️ Weight update fail:", e.message);
   }
 }
-
 // ─────────────────────────────
-// ✅ Verify Core (All Modes + Log)
+// ✅ Verify Core (All Modes + Log + Recency/Validity 세분화)
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   const { query, mode, gemini_key, naver_id, naver_secret, klaw_key, user_answer } = req.body;
@@ -280,18 +342,20 @@ app.post("/api/verify", async (req, res) => {
   const engines = [];
   const external = {};
   const start = Date.now();
+  let partial_scores = {};
 
   try {
     switch (mode) {
       case "qv":
       case "fv":
         engines.push("crossref", "openalex", "wikidata", "gdelt");
-        [external.crossref, external.openalex, external.wikidata, external.gdelt] = await Promise.all([
-          safeFetch("crossref", fetchCrossref, query),
-          safeFetch("openalex", fetchOpenAlex, query),
-          safeFetch("wikidata", fetchWikidata, query),
-          safeFetch("gdelt", fetchGDELT, query),
-        ]);
+        [external.crossref, external.openalex, external.wikidata, external.gdelt] =
+          await Promise.all([
+            safeFetch("crossref", fetchCrossref, query),
+            safeFetch("openalex", fetchOpenAlex, query),
+            safeFetch("wikidata", fetchWikidata, query),
+            safeFetch("gdelt", fetchGDELT, query),
+          ]);
         if (naver_id && naver_secret) {
           external.naver = await callNaver(query, naver_id, naver_secret);
           engines.push("naver");
@@ -304,6 +368,9 @@ app.post("/api/verify", async (req, res) => {
           safeFetch("gdelt", fetchGDELT, query),
           safeFetch("github", fetchGitHub, query),
         ]);
+        // 시의성·유효성 보정
+        partial_scores.recency = calcRecencyScore(external.gdelt);
+        partial_scores.validity = calcValidityScore(external.github);
         break;
       case "lv":
         engines.push("klaw");
@@ -313,26 +380,46 @@ app.post("/api/verify", async (req, res) => {
         return res.status(400).json({ success: false, message: "❌ 잘못된 모드" });
     }
 
-    // ✅ Gemini 요청 (role:"user" 포함 최신 포맷)
+    // Gemini 요청
     const flashPrompt = `[${mode.toUpperCase()}] ${query}\n참조자료: ${JSON.stringify(external).slice(0, 800)}`;
     const flashRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
-      { contents: [{ role: "user", parts: [{ text: flashPrompt }] }] }
+      `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
+      { contents: [{ parts: [{ text: flashPrompt }] }] },
+      { timeout: 20000 }
     );
     const flash = flashRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
     const verifyPrompt = `검증모드:${mode}\n${user_answer || query}\n${flash}`;
     const proRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${gemini_key}`,
-      { contents: [{ role: "user", parts: [{ text: verifyPrompt }] }] }
+      `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=${gemini_key}`,
+      { contents: [{ parts: [{ text: verifyPrompt }] }] },
+      { timeout: 20000 }
     );
     const verify = proRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    const elapsed = Date.now() - start;
-    const score = Math.min(0.97, 0.65 + engines.length * 0.05 + Math.random() * 0.1);
 
+    // TruthScore 계산
+    const elapsed = Date.now() - start;
+    let scoreBase = 0.65 + engines.length * 0.05 + Math.random() * 0.1;
+    if (mode === "dv" || mode === "cv") {
+      const R = partial_scores.recency ?? 0.7;
+      const V = partial_scores.validity ?? 0.7;
+      const hybrid = 0.5 * R + 0.5 * V;
+      scoreBase = 0.6 + 0.4 * hybrid;
+    }
+    const score = Math.min(0.97, scoreBase);
+
+    // 로그 및 DB 반영
     for (const e of engines) await updateWeight(e, score, elapsed);
     await supabase.from("verify_logs").insert([
-      { query, mode, truthscore: score, elapsed, engines: JSON.stringify(engines), created_at: new Date() },
+      {
+        query,
+        mode,
+        truthscore: score,
+        elapsed,
+        partial_scores: JSON.stringify(partial_scores),
+        engines: JSON.stringify(engines),
+        created_at: new Date(),
+      },
     ]);
 
     res.json({
@@ -341,14 +428,17 @@ app.post("/api/verify", async (req, res) => {
       truthscore: score.toFixed(3),
       engines,
       elapsed,
+      partial_scores,
       flash_summary: flash.slice(0, 250),
       verify_summary: verify.slice(0, 350),
       whitelist_domains: tierWeights.flatMap((t) => t.domains).length,
       timestamp: new Date().toISOString(),
     });
   } catch (e) {
-    if (DEBUG) console.error("❌ Verify Error:", e.message);
-    await supabase.from("verify_logs").insert([{ query, mode, error: e.message, created_at: new Date() }]);
+    console.error("❌ Verify Error:", e.message);
+    await supabase.from("verify_logs").insert([
+      { query, mode, error: e.message, created_at: new Date() },
+    ]);
     res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -375,12 +465,13 @@ app.post("/admin/approve-reliability", ensureAuth, async (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ Admin Dashboard Routes (EJS View + Stats + Logs)
+// ✅ Admin Dashboard Routes
 // ─────────────────────────────
 import { join } from "path";
 app.set("view engine", "ejs");
 app.set("views", join(__dirname, "views"));
 app.use(express.static(join(__dirname, "public")));
+
 app.get("/admin/dashboard", ensureAuth, async (req, res) => {
   try {
     const { data: stats } = await supabase.from("engine_stats").select("*").order("updated_at", { ascending: false });
@@ -422,12 +513,12 @@ app.get("/api/test-db", async (_, res) => {
   }
 });
 app.get("/health", (_, res) =>
-  res.status(200).json({ status: "ok", version: "v15.0.0", timestamp: new Date().toISOString() })
+  res.status(200).json({ status: "ok", version: "v15.0.2", timestamp: new Date().toISOString() })
 );
 
 // ─────────────────────────────
 // ✅ Server Start
 // ─────────────────────────────
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v15.0.0 running on port ${PORT}`);
+  console.log(`🚀 Cross-Verified AI Proxy v15.0.2 running on port ${PORT}`);
 });
