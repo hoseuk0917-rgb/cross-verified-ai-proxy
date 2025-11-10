@@ -1,0 +1,108 @@
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Cross-Verified AI Proxy — Full Simulation Test</title>
+  <style>
+    body { background:#0b0b0b; color:#0f0; font-family:monospace; padding:20px; }
+    input,textarea,button,select { margin:4px; padding:4px; }
+    pre { background:#111; padding:10px; white-space:pre-wrap; }
+  </style>
+</head>
+<body>
+  <h2>Cross-Verified AI Proxy v14.4.1 — Full Local+Server Integration Test</h2>
+
+  <form id="fullForm">
+    <div><label>Query: <input type="text" id="query" value="UAM 안전운항 핵심기술"/></label></div>
+    <div><label>Gemini Key: <input type="password" id="gemini_key"/></label></div>
+    <div><label>Naver ID: <input type="text" id="naver_id"/></label></div>
+    <div><label>Naver Secret: <input type="password" id="naver_secret"/></label></div>
+    <div><label>K-Law Key: <input type="text" id="klaw_key"/></label></div>
+    <div><label>Mode:
+      <select id="mode">
+        <option value="qv" selected>QV (질문검증)</option>
+        <option value="fv">FV (사실검증)</option>
+        <option value="cv">CV (코드검증)</option>
+        <option value="dv">DV (개발검증)</option>
+        <option value="lv">LV (법령검증)</option>
+      </select>
+    </label></div>
+    <div><button type="submit">Run Verify</button></div>
+  </form>
+
+  <h3>📘 Result</h3>
+  <pre id="output"></pre>
+
+  <script>
+  // Gemini → 핵심어 추출 함수
+  async function extractKeywords(geminiKey, query) {
+    const model = "gemini-2.5-flash";
+    const prompt = `주어진 문장에서 핵심 키워드 3~5개를 콤마로 구분해 추출해줘: ${query}`;
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
+      {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ contents:[{ parts:[{ text: prompt }] }] })
+      }
+    );
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    return text.replace(/\n/g,"").trim();
+  }
+
+  // Naver API 호출 (로컬)
+  async function callNaverLocal(query, id, secret) {
+    const headers = {
+      "X-Naver-Client-Id": id,
+      "X-Naver-Client-Secret": secret
+    };
+    const url = `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent(query)}&display=5`;
+    const res = await fetch(url, { headers });
+    const data = await res.json();
+    return data.items?.map(i => i.title.replace(/<[^>]+>/g,"")) || [];
+  }
+
+  // 전체 실행
+  document.getElementById("fullForm").addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const query = document.getElementById("query").value;
+    const geminiKey = document.getElementById("gemini_key").value;
+    const naverId = document.getElementById("naver_id").value;
+    const naverSecret = document.getElementById("naver_secret").value;
+    const klawKey = document.getElementById("klaw_key").value;
+    const mode = document.getElementById("mode").value;
+
+    const out = document.getElementById("output");
+    out.textContent = "⏳ Gemini 핵심어 추출 중...";
+
+    try {
+      const keywords = await extractKeywords(geminiKey, query);
+      out.textContent = `✅ 핵심어: ${keywords}\n⏳ Naver 검색 중...`;
+
+      const naverResults = await callNaverLocal(keywords, naverId, naverSecret);
+      const naverSummary = naverResults.slice(0,3).join(" | ");
+      out.textContent += `\n✅ Naver 요약: ${naverSummary}\n⏳ 서버 통합검증 중...`;
+
+      const body = {
+        query,
+        mode,
+        gemini_key: geminiKey,
+        naver_id: naverId,
+        naver_secret: naverSecret,
+        klaw_key: klawKey,
+        naver_summary: naverSummary
+      };
+      const res = await fetch("/api/verify", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(body)
+      });
+      const data = await res.json();
+      out.textContent = JSON.stringify(data, null, 2);
+    } catch (err) {
+      out.textContent = "❌ Error: " + err.message;
+    }
+  });
+  </script>
+</body>
+</html>

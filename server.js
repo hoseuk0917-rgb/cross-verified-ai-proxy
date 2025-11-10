@@ -326,13 +326,22 @@ app.post("/api/verify", async (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ GeoIP 기반 Naver 병합 (한국 지역만 허용)
+// ✅ GeoIP 기반 Naver 병합 (한국 지역 + 로컬 허용)
 // ─────────────────────────────
 async function isKoreanIP(ip) {
   try {
+    // ✅ localhost(127.0.0.1, ::1)일 경우 한국으로 간주
+    if (ip === "127.0.0.1" || ip === "::1" || ip?.startsWith("::ffff:127.")) {
+      console.log("🛰️ Localhost detected → Force allow (KR)");
+      return true;
+    }
+
     const { data } = await axios.get(`https://ipapi.co/${ip}/json/`);
-    return data?.country_code === "KR";
-  } catch {
+    const isKR = data?.country_code === "KR";
+    console.log(`🌐 IP Check: ${ip} → ${isKR ? "KR ✅" : (data?.country_code || "Unknown ❌")}`);
+    return isKR;
+  } catch (err) {
+    console.warn("⚠️ GeoIP lookup failed:", err.message);
     return false;
   }
 }
@@ -341,12 +350,18 @@ app.post("/api/naver-merge", async (req, res) => {
   try {
     const clientIP = req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress;
     const isKR = await isKoreanIP(clientIP);
+
     if (!isKR)
       return res.json({ success: true, message: "🌐 Non-KR region, Naver skipped", merged: false });
 
     const { query, naver_id, naver_secret } = req.body;
     const result = await callNaverAPIs(query, naver_id, naver_secret);
-    res.json({ success: true, merged: true, count: result.news.length + result.web.length, data: result });
+    res.json({
+      success: true,
+      merged: true,
+      count: result.news.length + result.web.length,
+      data: result
+    });
   } catch (err) {
     console.error("❌ /api/naver-merge Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
