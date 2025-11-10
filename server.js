@@ -1,6 +1,7 @@
 // =======================================================
-// Cross-Verified AI Proxy — v14.2.1
-// (User-Key Federated Proxy + Multi-Engine Verify Integration + Naver Fix)
+// Cross-Verified AI Proxy — v14.4.1
+// (User-Key Federated Proxy + Multi-Engine Verify Integration
+//  + Naver Fix (News/Web/Encyc Whitelist) + GeoIP + Admin Dashboard + Engine Calibration)
 // =======================================================
 import express from "express";
 import session from "express-session";
@@ -62,7 +63,7 @@ app.use(session({
 }));
 
 // ─────────────────────────────
-// ✅ OAuth (Google Admin)
+// ✅ OAuth (Google Admin) 복원
 // ─────────────────────────────
 passport.use(new GoogleStrategy({
   clientID: process.env.GOOGLE_ADMIN_CLIENT_ID,
@@ -83,37 +84,25 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // ─────────────────────────────
-// ✅ Admin Dashboard
+// ✅ Admin Dashboard 복원
 // ─────────────────────────────
 function ensureAuth(req, res, next) {
   if (req.isAuthenticated()) return next();
   return res.redirect("/auth/admin");
 }
-
 app.get("/auth/admin", passport.authenticate("google", { scope: ["email", "profile"] }));
 app.get("/auth/admin/callback",
   passport.authenticate("google", { failureRedirect: "/auth/failure", session: true }),
   (req, res) => res.redirect("/admin/dashboard"));
-app.get("/auth/failure", (req, res) => res.status(401).send("❌ OAuth Failed"));
+app.get("/auth/failure", (_, res) => res.status(401).send("❌ OAuth Failed"));
 
 app.get("/admin/dashboard", ensureAuth, async (req, res) => {
-  const { data: logs } = await supabase
-    .from("api_logs")
-    .select("created_at, engine, truthscore, response_time")
-    .order("created_at", { ascending: false })
-    .limit(20);
-
-  const avgTruth = logs?.reduce((a, b) => a + (b.truthscore || 0), 0) / (logs?.length || 1);
-  const avgResponse = logs?.reduce((a, b) => a + (b.response_time || 0), 0) / (logs?.length || 1);
-
-  res.render("dashboard", {
-    user: req.user,
-    stats: { avgTruth: avgTruth.toFixed(2), avgResponse: avgResponse.toFixed(0), count: logs?.length || 0 },
-    logs: logs || [],
-  });
+  const { data: logs } = await supabase.from("engine_stats").select("*").order("updated_at", { ascending: false });
+  res.render("dashboard", { user: req.user, stats: logs || [] });
 });
+
 // ─────────────────────────────
-// ✅ Naver + Whitelist + 안정화 패치 (403 대응)
+// ✅ Naver Whitelist (v10.3.0 구조 반영)
 // ─────────────────────────────
 const whitelistPath = path.join(__dirname, "data", "naver_whitelist.json");
 let whitelistData = {};
@@ -124,12 +113,16 @@ try {
   whitelistData = { tiers: {} };
 }
 const allDomains = Object.values(whitelistData.tiers || {}).flatMap(t => t.domains);
-const filterByWhitelist = (arr) =>
-  arr.filter(i => allDomains.some(d => i.link?.includes(d)));
+function filterByWhitelist(items = []) {
+  return items.filter(i => {
+    const link = i.originallink || i.link || "";
+    return allDomains.some(d => link.includes(d));
+  });
+}
 
+// ✅ 뉴스·백과·웹 모두 필터링
 async function callNaverAPIs(query, id, secret) {
   if (!id || !secret) throw new Error("Naver API 키 누락");
-
   const headers = {
     "X-Naver-Client-Id": id,
     "X-Naver-Client-Secret": secret,
@@ -139,17 +132,15 @@ async function callNaverAPIs(query, id, secret) {
   const endpoints = {
     news: `${NAVER_API_BASE}/news.json?query=${encodeURIComponent(query)}&display=5`,
     ency: `${NAVER_API_BASE}/encyc.json?query=${encodeURIComponent(query)}&display=3`,
-    web: `${NAVER_API_BASE}/webkr.json?query=${encodeURIComponent(query)}&display=3`
+    web: `${NAVER_API_BASE}/webkr.json?query=${encodeURIComponent(query)}&display=5`
   };
-
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const results = {};
-
   for (const [key, url] of Object.entries(endpoints)) {
     try {
-      await sleep(300); // rate-limit 완화 (0.3초 간격)
+      await sleep(300);
       const res = await axios.get(url, { headers });
-      results[key] = res.data.items || [];
+      results[key] = filterByWhitelist(res.data.items || []);
     } catch (err) {
       console.warn(`⚠️ Naver ${key} API Error:`, err.response?.status || err.message);
       results[key] = [];
@@ -157,7 +148,6 @@ async function callNaverAPIs(query, id, secret) {
   }
   return results;
 }
-
 // ✅ Gemini Test
 app.post("/api/test-gemini", async (req, res) => {
   try {
@@ -196,9 +186,7 @@ app.post("/api/test-naver", async (req, res) => {
   }
 });
 
-// ─────────────────────────────
-// ✅ 외부 검증엔진 공용 함수
-// ─────────────────────────────
+// ✅ 외부 검증엔진 공용 함수 (Crossref~KLaw)
 async function fetchCrossref(query) {
   const url = `https://api.crossref.org/works?query=${encodeURIComponent(query)}&rows=3`;
   const { data } = await axios.get(url);
@@ -229,6 +217,38 @@ async function fetchKLaw(klaw_key, query) {
   const { data } = await axios.get(url, { responseType: "text" });
   return parseXMLtoJSON(data);
 }
+
+// ─────────────────────────────
+// ✅ 엔진별 보정치 업데이트 (가중평균)
+// ─────────────────────────────
+async function updateEngineStats(engine, truth, responseTime) {
+  try {
+    const { data: prevData } = await supabase
+      .from("engine_stats")
+      .select("*")
+      .eq("engine_name", engine)
+      .single();
+
+    const prevTruth = prevData?.avg_truth || 0.7;
+    const prevResp = prevData?.avg_response || 1000;
+    const prevRuns = prevData?.total_runs || 0;
+    const alpha = 0.8; // 과거 가중치
+
+    const newTruth = (prevTruth * alpha) + (truth * (1 - alpha));
+    const newResp = (prevResp * alpha) + (responseTime * (1 - alpha));
+
+    await supabase.from("engine_stats").upsert([{
+      engine_name: engine,
+      total_runs: prevRuns + 1,
+      avg_truth: Number(newTruth.toFixed(2)),
+      avg_response: Number(newResp.toFixed(0)),
+      updated_at: new Date()
+    }]);
+  } catch (err) {
+    console.warn(`⚠️ Engine stats update failed for ${engine}:`, err.message);
+  }
+}
+
 // ─────────────────────────────
 // ✅ Verify (모드별 통합 검증엔진)
 // ─────────────────────────────
@@ -240,7 +260,7 @@ app.post("/api/verify", async (req, res) => {
   try {
     const start = Date.now();
 
-    // 1️⃣ Gemini 응답 병렬 처리
+    // 1️⃣ Gemini 병렬 호출
     const models = ["gemini-2.5-flash", "gemini-2.5-pro"];
     const geminiResults = await Promise.allSettled(models.map(async (m) => {
       const r = await axios.post(
@@ -253,45 +273,41 @@ app.post("/api/verify", async (req, res) => {
     const flashText = geminiResults.find(r => r.value?.model.includes("flash"))?.value?.text || "";
     const proText = geminiResults.find(r => r.value?.model.includes("pro"))?.value?.text || "";
 
-    // 2️⃣ 모드별 외부엔진 라우팅
+    // 2️⃣ 엔진별 라우팅
     let engines = [];
     let externalData = {};
+    const now = Date.now();
 
     if (mode === "qv" || mode === "fv") {
       if (!naver_id || !naver_secret)
-        return res.status(400).json({ success: false, message: "❌ Naver 키 누락 (QV/FV 모드)" });
-
+        return res.status(400).json({ success: false, message: "❌ Naver 키 누락 (QV/FV)" });
       engines = ["crossref", "openalex", "gdelt", "wikidata", "naver"];
-      console.log("🚀 QV/FV 엔진 호출:", engines);
-
       externalData.crossref = await fetchCrossref(query);
       externalData.openalex = await fetchOpenAlex(query);
       externalData.wikidata = await fetchWikidata(query);
       externalData.gdelt = await fetchGDELT(query);
       externalData.naver = await callNaverAPIs(query, naver_id, naver_secret);
-
     } else if (mode === "cv" || mode === "dv") {
       engines = ["gdelt", "github"];
-      console.log("🚀 CV/DV 엔진 호출:", engines);
-
       externalData.gdelt = await fetchGDELT(query);
       externalData.github = await fetchGitHub(query);
-
     } else if (mode === "lv") {
       if (!klaw_key)
-        return res.status(400).json({ success: false, message: "❌ K-Law 키 누락 (LV 모드)" });
-
+        return res.status(400).json({ success: false, message: "❌ K-Law 키 누락 (LV)" });
       engines = ["klaw"];
-      console.log("🚀 LV 엔진 호출:", engines);
-
       externalData.klaw = await fetchKLaw(klaw_key, query);
     }
 
-    // 3️⃣ 신뢰도 계산
+    const elapsed = Date.now() - start;
     const truthscore = (0.6 + engines.length * 0.07 + Math.random() * 0.15).toFixed(2);
-    const elapsed = `${Date.now() - start} ms`;
 
-    // 4️⃣ 결과 반환
+    // 3️⃣ 보정치 업데이트 (엔진별)
+    for (const e of engines) {
+      const tScore = Number(truthscore);
+      const respTime = Date.now() - now;
+      await updateEngineStats(e, tScore, respTime);
+    }
+
     res.json({
       success: true,
       message: `✅ Verify 성공 (${mode.toUpperCase()} 모드)`,
@@ -299,8 +315,7 @@ app.post("/api/verify", async (req, res) => {
       mode,
       truthscore,
       engines,
-      externalData: Object.keys(externalData),
-      elapsed,
+      elapsed: `${elapsed} ms`,
       summary: flashText.slice(0, 250),
       source: "multi-engine"
     });
@@ -311,7 +326,35 @@ app.post("/api/verify", async (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ K-Law 단일 테스트
+// ✅ GeoIP 기반 Naver 병합 (한국 지역만 허용)
+// ─────────────────────────────
+async function isKoreanIP(ip) {
+  try {
+    const { data } = await axios.get(`https://ipapi.co/${ip}/json/`);
+    return data?.country_code === "KR";
+  } catch {
+    return false;
+  }
+}
+
+app.post("/api/naver-merge", async (req, res) => {
+  try {
+    const clientIP = req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress;
+    const isKR = await isKoreanIP(clientIP);
+    if (!isKR)
+      return res.json({ success: true, message: "🌐 Non-KR region, Naver skipped", merged: false });
+
+    const { query, naver_id, naver_secret } = req.body;
+    const result = await callNaverAPIs(query, naver_id, naver_secret);
+    res.json({ success: true, merged: true, count: result.news.length + result.web.length, data: result });
+  } catch (err) {
+    console.error("❌ /api/naver-merge Error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────
+// ✅ K-Law 단일 테스트 (법령검증)
 // ─────────────────────────────
 app.post("/api/klaw", async (req, res) => {
   try {
@@ -338,7 +381,7 @@ app.post("/api/klaw", async (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ Health + DB
+// ✅ DB 연결 / Health Check
 // ─────────────────────────────
 app.get("/api/test-db", async (_, res) => {
   try {
@@ -352,9 +395,52 @@ app.get("/api/test-db", async (_, res) => {
 });
 
 app.get("/health", (_, res) =>
-  res.status(200).json({ status: "ok", version: "v14.2.1", timestamp: new Date().toISOString() })
+  res.status(200).json({ status: "ok", version: "v14.4.1", timestamp: new Date().toISOString() })
 );
 
-app.listen(PORT, () =>
-  console.log(`🚀 Cross-Verified AI Proxy v14.2.1 running on ${PORT}`)
-);
+// ─────────────────────────────
+// ✅ HTML 테스트 페이지 (로컬 검증용)
+// ─────────────────────────────
+app.get("/test", (_, res) => {
+  res.send(`
+  <html>
+    <head><title>Cross-Verified AI Proxy Test</title></head>
+    <body>
+      <h2>Cross-Verified AI Proxy — v14.4.1</h2>
+      <form id="form">
+        <label>Query: <input type="text" id="query" value="UAM 안전운항 핵심기술"/></label><br/>
+        <label>Naver ID: <input type="text" id="naver_id"/></label><br/>
+        <label>Naver Secret: <input type="password" id="naver_secret"/></label><br/>
+        <label>Gemini Key: <input type="password" id="gemini_key"/></label><br/>
+        <button type="submit">Run Verify</button>
+      </form>
+      <pre id="output" style="white-space:pre-wrap;background:#111;color:#0f0;padding:10px"></pre>
+      <script>
+        document.getElementById("form").addEventListener("submit", async (e)=>{
+          e.preventDefault();
+          const body = {
+            query: document.getElementById("query").value,
+            mode: "qv",
+            gemini_key: document.getElementById("gemini_key").value,
+            naver_id: document.getElementById("naver_id").value,
+            naver_secret: document.getElementById("naver_secret").value
+          };
+          const res = await fetch("/api/verify", {
+            method: "POST", headers: {"Content-Type":"application/json"},
+            body: JSON.stringify(body)
+          });
+          const text = await res.text();
+          document.getElementById("output").innerText = text;
+        });
+      </script>
+    </body>
+  </html>`);
+});
+
+// ─────────────────────────────
+// ✅ 서버 실행
+// ─────────────────────────────
+app.listen(PORT, () => {
+  console.log(`🚀 Cross-Verified AI Proxy v14.4.1 running on port ${PORT}`);
+});
+
