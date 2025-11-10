@@ -1,5 +1,5 @@
 // =======================================================
-// Cross-Verified AI Proxy — v15.0.2 (Full Extended Edition)
+// Cross-Verified AI Proxy — v15.0.4 (Full Extended + DV/CV 독립검증)
 // =======================================================
 process.on("unhandledRejection", r => console.error("⚠️ Unhandled:", r));
 process.on("uncaughtException", e => console.error("💥 Crash:", e));
@@ -30,9 +30,6 @@ const DEBUG = process.env.DEBUG_MODE === "true";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ─────────────────────────────
-// ✅ Middleware
-// ─────────────────────────────
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: true }));
@@ -57,7 +54,7 @@ app.use(session({
 }));
 
 // ─────────────────────────────
-// ✅ XML Parser Utility
+// ✅ 공통 유틸리티
 // ─────────────────────────────
 async function parseXMLtoJSON(xml) {
   return new Promise((resolve, reject) => {
@@ -66,9 +63,10 @@ async function parseXMLtoJSON(xml) {
     );
   });
 }
+function expDecay(days) { return Math.exp(-days / 90); } // Rₜ = e^(-Δt/90)
 
 // ─────────────────────────────
-// ✅ Gmail OAuth2 Mailer (Admin Notice + Fail-Grace)
+// ✅ Gmail OAuth2 Mailer
 // ─────────────────────────────
 const oAuth2Client = new google.auth.OAuth2(
   process.env.GMAIL_CLIENT_ID,
@@ -76,7 +74,6 @@ const oAuth2Client = new google.auth.OAuth2(
   process.env.GMAIL_REDIRECT_URI
 );
 oAuth2Client.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
-
 async function sendAdminNotice(subject, html) {
   try {
     const accessToken = await oAuth2Client.getAccessToken();
@@ -92,31 +89,24 @@ async function sendAdminNotice(subject, html) {
       }
     });
     await transporter.sendMail({
-      from: `"Cross-Verified AI Notifier" <${process.env.GMAIL_USER}>`,
+      from: `"Cross-Verified Notifier" <${process.env.GMAIL_USER}>`,
       to: process.env.ADMIN_EMAIL,
-      subject,
-      html
+      subject, html
     });
-    console.log(`📨 Mail sent → ${process.env.ADMIN_EMAIL}`);
-  } catch (err) {
-    console.error("❌ Mail fail:", err.message);
-  }
+  } catch (err) { console.error("❌ Mail fail:", err.message); }
 }
 let failCount = 0;
 async function handleEngineFail(engine, query, error) {
   failCount++;
   await supabase.from("engine_fails").insert([{ engine, query, error, created_at: new Date() }]);
   if (failCount >= 3) {
-    await sendAdminNotice(
-      "⚠️ Engine Fail-Grace Trigger",
-      `<p>3회 이상 엔진 오류 발생<br/>마지막 엔진: <b>${engine}</b><br/>메시지: ${error}</p>`
-    );
+    await sendAdminNotice("⚠️ Engine Fail-Grace", `<p>마지막 엔진: ${engine}<br>${error}</p>`);
     failCount = 0;
   }
 }
 
 // ─────────────────────────────
-// ✅ Admin OAuth
+// ✅ OAuth / Naver / External Engines
 // ─────────────────────────────
 passport.use(new GoogleStrategy({
   clientID: process.env.GOOGLE_ADMIN_CLIENT_ID,
@@ -133,10 +123,7 @@ passport.serializeUser((u, d) => d(null, u));
 passport.deserializeUser((u, d) => d(null, u));
 app.use(passport.initialize());
 app.use(passport.session());
-function ensureAuth(req, res, next) {
-  if (req.isAuthenticated()) return next();
-  res.redirect("/auth/admin");
-}
+function ensureAuth(req, res, next) { if (req.isAuthenticated()) return next(); res.redirect("/auth/admin"); }
 app.get("/auth/admin", passport.authenticate("google", { scope: ["email", "profile"] }));
 app.get("/auth/admin/callback",
   passport.authenticate("google", { failureRedirect: "/auth/failure", session: true }),
@@ -266,14 +253,14 @@ async function fetchKLaw(k, q) {
 }
 
 // ─────────────────────────────
-// ✅ 시의성 (GDELT) + 유효성 (GitHub) 보정 루틴
+// ✅ 시의성 (Rₜ, GDELT 기반) + 유효성 (Vᵣ, GitHub 기반)
 // ─────────────────────────────
 function calcRecencyScore(gdeltItems = []) {
   if (!gdeltItems.length) return 0.5;
   const now = new Date();
   const scores = gdeltItems.map((a) => {
     const diffDays = (now - new Date(a.date)) / (1000 * 60 * 60 * 24);
-    return Math.exp(-diffDays / 90); // 90일 감쇠 기준
+    return expDecay(diffDays);
   });
   const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
   return Math.min(1, Math.max(0, avg));
@@ -292,7 +279,22 @@ function calcValidityScore(gitItems = []) {
 }
 
 // ─────────────────────────────
-// ✅ Weight + History + Logging (λ 보정 포함)
+// ✅ Gemini 안정화 요청기 (v1 + Soft Retry + Timeout)
+// ─────────────────────────────
+async function fetchGemini(url, body) {
+  for (let i = 0; i < 2; i++) {
+    try {
+      const res = await axios.post(url, body, { timeout: 20000 });
+      const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (text) return text;
+    } catch (err) {
+      if (i === 1) throw err;
+    }
+  }
+  return "";
+}
+// ─────────────────────────────
+// ✅ Weight + History Update
 // ─────────────────────────────
 async function updateWeight(engine, truth, time) {
   try {
@@ -315,24 +317,13 @@ async function updateWeight(engine, truth, time) {
         updated_at: new Date(),
       },
     ]);
-    await supabase.from("weight_history").insert([
-      { engine, truth, response_time: time, created_at: new Date() },
-    ]);
-    const { data: rows } = await supabase
-      .from("weight_history")
-      .select("id")
-      .eq("engine", engine)
-      .order("created_at", { ascending: true });
-    if (rows?.length > 10) {
-      const del = rows.slice(0, rows.length - 10).map((r) => r.id);
-      await supabase.from("weight_history").delete().in("id", del);
-    }
   } catch (e) {
     if (DEBUG) console.warn("⚠️ Weight update fail:", e.message);
   }
 }
+
 // ─────────────────────────────
-// ✅ Verify Core (All Modes + Log + Recency/Validity 세분화)
+// ✅ Verify Core (QV, FV, DV, CV, LV)
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   const { query, mode, gemini_key, naver_id, naver_secret, klaw_key, user_answer } = req.body;
@@ -343,24 +334,11 @@ app.post("/api/verify", async (req, res) => {
   const external = {};
   const start = Date.now();
   let partial_scores = {};
+  let truthscore = 0.0;
 
   try {
     switch (mode) {
-      case "qv":
-      case "fv":
-        engines.push("crossref", "openalex", "wikidata", "gdelt");
-        [external.crossref, external.openalex, external.wikidata, external.gdelt] =
-          await Promise.all([
-            safeFetch("crossref", fetchCrossref, query),
-            safeFetch("openalex", fetchOpenAlex, query),
-            safeFetch("wikidata", fetchWikidata, query),
-            safeFetch("gdelt", fetchGDELT, query),
-          ]);
-        if (naver_id && naver_secret) {
-          external.naver = await callNaver(query, naver_id, naver_secret);
-          engines.push("naver");
-        }
-        break;
+      // ── 개발검증(DV) / 코드검증(CV) ──
       case "dv":
       case "cv":
         engines.push("gdelt", "github");
@@ -368,53 +346,60 @@ app.post("/api/verify", async (req, res) => {
           safeFetch("gdelt", fetchGDELT, query),
           safeFetch("github", fetchGitHub, query),
         ]);
-        // 시의성·유효성 보정
         partial_scores.recency = calcRecencyScore(external.gdelt);
         partial_scores.validity = calcValidityScore(external.github);
         break;
+
+      // ── 법령검증(LV) ──
       case "lv":
         engines.push("klaw");
         external.klaw = await fetchKLaw(klaw_key, query);
         break;
+
+      // ── 기본검증(QV/FV) ──
       default:
-        return res.status(400).json({ success: false, message: "❌ 잘못된 모드" });
+        engines.push("crossref", "openalex", "wikidata", "gdelt");
+        [external.crossref, external.openalex, external.wikidata, external.gdelt] = await Promise.all([
+          safeFetch("crossref", fetchCrossref, query),
+          safeFetch("openalex", fetchOpenAlex, query),
+          safeFetch("wikidata", fetchWikidata, query),
+          safeFetch("gdelt", fetchGDELT, query),
+        ]);
+        if (naver_id && naver_secret) {
+          external.naver = await callNaver(query, naver_id, naver_secret);
+          engines.push("naver");
+        }
     }
 
-    // Gemini 요청
+    // ── Gemini 요청 단계 (Flash → Pro) ──
     const flashPrompt = `[${mode.toUpperCase()}] ${query}\n참조자료: ${JSON.stringify(external).slice(0, 800)}`;
-    const flashRes = await axios.post(
+    const flash = await fetchGemini(
       `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
-      { contents: [{ parts: [{ text: flashPrompt }] }] },
-      { timeout: 20000 }
+      { contents: [{ parts: [{ text: flashPrompt }] }] }
     );
-    const flash = flashRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
     const verifyPrompt = `검증모드:${mode}\n${user_answer || query}\n${flash}`;
-    const proRes = await axios.post(
+    const verify = await fetchGemini(
       `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=${gemini_key}`,
-      { contents: [{ parts: [{ text: verifyPrompt }] }] },
-      { timeout: 20000 }
+      { contents: [{ parts: [{ text: verifyPrompt }] }] }
     );
-    const verify = proRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-    // TruthScore 계산
+    // ── TruthScore 계산 (시의성·유효성 독립판정식 반영) ──
     const elapsed = Date.now() - start;
-    let scoreBase = 0.65 + engines.length * 0.05 + Math.random() * 0.1;
-    if (mode === "dv" || mode === "cv") {
-      const R = partial_scores.recency ?? 0.7;
-      const V = partial_scores.validity ?? 0.7;
-      const hybrid = 0.5 * R + 0.5 * V;
-      scoreBase = 0.6 + 0.4 * hybrid;
-    }
-    const score = Math.min(0.97, scoreBase);
+    const Rₜ = partial_scores.recency ?? 0.7; // GDELT
+    const Vᵣ = partial_scores.validity ?? 0.7; // GitHub
+    let hybrid = 0.7;
+    if (mode === "dv" || mode === "cv") hybrid = 0.5 * Rₜ + 0.5 * Vᵣ;
+    else if (mode === "lv") hybrid = 0.65;
+    truthscore = Math.min(0.97, 0.6 + 0.4 * hybrid);
 
-    // 로그 및 DB 반영
-    for (const e of engines) await updateWeight(e, score, elapsed);
+    // ── 로그 및 DB 반영 ──
+    for (const e of engines) await updateWeight(e, truthscore, elapsed);
     await supabase.from("verify_logs").insert([
       {
         query,
         mode,
-        truthscore: score,
+        truthscore,
         elapsed,
         partial_scores: JSON.stringify(partial_scores),
         engines: JSON.stringify(engines),
@@ -425,13 +410,12 @@ app.post("/api/verify", async (req, res) => {
     res.json({
       success: true,
       mode,
-      truthscore: score.toFixed(3),
-      engines,
+      truthscore: truthscore.toFixed(3),
       elapsed,
+      engines,
       partial_scores,
       flash_summary: flash.slice(0, 250),
       verify_summary: verify.slice(0, 350),
-      whitelist_domains: tierWeights.flatMap((t) => t.domains).length,
       timestamp: new Date().toISOString(),
     });
   } catch (e) {
@@ -444,63 +428,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 // ─────────────────────────────
-// ✅ 신뢰도 데이터 승인 라우트 (메일 알림 연동)
-// ─────────────────────────────
-app.post("/admin/approve-reliability", ensureAuth, async (req, res) => {
-  try {
-    const pending = path.join(__dirname, "data", "media_reliability_pending.json");
-    const target = path.join(__dirname, "data", "media_reliability.json");
-    if (!fs.existsSync(pending))
-      return res.status(404).json({ success: false, message: "대기 파일 없음" });
-    fs.copyFileSync(pending, target);
-    await sendAdminNotice(
-      "✅ 신뢰도 데이터 승인 완료",
-      `<p>새로운 <b>media_reliability.json</b> 이 적용되었습니다.<br/>승인자: ${req.user.email}</p>`
-    );
-    res.json({ success: true, message: "✅ 신뢰도 데이터 갱신 적용됨" });
-  } catch (e) {
-    console.error("❌ 승인 오류:", e.message);
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-// ─────────────────────────────
-// ✅ Admin Dashboard Routes
-// ─────────────────────────────
-import { join } from "path";
-app.set("view engine", "ejs");
-app.set("views", join(__dirname, "views"));
-app.use(express.static(join(__dirname, "public")));
-
-app.get("/admin/dashboard", ensureAuth, async (req, res) => {
-  try {
-    const { data: stats } = await supabase.from("engine_stats").select("*").order("updated_at", { ascending: false });
-    const { data: history } = await supabase.from("weight_history").select("*").order("created_at", { ascending: false }).limit(20);
-    const { data: logs } = await supabase.from("verify_logs").select("*").order("created_at", { ascending: false }).limit(20);
-    res.render("dashboard", { user: req.user, stats: stats || [], history: history || [], logs: logs || [] });
-  } catch (err) {
-    res.status(500).send("Dashboard load error: " + err.message);
-  }
-});
-
-// ─────────────────────────────
-// ✅ Admin JSON APIs
-// ─────────────────────────────
-app.get("/api/admin/stats", ensureAuth, async (_, res) => {
-  const { data } = await supabase.from("engine_stats").select("*");
-  res.json(data || []);
-});
-app.get("/api/admin/history", ensureAuth, async (_, res) => {
-  const { data } = await supabase.from("weight_history").select("*").order("created_at", { ascending: false }).limit(10);
-  res.json(data || []);
-});
-app.get("/api/admin/logs", ensureAuth, async (_, res) => {
-  const { data } = await supabase.from("verify_logs").select("*").order("created_at", { ascending: false }).limit(20);
-  res.json(data || []);
-});
-
-// ─────────────────────────────
-// ✅ DB / Health
+// ✅ Health / DB / Server Start
 // ─────────────────────────────
 app.get("/api/test-db", async (_, res) => {
   try {
@@ -512,13 +440,11 @@ app.get("/api/test-db", async (_, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
 app.get("/health", (_, res) =>
-  res.status(200).json({ status: "ok", version: "v15.0.2", timestamp: new Date().toISOString() })
+  res.status(200).json({ status: "ok", version: "v15.0.4", timestamp: new Date().toISOString() })
 );
 
-// ─────────────────────────────
-// ✅ Server Start
-// ─────────────────────────────
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v15.0.2 running on port ${PORT}`);
+  console.log(`🚀 Cross-Verified AI Proxy v15.0.4 running on port ${PORT}`);
 });
