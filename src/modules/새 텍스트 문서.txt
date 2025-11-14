@@ -1,0 +1,120 @@
+// =======================================================
+// Cross-Verified AI — translateText.js (v18.2.6)
+// DeepL → Libre fallback (multi-endpoint + json/form fallback + retry)
+// =======================================================
+
+import axios from "axios";
+
+/**
+ * 텍스트 번역 (DeepL → LibreTranslate fallback)
+ * @param {string} text - 원문
+ * @param {string|null} targetLang - 대상 언어 (예: "EN", "KO", "JA") / null이면 자동판정
+ * @param {string|null} deeplKey - DeepL API key (env 불필요, 직접 전달)
+ * @returns {object} { text, engine, target }
+ */
+export async function translateText(text, targetLang = null, deeplKey = null) {
+  const apiKey = deeplKey || process.env.DEEPL_API_KEY || null;
+
+  // ── 언어 자동판정 (server.js가 null을 넘긴 경우)
+  // 한글 포함 → EN, 기본 영문/숫자 위주 → KO, 그 외 EN
+  const autoTarget = (() => {
+    if (targetLang && typeof targetLang === "string") return targetLang.toUpperCase();
+    const hasHangul = /[가-힣]/.test(text);
+    const mostlyAscii = /^[\x00-\x7F\s.,;:!?'"()\-\d/]+$/.test(text);
+    if (hasHangul) return "EN";
+    if (mostlyAscii) return "KO";
+    return "EN";
+  })();
+
+  // ─────────────────────────────
+  // ✅ 1) DeepL (우선 사용)
+  // ─────────────────────────────
+  if (apiKey) {
+    try {
+      const { data } = await axios.post(
+        "https://api-free.deepl.com/v2/translate",
+        null,
+        {
+          params: {
+            auth_key: apiKey,
+            text,
+            target_lang: autoTarget,
+          },
+          timeout: 15000,
+        }
+      );
+      const out = data?.translations?.[0]?.text;
+      if (out) {
+        return { text: out, engine: "deepl", target: autoTarget };
+      }
+    } catch (err) {
+      console.warn("⚠️ DeepL fail → fallback to Libre:", err?.response?.status, err?.message);
+    }
+  }
+
+  // ─────────────────────────────
+  // ✅ 2) LibreTranslate (폴백)
+  // - 다중 엔드포인트 라운드로빈 + JSON → FORM 순차 시도
+  // - 일부 인스턴스는 JSON만/일부는 FORM만 받는 경우가 있어 둘 다 시도
+  // ─────────────────────────────
+  const libreEndpoints = [
+    "https://libretranslate.com/translate",
+    "https://libretranslate.de/translate",
+  ];
+
+  const targetLower = autoTarget.toLowerCase();
+
+  const tryJson = async (baseUrl) => {
+    const { data } = await axios.post(
+      baseUrl,
+      { q: text, source: "auto", target: targetLower, format: "text" },
+      {
+        headers: { "Content-Type": "application/json", "User-Agent": "CrossVerifiedAI/18.2.6" },
+        timeout: 12000,
+      }
+    );
+    return data?.translatedText || data?.translations?.[0]?.translatedText || null;
+  };
+
+  const tryForm = async (baseUrl) => {
+    const params = new URLSearchParams();
+    params.append("q", text);
+    params.append("source", "auto");
+    params.append("target", targetLower);
+    params.append("format", "text");
+    // 주: 공개 인스턴스는 api_key 불필요. 사설 인스턴스라면 params.append("api_key", "XXXX") 추가.
+    const { data } = await axios.post(baseUrl, params, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": "CrossVerifiedAI/18.2.6" },
+      timeout: 12000,
+    });
+    return data?.translatedText || data?.translations?.[0]?.translatedText || null;
+  };
+
+  // 엔드포인트 x 2방식(JSON→FORM) x 재시도(최대 2회)
+  for (const ep of libreEndpoints) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // 1) JSON
+      try {
+        const out = await tryJson(ep);
+        if (out && out.trim() && out.trim() !== text.trim()) {
+          return { text: out, engine: "libre", target: autoTarget };
+        }
+      } catch (e) {
+        // 계속 진행
+      }
+      // 2) FORM
+      try {
+        const out = await tryForm(ep);
+        if (out && out.trim() && out.trim() !== text.trim()) {
+          return { text: out, engine: "libre", target: autoTarget };
+        }
+      } catch (e) {
+        // 다음 루프
+      }
+    }
+  }
+
+  // 여전히 실패 시: 원문 리턴(엔진 표시는 libre로 두되 불가 지표)
+  console.error("❌ LibreTranslate: all endpoints failed, returning original text");
+  return { text, engine: "libre", target: autoTarget };
+}
