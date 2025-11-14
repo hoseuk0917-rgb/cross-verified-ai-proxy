@@ -1,6 +1,8 @@
 // =======================================================
-// Cross-Verified AI Proxy — v15.0.4 (Full Extended + DV/CV 독립검증)
+// Cross-Verified AI Proxy — v18.2.0
+// (Full Extended + LV External Module + Translation + Naver Region Detection)
 // =======================================================
+
 process.on("unhandledRejection", r => console.error("⚠️ Unhandled:", r));
 process.on("uncaughtException", e => console.error("💥 Crash:", e));
 
@@ -23,10 +25,30 @@ import ejs from "ejs";
 import nodemailer from "nodemailer";
 import { google } from "googleapis";
 
+// ✅ LV (법령검증) 모듈 외부화
+import { fetchKLawAll } from "./src/modules/klaw_module.js";
+
+// ✅ 번역모듈 (DeepL + Libre fallback)
+import { translateText } from "./src/modules/translateText.js";
+
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DEBUG = process.env.DEBUG_MODE === "true";
+const REGION = process.env.REGION || "GLOBAL";
+// 🔹 엔진 보정 롤오버 윈도우 (기본 20회, .env에서 ENGINE_CORRECTION_WINDOW로 조정 가능)
+const ENGINE_CORRECTION_WINDOW = parseInt(process.env.ENGINE_CORRECTION_WINDOW || "20", 10);
+// 🔹 엔진별 기본 가중치 (w_e)
+const ENGINE_BASE_WEIGHTS = {
+  crossref: 1.0,
+  openalex: 0.95,
+  wikidata: 0.9,
+  gdelt: 1.0,
+  naver: 0.9,
+  github: 1.0,
+  klaw: 1.0,
+};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -64,6 +86,22 @@ async function parseXMLtoJSON(xml) {
   });
 }
 function expDecay(days) { return Math.exp(-days / 90); } // Rₜ = e^(-Δt/90)
+
+// GDELT 기반 시의성(recency) 점수 계산
+function calcRecencyScore(gdeltArticles = []) {
+  if (!gdeltArticles || !gdeltArticles.length) return 0.7; // 정보없을 때 중립값
+  const now = Date.now();
+  const scores = gdeltArticles.map((a) => {
+    if (!a?.date) return 0.7;
+    const t = new Date(a.date).getTime();
+    if (Number.isNaN(t)) return 0.7;
+    const days = (now - t) / (1000 * 60 * 60 * 24);
+    const decay = expDecay(Math.max(0, days)); // 0일→1, 90일→e^-1≈0.37
+    // 0.5~0.95 범위로 스케일링
+    return 0.5 + 0.45 * Math.max(0, Math.min(1, decay));
+  });
+  return scores.reduce((s, v) => s + v, 0) / scores.length;
+}
 
 // ─────────────────────────────
 // ✅ Gmail OAuth2 Mailer
@@ -129,6 +167,7 @@ app.get("/auth/admin/callback",
   passport.authenticate("google", { failureRedirect: "/auth/failure", session: true }),
   (_, res) => res.redirect("/admin/dashboard"));
 app.get("/auth/failure", (_, res) => res.status(401).send("❌ OAuth Failed"));
+
 // ─────────────────────────────
 // ✅ Naver Whitelist Tier System
 // ─────────────────────────────
@@ -145,50 +184,6 @@ const tierWeights = Object.entries(whitelistData.tiers || {}).map(([k, v]) => ({
   weight: v.weight || 1,
   domains: v.domains || [],
 }));
-
-function filterByWhitelist(items = []) {
-  const scored = [];
-  for (const i of items) {
-    const link = i.originallink || i.link || "";
-    let maxW = 0;
-    for (const t of tierWeights)
-      if (t.domains.some((d) => link.includes(d)))
-        maxW = Math.max(maxW, t.weight);
-    if (maxW > 0) scored.push({ ...i, weight: maxW });
-  }
-  return scored.sort((a, b) => b.weight - a.weight);
-}
-
-async function callNaver(query, id, secret) {
-  if (!id || !secret) throw new Error("Naver 키 누락");
-  const base = "https://openapi.naver.com/v1/search";
-  const headers = {
-    "X-Naver-Client-Id": id,
-    "X-Naver-Client-Secret": secret,
-  };
-  const endpoints = {
-    news: `${base}/news.json?query=${encodeURIComponent(query)}&display=5`,
-    web: `${base}/webkr.json?query=${encodeURIComponent(query)}&display=5`,
-    ency: `${base}/encyc.json?query=${encodeURIComponent(query)}&display=3`,
-  };
-  const results = {};
-  for (const [key, url] of Object.entries(endpoints)) {
-    for (let i = 0; i < 2; i++) {
-      try {
-        const r = await axios.get(url, { headers, timeout: 6000 });
-        results[key] = filterByWhitelist(r.data.items || []);
-        break;
-      } catch (err) {
-        if (i === 1) {
-          await handleEngineFail("naver", query, err.message);
-          results[key] = [];
-        }
-      }
-    }
-  }
-  return results;
-}
-
 // ─────────────────────────────
 // ✅ External Engines + Fail-Grace Wrapper
 // ─────────────────────────────
@@ -205,24 +200,75 @@ async function safeFetch(name, fn, q) {
   }
 }
 
+// ─────────────────────────────
+// ✅ Naver API (지역 감지 포함)
+// ─────────────────────────────
+async function callNaver(query, clientId, clientSecret, req = null) {
+  try {
+    // 🔹 IP 또는 환경변수 기반 지역 감지
+    const ip = req?.headers["x-forwarded-for"] || req?.socket?.remoteAddress || "";
+    const region = REGION.toUpperCase();
+    const isKoreanUser = region === "KR" || ip.includes(".kr") || ip.startsWith("121.") || ip.startsWith("175.");
+    if (!isKoreanUser) {
+      if (DEBUG) console.log("🌐 Naver API skipped (non-KR region detected)");
+      return [];
+    }
+
+    const headers = {
+      "X-Naver-Client-Id": clientId,
+      "X-Naver-Client-Secret": clientSecret
+    };
+    const endpoints = [
+      "https://openapi.naver.com/v1/search/news.json",
+      "https://openapi.naver.com/v1/search/webkr.json",
+      "https://openapi.naver.com/v1/search/encyc.json"
+    ];
+
+    const all = [];
+    for (const url of endpoints) {
+      const { data } = await axios.get(url, {
+        headers,
+        params: { query, display: 3 }
+      });
+      const items = data?.items?.map(i => ({
+        title: i.title?.replace(/<[^>]+>/g, ""),
+        desc: i.description?.replace(/<[^>]+>/g, ""),
+        link: i.link,
+        origin: "naver"
+      })) || [];
+      all.push(...items);
+    }
+    return all;
+  } catch (e) {
+    if (DEBUG) console.warn("⚠️ Naver fetch fail:", e.message);
+    return [];
+  }
+}
+
+// ─────────────────────────────
+// ✅ External Engine Wrappers
+// ─────────────────────────────
 async function fetchCrossref(q) {
   const { data } = await axios.get(
     `https://api.crossref.org/works?query=${encodeURIComponent(q)}&rows=3`
   );
   return data?.message?.items?.map((i) => i.title?.[0]) || [];
 }
+
 async function fetchOpenAlex(q) {
   const { data } = await axios.get(
     `https://api.openalex.org/works?search=${encodeURIComponent(q)}&per-page=3`
   );
   return data?.results?.map((i) => i.display_name) || [];
 }
+
 async function fetchWikidata(q) {
   const { data } = await axios.get(
     `https://www.wikidata.org/w/api.php?action=wbsearchentities&language=ko&format=json&search=${encodeURIComponent(q)}`
   );
   return data?.search?.map((i) => i.label) || [];
 }
+
 async function fetchGDELT(q) {
   const { data } = await axios.get(
     `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&format=json&maxrecords=3`
@@ -232,6 +278,7 @@ async function fetchGDELT(q) {
     date: i.seendate,
   })) || [];
 }
+
 async function fetchGitHub(q) {
   const { data } = await axios.get(
     `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=3`,
@@ -244,28 +291,10 @@ async function fetchGitHub(q) {
     updated: i.updated_at,
   })) || [];
 }
-async function fetchKLaw(k, q) {
-  const { data } = await axios.get(
-    `https://www.law.go.kr/DRF/lawSearch.do?OC=${k}&target=law&type=XML&query=${encodeURIComponent(q)}`,
-    { responseType: "text" }
-  );
-  return parseXMLtoJSON(data);
-}
 
 // ─────────────────────────────
-// ✅ 시의성 (Rₜ, GDELT 기반) + 유효성 (Vᵣ, GitHub 기반)
+// ✅ 유효성 (Vᵣ) 계산식 — GitHub 기반
 // ─────────────────────────────
-function calcRecencyScore(gdeltItems = []) {
-  if (!gdeltItems.length) return 0.5;
-  const now = new Date();
-  const scores = gdeltItems.map((a) => {
-    const diffDays = (now - new Date(a.date)) / (1000 * 60 * 60 * 24);
-    return expDecay(diffDays);
-  });
-  const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
-  return Math.min(1, Math.max(0, avg));
-}
-
 function calcValidityScore(gitItems = []) {
   if (!gitItems.length) return 0.5;
   const norm = gitItems.map((r) => {
@@ -273,18 +302,18 @@ function calcValidityScore(gitItems = []) {
     const forks = Math.min(r.forks || 0, 1000) / 1000;
     const freshness =
       1 - Math.min((new Date() - new Date(r.updated)) / (1000 * 60 * 60 * 24 * 365), 1);
-    return 0.5 * stars + 0.3 * forks + 0.2 * freshness;
+    return 0.6 * stars + 0.3 * forks + 0.1 * freshness;
   });
   return norm.reduce((a, b) => a + b, 0) / norm.length;
 }
 
 // ─────────────────────────────
-// ✅ Gemini 안정화 요청기 (v1 + Soft Retry + Timeout)
+// ✅ Gemini 안정화 요청기 (Flash / Pro / Lite)
 // ─────────────────────────────
 async function fetchGemini(url, body) {
   for (let i = 0; i < 2; i++) {
     try {
-      const res = await axios.post(url, body, { timeout: 20000 });
+      const res = await axios.post(url, body, { timeout: 40000 });
       const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
       if (text) return text;
     } catch (err) {
@@ -294,26 +323,61 @@ async function fetchGemini(url, body) {
   return "";
 }
 // ─────────────────────────────
-// ✅ Weight + History Update
+// ✅ Weight + History Update (롤오버 기반 보정 샘플)
 // ─────────────────────────────
 async function updateWeight(engine, truth, time) {
   try {
+    const windowSize = ENGINE_CORRECTION_WINDOW;
+
+    // 1) 엔진별 샘플 저장 (Supabase)
+    await supabase.from("engine_correction_samples").insert([
+      {
+        engine_name: engine,
+        truthscore: truth,
+        response_ms: time,
+        created_at: new Date(),
+      },
+    ]);
+
+    // 2) 최근 N회(windowSize) 샘플 조회
+    const { data: samples } = await supabase
+      .from("engine_correction_samples")
+      .select("truthscore,response_ms")
+      .eq("engine_name", engine)
+      .order("created_at", { ascending: false })
+      .limit(windowSize);
+
+    const rows = samples || [];
+    const sampleCount = rows.length;
+
+    const avgTruth =
+      sampleCount > 0
+        ? rows.reduce((sum, r) => sum + (r.truthscore ?? 0), 0) / sampleCount
+        : truth;
+
+    const avgResp =
+      sampleCount > 0
+        ? rows.reduce((sum, r) => sum + (r.response_ms ?? 0), 0) / sampleCount
+        : time;
+
+    // 3) 기존 total_runs 조회
     const { data: prev } = await supabase
       .from("engine_stats")
-      .select("*")
+      .select("total_runs")
       .eq("engine_name", engine)
       .single();
-    const λ = 0.8;
-    const prevTruth = prev?.avg_truth || 0.7;
-    const prevResp = prev?.avg_response || 1000;
-    const newTruth = prevTruth * λ + truth * (1 - λ);
-    const newResp = prevResp * λ + time * (1 - λ);
+
+    const totalRuns = (prev?.total_runs || 0) + 1;
+
+    // 4) 롤오버 기반 평균으로 engine_stats 갱신
     await supabase.from("engine_stats").upsert([
       {
         engine_name: engine,
-        avg_truth: newTruth,
-        avg_response: newResp,
-        total_runs: (prev?.total_runs || 0) + 1,
+        avg_truth: avgTruth,                 // 롤오버 Truth 평균
+        avg_response: avgResp,               // 롤오버 응답시간 평균(ms)
+        rolling_window_size: windowSize,     // 사용 중인 롤오버 윈도우 크기
+        sample_count: sampleCount,           // 현재 포함 샘플 수
+        total_runs: totalRuns,
         updated_at: new Date(),
       },
     ]);
@@ -323,11 +387,68 @@ async function updateWeight(engine, truth, time) {
 }
 
 // ─────────────────────────────
-// ✅ Verify Core (QV, FV, DV, CV, LV)
+// ✅ 엔진 보정계수 조회 + 가중치 계산
+// ─────────────────────────────
+async function fetchEngineStatsMap(engines = []) {
+  const unique = [...new Set(engines)];
+  if (!unique.length) return {};
+  const { data, error } = await supabase
+    .from("engine_stats")
+    .select("engine_name, avg_truth, avg_response, rolling_window_size, sample_count")
+    .in("engine_name", unique);
+  if (error && DEBUG) console.warn("⚠️ fetchEngineStatsMap fail:", error.message);
+  const map = {};
+  (data || []).forEach((row) => {
+    map[row.engine_name] = row;
+  });
+  return map;
+}
+
+// 서버가 관리하는 보정값 c_e 를 반영한 엔진 전역 보정계수 C (0.9~1.1)
+function computeEngineCorrectionFactor(engines = [], statsMap = {}) {
+  if (!engines.length) return 1.0;
+  const factors = [];
+
+  for (const name of engines) {
+    const base = ENGINE_BASE_WEIGHTS[name] ?? 1.0;
+    const st = statsMap[name];
+    let truthAdj = 1.0;
+    let speedAdj = 1.0;
+
+    // avg_truth 기준: 0.7일 때 1.0, 위/아래로 0.9~1.1 사이에서 조정
+    if (st && typeof st.avg_truth === "number") {
+      const t = st.avg_truth || 0.7;
+      truthAdj = Math.max(0.9, Math.min(1.1, t / 0.7));
+    }
+
+    // avg_response 기준: 느리면 약간 패널티, 빠르면 약간 보너스 (0.9~1.1)
+    if (st && typeof st.avg_response === "number") {
+      const resp = st.avg_response || 1000;
+      const baseResp = 800; // 0.8초 기준
+      const ratio = baseResp / (baseResp + resp); // 0~1
+      let s = 0.9 + 0.2 * ratio; // 0.9~1.1 근처
+      if (s > 1.1) s = 1.1;
+      if (s < 0.9) s = 0.9;
+      speedAdj = s;
+    }
+
+    const corr = base * truthAdj * speedAdj;
+    factors.push(corr);
+  }
+
+  if (!factors.length) return 1.0;
+  const avg = factors.reduce((s, v) => s + v, 0) / factors.length;
+  return Math.max(0.9, Math.min(1.1, avg)); // 글로벌 보정계수 C
+}
+
+// ─────────────────────────────
+// ✅ Verify Core (QV / FV / DV / CV / LV)
 // ─────────────────────────────
 app.post("/api/verify", async (req, res) => {
   const { query, mode, gemini_key, naver_id, naver_secret, klaw_key, user_answer } = req.body;
-  if (!query || !gemini_key)
+  const safeMode = (mode || "").trim().toLowerCase();
+
+  if (!query || (safeMode !== "lv" && !gemini_key))
     return res.status(400).json({ success: false, message: "❌ query 또는 Gemini 키 누락" });
 
   const engines = [];
@@ -335,9 +456,11 @@ app.post("/api/verify", async (req, res) => {
   const start = Date.now();
   let partial_scores = {};
   let truthscore = 0.0;
+  let engineStatsMap = {};
+  let engineFactor = 1.0;
 
   try {
-    switch (mode) {
+    switch (safeMode) {
       // ── 개발검증(DV) / 코드검증(CV) ──
       case "dv":
       case "cv":
@@ -346,14 +469,14 @@ app.post("/api/verify", async (req, res) => {
           safeFetch("gdelt", fetchGDELT, query),
           safeFetch("github", fetchGitHub, query),
         ]);
-        partial_scores.recency = calcRecencyScore(external.gdelt);
         partial_scores.validity = calcValidityScore(external.github);
+        partial_scores.recency = calcRecencyScore(external.gdelt);
         break;
 
       // ── 법령검증(LV) ──
       case "lv":
         engines.push("klaw");
-        external.klaw = await fetchKLaw(klaw_key, query);
+        external.klaw = await fetchKLawAll(klaw_key, query);
         break;
 
       // ── 기본검증(QV/FV) ──
@@ -365,35 +488,57 @@ app.post("/api/verify", async (req, res) => {
           safeFetch("wikidata", fetchWikidata, query),
           safeFetch("gdelt", fetchGDELT, query),
         ]);
+        // QV/FV도 시의성은 GDELT 기반으로 산출
+        partial_scores.recency = calcRecencyScore(external.gdelt);
         if (naver_id && naver_secret) {
-          external.naver = await callNaver(query, naver_id, naver_secret);
+          external.naver = await callNaver(query, naver_id, naver_secret, req);
           engines.push("naver");
         }
     }
 
-    // ── Gemini 요청 단계 (Flash → Pro) ──
-    const flashPrompt = `[${mode.toUpperCase()}] ${query}\n참조자료: ${JSON.stringify(external).slice(0, 800)}`;
-    const flash = await fetchGemini(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
-      { contents: [{ parts: [{ text: flashPrompt }] }] }
-    );
+    // ── 엔진 보정계수 조회 (서버 통계 기반) ──
+    if (engines.length > 0) {
+      engineStatsMap = await fetchEngineStatsMap(engines);
+      engineFactor = computeEngineCorrectionFactor(engines, engineStatsMap); // 0.9~1.1
+      partial_scores.engine_factor = engineFactor;
+    }
 
-    const verifyPrompt = `검증모드:${mode}\n${user_answer || query}\n${flash}`;
-    const verify = await fetchGemini(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=${gemini_key}`,
-      { contents: [{ parts: [{ text: verifyPrompt }] }] }
-    );
+    // ── Gemini 요청 단계 (Lite → Flash → Pro)
+    let flash = "";
+    let verify = "";
+    if (safeMode !== "lv") {
+      const flashPrompt = `[${mode.toUpperCase()}] ${query}\n참조자료: ${JSON.stringify(external).slice(0, 800)}`;
+      flash = await fetchGemini(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
+        { contents: [{ parts: [{ text: flashPrompt }] }] }
+      );
 
-    // ── TruthScore 계산 (시의성·유효성 독립판정식 반영) ──
+      const verifyPrompt = `검증모드:${mode}\n${user_answer || query}\n${flash}`;
+      verify = await fetchGemini(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${gemini_key}`,
+        { contents: [{ parts: [{ text: verifyPrompt }] }] }
+      );
+    }
+
+    // ─────────────────────────────
+    // ✅ TruthScore 계산 (DV/CV/LV 독립 판정식 유지 + 엔진 보정 반영)
+    // ─────────────────────────────
     const elapsed = Date.now() - start;
-    const Rₜ = partial_scores.recency ?? 0.7; // GDELT
-    const Vᵣ = partial_scores.validity ?? 0.7; // GitHub
+    const Rₜ = partial_scores.recency ?? 0.7;
+    const Vᵣ = partial_scores.validity ?? 0.7;
     let hybrid = 0.7;
     if (mode === "dv" || mode === "cv") hybrid = 0.5 * Rₜ + 0.5 * Vᵣ;
     else if (mode === "lv") hybrid = 0.65;
-    truthscore = Math.min(0.97, 0.6 + 0.4 * hybrid);
+    else hybrid = Rₜ; // QV/FV는 시의성 기반 하이브리드
 
-    // ── 로그 및 DB 반영 ──
+    const C = partial_scores.engine_factor ?? engineFactor ?? 1.0; // 엔진 전역 보정계수
+    const hybridCorrected = Math.max(0, Math.min(1, hybrid * C));
+
+    truthscore = Math.min(0.97, 0.6 + 0.4 * hybridCorrected);
+
+    // ─────────────────────────────
+    // ✅ 로그 및 DB 반영
+    // ─────────────────────────────
     for (const e of engines) await updateWeight(e, truthscore, elapsed);
     await supabase.from("verify_logs").insert([
       {
@@ -407,22 +552,80 @@ app.post("/api/verify", async (req, res) => {
       },
     ]);
 
-    res.json({
-      success: true,
-      mode,
-      truthscore: truthscore.toFixed(3),
-      elapsed,
-      engines,
-      partial_scores,
-      flash_summary: flash.slice(0, 250),
-      verify_summary: verify.slice(0, 350),
-      timestamp: new Date().toISOString(),
-    });
+    // ─────────────────────────────
+    // ✅ 결과 반환
+    // ─────────────────────────────
+    if (safeMode === "lv") {
+      res.json({
+        success: true,
+        mode: safeMode,
+        truthscore: truthscore.toFixed(3),
+        elapsed,
+        engines,
+        partial_scores,
+        klaw_result: external.klaw,
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      res.json({
+        success: true,
+        mode: safeMode,
+        truthscore: truthscore.toFixed(3),
+        elapsed,
+        engines,
+        partial_scores,
+        flash_summary: flash.slice(0, 250),
+        verify_summary: verify.slice(0, 350),
+        timestamp: new Date().toISOString(),
+      });
+    }
   } catch (e) {
     console.error("❌ Verify Error:", e.message);
     await supabase.from("verify_logs").insert([
       { query, mode, error: e.message, created_at: new Date() },
     ]);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+// ─────────────────────────────
+// ✅ Translation API (DeepL + Libre fallback, production use)
+// ─────────────────────────────
+app.post("/api/translation", async (req, res) => {
+  try {
+    const { text, targetLang, deepl_key } = req.body;
+    if (!text) return res.status(400).json({ success: false, message: "❌ text 누락" });
+
+    // 자동 타겟 활성화: targetLang 미지정 시 null로 넘겨서 ko→EN / en→KO 자동
+    const result = await translateText(text, (targetLang ?? null), deepl_key);
+
+    res.json({
+      success: true,
+      original: text,
+      translated: result.text,
+      targetLang: result.target || (targetLang?.toUpperCase() || "EN"),
+      engine: result.engine,
+      timestamp: new Date().toISOString()
+    });
+  } catch (e) {
+    console.error("❌ /api/translation Error:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+// ✅ 번역 테스트 라우트 (간단형, 백호환용)
+app.post("/api/translate", async (req, res) => {
+  try {
+    const { text, targetLang, deepl_key } = req.body;
+    if (!text) return res.status(400).json({ success: false, message: "❌ text 누락" });
+
+    const result = await translateText(text, (targetLang ?? null), deepl_key);
+    res.json({
+      success: true,
+      translated: result.text,
+      engine: result.engine,
+      targetLang: result.target || (targetLang?.toUpperCase() || "EN")
+    });
+  } catch (e) {
+    console.error("❌ Translate Error:", e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -442,9 +645,19 @@ app.get("/api/test-db", async (_, res) => {
 });
 
 app.get("/health", (_, res) =>
-  res.status(200).json({ status: "ok", version: "v15.0.4", timestamp: new Date().toISOString() })
+  res.status(200).json({
+    status: "ok",
+    version: "v18.2.0",
+    uptime: process.uptime().toFixed(2) + "s",
+    region: REGION,
+    timestamp: new Date().toISOString(),
+  })
 );
 
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v15.0.4 running on port ${PORT}`);
+  console.log(`🚀 Cross-Verified AI Proxy v18.2.0 running on port ${PORT}`);
+  console.log("🔹 LV 모듈 외부화 (/src/modules/klaw_module.js)");
+  console.log("🔹 Translation 모듈 활성화 (DeepL + LibreFallback)");
+  console.log("🔹 Naver 지역 감지 활성화 완료");
+  console.log("🔹 Supabase + Gemini 2.5 (Flash / Pro / Lite) 정상 동작");
 });
