@@ -388,13 +388,11 @@ async function fetchGitHub(q, token) {
     "User-Agent": "CrossVerifiedAI",
   };
 
-  // ✅ 사용자가 설정에서 넣은 github_token 우선 사용
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  } else if (process.env.GITHUB_TOKEN) {
-    // (옵션) 서버 환경변수에 백업 토큰 있으면 사용
-    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  // ✅ 무조건 "사용자가 넣은 github_token"만 사용
+  if (!token) {
+    throw new Error("GITHUB_TOKEN_REQUIRED");
   }
+  headers.Authorization = `Bearer ${token}`;
 
   const { data } = await axios.get(
     `https://api.github.com/search/repositories?q=${encodeURIComponent(
@@ -412,6 +410,7 @@ async function fetchGitHub(q, token) {
     })) || []
   );
 }
+
 
 // ─────────────────────────────
 // ✅ 유효성 (Vᵣ) 계산식 — GitHub 기반
@@ -630,11 +629,23 @@ app.post("/api/verify", async (req, res) => {
   let engineFactor = 1.0;
 
   try {
-    switch (safeMode) {
+        switch (safeMode) {
       // ── 개발검증(DV) / 코드검증(CV)
-      //   👉 GDELT 제거, GitHub만 사용 + github_token 지원
+      //   👉 GDELT 제거, GitHub만 사용 + github_token 필수
       case "dv":
       case "cv":
+        // 🔹 DV/CV에서는 github_token이 반드시 필요
+        if (!github_token) {
+          return res
+            .status(400)
+            .json(
+              buildError(
+                "VALIDATION_ERROR",
+                "DV/CV 모드에서는 github_token이 필요합니다."
+              )
+            );
+        }
+
         engines.push("github");
 
         external.github = await safeFetch(
@@ -646,6 +657,7 @@ app.post("/api/verify", async (req, res) => {
         // GitHub 리포 기반 유효성 평가
         partial_scores.validity = calcValidityScore(external.github);
         break;
+
 
       // ── 법령검증(LV) ──
       //   TruthScore 없이 K-Law 결과만 제공
@@ -797,17 +809,23 @@ app.post("/api/verify", async (req, res) => {
     // ─────────────────────────────
     // ✅ 결과 반환 (ⅩⅤ 규약 형태로 래핑)
     // ─────────────────────────────
-    return res.json(
-      buildSuccess({
-        mode: safeMode,
-        truthscore: truthscore.toFixed(3),
-        elapsed,
-        engines,
-        partial_scores,
-        flash_summary: flash.slice(0, 250),
-        verify_summary: verify.slice(0, 350),
-      })
-    );
+        const payload = {
+      mode: safeMode,
+      truthscore: truthscore.toFixed(3),
+      elapsed,
+      engines,
+      partial_scores,
+      flash_summary: flash.slice(0, 250),
+      verify_summary: verify.slice(0, 350),
+    };
+
+    // 🔹 DV/CV 모드에서는 GitHub 검색 결과도 같이 내려줌
+    if (safeMode === "dv" || safeMode === "cv") {
+      payload.github_repos = external.github ?? [];
+    }
+
+    return res.json(buildSuccess(payload));
+
   } catch (e) {
     console.error("❌ Verify Error:", e.message);
     await supabase.from("verify_logs").insert([
