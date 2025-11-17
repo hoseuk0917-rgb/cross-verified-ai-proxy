@@ -1014,6 +1014,21 @@ app.get("/health", (_, res) =>
   })
 );
 
+// ─────────────────────────────
+// ✅ Root Endpoint for Render Health Check
+//   - HEAD /, GET / 둘 다 200 반환
+// ─────────────────────────────
+app.get("/", (_, res) => {
+  res
+    .status(200)
+    .send("OK - Cross-Verified AI Proxy v18.3.0 (root health check)");
+});
+
+app.head("/", (_, res) => {
+  res.status(200).end();
+});
+
+
 app.listen(PORT, () => {
   console.log(`🚀 Cross-Verified AI Proxy v18.3.0 running on port ${PORT}`);
   console.log("🔹 LV 모듈 외부화 (/src/modules/klaw_module.js)");
