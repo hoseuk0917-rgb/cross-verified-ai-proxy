@@ -1,10 +1,11 @@
 // src/modules/translateText.js
 // =======================================================
 // Cross-Verified AI — Translation Module
-// DeepL (우선) + LibreTranslate Fallback
+// DeepL (우선) + Gemini 2.5 Flash-Lite Fallback
 // - text: 원문 텍스트
-// - targetLang: "EN" / "KO" / null (null이면 자동결정)
+// - targetLang: "EN" / "KO" / null (null이면 자동 결정)
 // - deepl_key: 요청 본문에서 넘어온 DeepL 키 (선택)
+// - gemini_key: 선택적으로 넘길 Gemini 키 (없으면 환경변수 사용)
 // =======================================================
 
 import axios from "axios";
@@ -22,7 +23,6 @@ function detectLangSimple(text = "") {
   if (hasKorean && !hasLatin) return "KO";
   if (!hasKorean && hasLatin) return "EN";
   if (hasKorean && hasLatin) {
-    // 한영 섞여 있으면, 길이에 따라 결정
     const koCount = (text.match(/[가-힣]/g) || []).length;
     const enCount = (text.match(/[A-Za-z]/g) || []).length;
     return koCount >= enCount ? "KO" : "EN";
@@ -38,10 +38,10 @@ async function translateWithDeepL(text, targetLang, deeplKey) {
   const key = deeplKey || process.env.DEEPL_API_KEY;
   if (!key) throw new Error("DEEPL_KEY_MISSING");
 
-  const apiUrl = process.env.DEEPL_API_URL || "https://api-free.deepl.com/v2/translate";
+  const apiUrl =
+    process.env.DEEPL_API_URL || "https://api-free.deepl.com/v2/translate";
 
-  // DeepL은 한국어를 KO 로, 영어를 EN 으로 사용
-  const target = (targetLang || "EN").toUpperCase();
+  const target = (targetLang || "EN").toUpperCase(); // DeepL: EN / KO
 
   const params = new URLSearchParams();
   params.append("auth_key", key);
@@ -60,43 +60,53 @@ async function translateWithDeepL(text, targetLang, deeplKey) {
 }
 
 /**
- * LibreTranslate Fallback
- * - 무료 / 공개 인스턴스 (기본값: libretranslate.de)
- * - 환경변수 LIBRE_TRANSLATE_URL 있으면 그쪽을 우선 사용
+ * Gemini 2.5 Flash-Lite를 사용한 번역 (DeepL 실패 시 폴백)
+ * - geminiKey: 요청에서 넘어온 키 우선, 없으면 환경변수 사용
+ *   (예: process.env.GEMINI_TRANSLATION_KEY)
  */
-async function translateWithLibre(text, targetLang) {
-  const baseUrl =
-    process.env.LIBRE_TRANSLATE_URL || "https://libretranslate.de/translate";
+async function translateWithGeminiFlashLite(text, targetLang, geminiKey) {
+  const key = geminiKey || process.env.GEMINI_TRANSLATION_KEY;
+  if (!key) throw new Error("GEMINI_TRANSLATION_KEY_MISSING");
 
-  // LibreTranslate 는 언어코드가 소문자: "en", "ko"
   const target = (targetLang || "EN").toUpperCase();
-  const targetLower = target.toLowerCase();
 
-  // src는 자동 감지 대신 간단 로직 사용
-  const srcLang = detectLangSimple(text).toLowerCase();
+  // 원문 언어 추정 (프롬프트에 힌트로만 사용)
+  const srcLang = detectLangSimple(text);
+
+  const prompt = [
+    "역할: 전문 번역기.",
+    "- 설명, 해석, 요약을 추가하지 말 것.",
+    "- 코드/수식은 가능한 한 그대로 유지.",
+    "- 문체는 원문 톤을 유지.",
+    "",
+    `[원문 언어: ${srcLang}, 목표 언어: ${target}]`,
+    "아래 텍스트를 자연스럽게 번역해줘:",
+    "----",
+    text,
+    "----",
+  ].join("\n");
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${key}`;
 
   const res = await axios.post(
-    baseUrl,
+    url,
     {
-      q: text,
-      source: srcLang === targetLower ? "auto" : srcLang,
-      target: targetLower,
-      format: "text",
+      contents: [
+        {
+          parts: [{ text: prompt }],
+        },
+      ],
     },
-    {
-      headers: {
-        "Content-Type": "application/json",
-      },
-      timeout: 15000,
-    }
+    { timeout: 40000 }
   );
 
-  const translated = res?.data?.translatedText;
-  if (!translated) throw new Error("LIBRE_EMPTY_RESULT");
+  const translated =
+    res?.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+  if (!translated) throw new Error("GEMINI_TRANSLATION_EMPTY_RESULT");
 
   return {
     text: translated,
-    engine: "libre",
+    engine: "gemini-flash-lite",
     target,
   };
 }
@@ -104,10 +114,15 @@ async function translateWithLibre(text, targetLang) {
 /**
  * 통합 번역 함수
  * - 1순위: DeepL (요청에서 넘긴 deepl_key 또는 환경변수)
- * - 2순위: LibreTranslate (공개 인스턴스 또는 환경변수)
+ * - 2순위: Gemini 2.5 Flash-Lite (요청에서 넘긴 gemini_key 또는 환경변수)
  * - 전부 실패시: 원문 그대로 반환 (engine: "none")
  */
-export async function translateText(text, targetLang = null, deepl_key = null) {
+export async function translateText(
+  text,
+  targetLang = null,
+  deepl_key = null,
+  gemini_key = null
+) {
   if (!text || !text.trim()) {
     return {
       text: "",
@@ -135,19 +150,25 @@ export async function translateText(text, targetLang = null, deepl_key = null) {
     );
     return deeplResult;
   } catch (e) {
-    // 키 없음, 한도초과 등 어떤 이유든 Fallback 으로 내려보냄
     if (process.env.DEBUG_MODE === "true") {
-      console.warn("⚠️ DeepL 실패, Libre로 Fallback:", e.message);
+      console.warn("⚠️ DeepL 실패, Gemini Flash-Lite로 Fallback:", e.message);
     }
   }
 
-  // 2️⃣ LibreTranslate 시도
+  // 2️⃣ Gemini Flash-Lite 시도
   try {
-    const libreResult = await translateWithLibre(text, normalizedTarget);
-    return libreResult;
+    const geminiResult = await translateWithGeminiFlashLite(
+      text,
+      normalizedTarget,
+      gemini_key
+    );
+    return geminiResult;
   } catch (e) {
     if (process.env.DEBUG_MODE === "true") {
-      console.warn("⚠️ LibreTranslate 실패, 원문 반환:", e.message);
+      console.warn(
+        "⚠️ Gemini Flash-Lite 번역 실패, 원문 그대로 반환:",
+        e.message
+      );
     }
   }
 
