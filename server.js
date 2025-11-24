@@ -1035,10 +1035,52 @@ app.post("/api/verify", async (req, res) => {
       // ── 법령검증(LV) ──
       //   TruthScore 없이 K-Law 결과만 제공
       case "lv": {
-        engines.push("klaw");
-        external.klaw = await fetchKLawAll(klaw_key, query);
-        break;
+  engines.push("klaw");
+  external.klaw = await fetchKLawAll(klaw_key, query);
+
+  // 🔹 선택적 Flash-Lite 요약 (gemini_key가 있을 때만)
+  let lvSummary = null;
+
+  if (gemini_key) {
+    const prompt = `
+너는 대한민국 항공·교통 법령 및 판례를 요약해주는 엔진이다.
+
+[사용자 질의]
+${query}
+
+[아래는 K-Law API에서 가져온 JSON 응답이다.]
+이 JSON 안에 포함된 관련 법령·판례를 확인하고, 질의에 답하는 데 중요한 내용만 뽑아서 요약해라.
+
+요약 지침:
+- 한국어로 3~7개의 bullet로 정리
+- 각 bullet은
+  - 관련 법령/조문 제목 또는 사건명
+  - 핵심 내용 (의무, 금지, 허용, 절차 등)
+  - UAM 운항/운영과의 연관성을 짧게 포함
+- 불필요한 부연 설명, 서론/결론 문장은 넣지 말 것.
+
+[K-Law JSON 응답 요약본]
+${JSON.stringify(external.klaw).slice(0, 6000)}
+    `.trim();
+
+    try {
+      lvSummary = await fetchGemini(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${gemini_key}`,
+        { contents: [{ parts: [{ text: prompt }] }] }
+      );
+    } catch (e) {
+      if (DEBUG) {
+        console.warn("⚠️ LV Flash-Lite summary fail:", e.message);
       }
+      lvSummary = null;
+    }
+  }
+
+  // safeMode === "lv" 블록에서 같이 내려주기 위해
+  partial_scores.lv_summary = lvSummary || null;
+  break;
+}
+
 
                  // ── 기본검증(QV/FV) ──
       default: {
@@ -1115,32 +1157,35 @@ app.post("/api/verify", async (req, res) => {
     // ─────────────────────────────
     // ② LV 모드는 TruthScore/가중치 계산 없이 바로 반환
     // ─────────────────────────────
-    if (safeMode === "lv") {
-      const elapsed = Date.now() - start;
+   if (safeMode === "lv") {
+  const elapsed = Date.now() - start;
 
-      // LV 모드는 엔진 보정/TruthScore 없이 법령 정보만 제공 (Ⅸ 명세)
-            await supabase.from("verification_logs").insert([
-        {
-          query,
-          mode: safeMode,
-          truthscore: null,
-          elapsed,
-          partial_scores: JSON.stringify({}),
-          engines: JSON.stringify(engines),
-          gemini_model: null,   // ✅ LV는 Gemini TruthScore 안씀
-          created_at: new Date(),
-        },
-      ]);
+  // LV 모드는 엔진 보정/TruthScore 없이 법령 정보 + 선택적 요약만 제공 (Ⅸ 명세)
+  await supabase.from("verification_logs").insert([
+    {
+      query,
+      mode: safeMode,
+      truthscore: null,
+      elapsed,
+      // 🔹 여기서 lv_summary 들어간 partial_scores를 그대로 저장
+      partial_scores: JSON.stringify(partial_scores || {}),
+      engines: JSON.stringify(engines),
+      gemini_model: null,   // ✅ LV는 TruthScore 계산용 Gemini 모델 없음
+      created_at: new Date(),
+    },
+  ]);
 
-      return res.json(
-        buildSuccess({
-          mode: safeMode,
-          elapsed,
-          engines,
-          klaw_result: external.klaw,
-        })
-      );
-    }
+  return res.json(
+    buildSuccess({
+      mode: safeMode,
+      elapsed,
+      engines,
+      klaw_result: external.klaw,
+      // 🔹 Flash-Lite 요약본을 함께 내려줌 (없으면 null)
+      lv_summary: partial_scores.lv_summary || null,
+    })
+  );
+}
 
     // ─────────────────────────────
     // ③ 엔진 보정계수 조회 (서버 통계 기반)
