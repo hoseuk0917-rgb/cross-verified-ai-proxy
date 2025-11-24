@@ -725,6 +725,99 @@ const avgResp =
   }
 }
 
+// ─────────────────────────────
+// ✅ QV/FV용 검색어 전처리기
+//    - 간단 한국어 정규화 + Gemini Flash 기반 핵심어 추출
+//    - 결과: 한국어/영어 코어 쿼리 반환
+// ─────────────────────────────
+function normalizeKoreanQuestion(raw) {
+  if (!raw) return "";
+  let s = String(raw);
+
+  // 1) 물음표 앞부분만 사용 (질문 꼬리 제거)
+  const qIdx = s.indexOf("?");
+  if (qIdx !== -1) s = s.slice(0, qIdx);
+
+  // 2) 자주 쓰는 질문형 꼬리 제거
+  s = s.replace(
+    /(은|는|이|가)?\s*(무엇인가요|무엇인가|뭐야|뭐냐|어디야|어디인가요|어디지|어느 정도야|얼마야|얼마인가요|얼마 정도야)\s*$/u,
+    ""
+  );
+
+  // 3) 공백 정리
+  s = s.replace(/\s+/g, " ").trim();
+  return s;
+}
+
+async function buildEngineQueriesForQVFV(query, gemini_key) {
+  // 기본값: 한국어는 간단 정규화, 영어는 아직 비어 있음
+  const baseKo = normalizeKoreanQuestion(query);
+  let qKo = baseKo;
+  let qEn = "";
+
+  // 혹시라도 gemini_key가 없으면 그냥 원래 query 사용
+  if (!gemini_key) {
+    return {
+      q_ko: qKo || query,
+      q_en: query,
+    };
+  }
+
+  try {
+    const prompt = `
+아래 사용자의 질의를 보고, 검색 엔진용 핵심 검색어를 뽑으세요.
+
+요구사항:
+- korean: 네이버/한국어 검색엔진용 핵심어 (2~6단어, 조사/어미/존댓말 제거)
+- english: Crossref/OpenAlex/Wikidata/GDELT용 영어 키워드 (2~8단어의 간단한 구문)
+- 질의가 영어라면 korean은 비워두거나 원 문장을 그대로 둘 수 있습니다.
+- 질의가 한국어라면 english는 자연스러운 영어 표현으로 옮기세요.
+
+사용자 질의:
+${query}
+
+반드시 아래 JSON 형식 **그대로**만 출력하세요. 설명 텍스트는 절대 쓰지 마세요.
+
+{"korean":"서울 인구","english":"population of Seoul"}
+`;
+
+    const text = await fetchGemini(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
+      { contents: [{ parts: [{ text: prompt }] }] }
+    );
+
+    const trimmed = (text || "").trim();
+    const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+    const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch {
+      parsed = null;
+    }
+
+    if (parsed && typeof parsed === "object") {
+      if (typeof parsed.korean === "string" && parsed.korean.trim()) {
+        qKo = parsed.korean.trim();
+      }
+      if (typeof parsed.english === "string" && parsed.english.trim()) {
+        qEn = parsed.english.trim();
+      }
+    }
+  } catch (e) {
+    if (DEBUG) {
+      console.warn("⚠️ buildEngineQueriesForQVFV fail:", e.message);
+    }
+  }
+
+  // 최종 fallback: 비어 있으면 원래 query 사용
+  return {
+    q_ko: qKo || query,
+    q_en: qEn || query,
+  };
+}
+
 
 // ─────────────────────────────
 // ✅ 엔진 보정계수 조회 + 가중치 계산
@@ -947,11 +1040,27 @@ app.post("/api/verify", async (req, res) => {
         break;
       }
 
-           // ── 기본검증(QV/FV) ──
+                 // ── 기본검증(QV/FV) ──
       default: {
         // QV/FV 모드에서는 4개 검증엔진 + Naver를 항상 동시 호출
         engines.push("crossref", "openalex", "wikidata", "gdelt", "naver");
 
+        // 1단계: Gemini Flash로 엔진 공통 핵심 검색어 생성
+        const { q_ko, q_en } = await buildEngineQueriesForQVFV(
+          query,
+          gemini_key
+        );
+
+        // 디버깅 / UI용: 어떤 쿼리를 썼는지 기록
+        partial_scores.engine_queries = {
+          crossref: q_en,
+          openalex: q_en,
+          wikidata: q_en,
+          gdelt: q_en,
+          naver: q_ko,
+        };
+
+        // 2단계: 엔진별로 적합한 쿼리 사용
         const [
           crossrefRes,
           openalexRes,
@@ -959,14 +1068,16 @@ app.post("/api/verify", async (req, res) => {
           gdeltRes,
           naverRes,
         ] = await Promise.all([
-          safeFetch("crossref", fetchCrossref, query),
-          safeFetch("openalex", fetchOpenAlex, query),
-          safeFetch("wikidata", fetchWikidata, query),
-          safeFetch("gdelt", fetchGDELT, query),
+          // 영문 검색 위주 엔진
+          safeFetch("crossref", fetchCrossref, q_en),
+          safeFetch("openalex", fetchOpenAlex, q_en),
+          safeFetch("wikidata", fetchWikidata, q_en),
+          safeFetch("gdelt", fetchGDELT, q_en),
+          // 네이버는 한국어 쿼리 사용
           safeFetch(
             "naver",
             (q) => callNaver(q, naver_id, naver_secret),
-            query
+            q_ko
           ),
         ]);
 
@@ -988,8 +1099,7 @@ app.post("/api/verify", async (req, res) => {
             .filter((w) => Number.isFinite(w) && w > 0);
 
           if (weights.length > 0) {
-            // 티어 설정이 0.5~1.5 정도라면 그대로 평균 내고
-            // TruthScore에 들어갈 팩터는 과하지 않게 0.9~1.05로 클램핑
+            // 티어 설정 평균 → 0.9~1.05로 클램핑
             const avgTierWeight =
               weights.reduce((s, v) => s + v, 0) / weights.length;
 
@@ -1000,7 +1110,7 @@ app.post("/api/verify", async (req, res) => {
 
         break;
       }
-    }
+} // 🔹 switch (safeMode) 닫기
 
     // ─────────────────────────────
     // ② LV 모드는 TruthScore/가중치 계산 없이 바로 반환
@@ -1572,7 +1682,6 @@ app.get("/", (_, res) => {
 app.head("/", (_, res) => {
   res.status(200).end();
 });
-
 
 app.listen(PORT, () => {
   console.log(`🚀 Cross-Verified AI Proxy v18.3.0 running on port ${PORT}`);
