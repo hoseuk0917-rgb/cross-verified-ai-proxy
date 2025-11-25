@@ -341,12 +341,35 @@ async function safeFetch(name, fn, q, metrics) {
   }
 }
 
-async function safeFetchTimed(name, fn, q) {
+function ensureMetric(engineMetrics, name) {
+  if (!engineMetrics[name]) {
+    engineMetrics[name] = { calls: 0, ms_total: 0, ms_avg: null, ms_last: null };
+  }
+  return engineMetrics[name];
+}
+
+async function safeFetchTimed(name, fn, q, engineTimes, engineMetrics) {
   const start = Date.now();
   const result = await safeFetch(name, fn, q);
   const ms = Date.now() - start;
+
+  // ✅ 엔진별 총 소요시간 누적 (ms)
+  if (engineTimes && typeof engineTimes === "object") {
+    engineTimes[name] = (engineTimes[name] || 0) + ms;
+  }
+
+  // ✅ 어드민/디버그용 메트릭 누적 (calls, avg, total, last)
+  if (engineMetrics && typeof engineMetrics === "object") {
+    const m = ensureMetric(engineMetrics, name);
+    m.calls += 1;
+    m.ms_total += ms;
+    m.ms_last = ms;
+    m.ms_avg = Math.round((m.ms_total / m.calls) * 10) / 10; // 소수 1자리
+  }
+
   return { result, ms };
 }
+
 
 // ─────────────────────────────
 // ✅ Naver API (서버 직접 호출, 리전 제한 없음)
@@ -780,36 +803,21 @@ const avgResp =
 // ─────────────────────────────
 function normalizeKoreanQuestion(raw) {
   if (!raw) return "";
-  let s = String(raw);
-
-  // 1) 물음표 앞부분만 사용 (질문 꼬리 제거)
-  const qIdx = s.indexOf("?");
-  if (qIdx !== -1) s = s.slice(0, qIdx);
-
-  // 2) 자주 쓰는 질문형 꼬리 제거
-  s = s.replace(
-    /(은|는|이|가)?\s*(무엇인가요|무엇인가|뭐야|뭐냐|어디야|어디인가요|어디지|어느 정도야|얼마야|얼마인가요|얼마 정도야)\s*$/u,
-    ""
-  );
-
-  // 3) 공백 정리
-  s = s.replace(/\s+/g, " ").trim();
-  return s;
+  return String(raw).replace(/\s+/g, " ").trim();
 }
 
-// 🔹 Naver 검색용 AND 쿼리 빌더
-//    예) "2025 한국 인구" → "+2025 +한국 +인구"
+
 function buildNaverAndQuery(baseKo) {
   if (!baseKo) return "";
 
   const tokens = baseKo
     .split(/\s+/)
     .map((t) => t.trim())
-    .filter((t) => t.length > 0);
+    .filter((t) => t.length > 0)
+    .map((t) => t.replace(/^\++/, "")); // ✅ 앞의 + 제거
 
   if (!tokens.length) return baseKo;
 
-  // 한 글자(조사 등)는 그대로 두고, 나머지는 +키워드로 변환
   return tokens
     .map((t) => (t.length <= 1 ? t : `+${t}`))
     .join(" ");
@@ -1027,8 +1035,8 @@ app.post("/api/verify", async (req, res) => {
   let truthscore = 0.0;
   let engineStatsMap = {};
   let engineFactor = 1.0;
-  const engineTimes = {}; // ⭐ 엔진별 응답시간(ms) 기록용
- const engineMetrics = {}; // 🔹 엔진별 응답시간 기록용
+  const engineTimes = {};    // ⭐ 엔진별 총 소요시간(ms)
+const engineMetrics = {};  // ⭐ 엔진별 calls/ms_total/ms_avg/ms_last (어드민 표시용)
 
   try {
     // ─────────────────────────────
@@ -1072,24 +1080,20 @@ app.post("/api/verify", async (req, res) => {
 
       // 2단계: 생성된 쿼리들로 GitHub 검색 수행
       external.github = [];
-            external.github = [];
-      let githubMsTotal = 0;
 
       for (const ghq of ghQueries) {
-        const { result, ms } = await safeFetchTimed(
-          "github",
-          (q) => fetchGitHub(q, github_token),
-          ghq
-        );
-        githubMsTotal += ms;
-        if (Array.isArray(result) && result.length > 0) {
-          external.github.push(...result);
-        }
-      }
+  const { result } = await safeFetchTimed(
+    "github",
+    (q) => fetchGitHub(q, github_token),
+    ghq,
+    engineTimes,
+    engineMetrics
+  );
 
-      // ⭐ 이번 요청에서 GitHub 엔진에 실제로 걸린 시간(ms)
-      engineTimes.github = githubMsTotal;
-
+  if (Array.isArray(result) && result.length > 0) {
+    external.github.push(...result);
+  }
+}
 
       // GitHub 리포 기반 유효성 평가 (Vᵣ)
       partial_scores.validity = calcValidityScore(external.github);
@@ -1191,16 +1195,17 @@ ${JSON.stringify(external.klaw).slice(0, 6000)}
           naverPack,
         ] = await Promise.all([
           // 영문 검색 위주 엔진
-          safeFetchTimed("crossref", fetchCrossref, q_en),
-          safeFetchTimed("openalex", fetchOpenAlex, q_en),
-          safeFetchTimed("wikidata", fetchWikidata, q_en),
-          safeFetchTimed("gdelt", fetchGDELT, q_en),
-          // 네이버는 한국어 쿼리 사용
-          safeFetchTimed(
-            "naver",
-            (q) => callNaver(q, naver_id, naver_secret),
-            naverQuery
-          ),
+         safeFetchTimed("crossref", fetchCrossref, q_en, engineTimes, engineMetrics),
+safeFetchTimed("openalex", fetchOpenAlex, q_en, engineTimes, engineMetrics),
+safeFetchTimed("wikidata", fetchWikidata, q_en, engineTimes, engineMetrics),
+safeFetchTimed("gdelt", fetchGDELT, q_en, engineTimes, engineMetrics),
+safeFetchTimed(
+  "naver",
+  (q) => callNaver(q, naver_id, naver_secret),
+  naverQuery,
+  engineTimes,
+  engineMetrics
+),
         ]);
 
         external.crossref = crossrefPack.result;
@@ -1208,13 +1213,6 @@ ${JSON.stringify(external.klaw).slice(0, 6000)}
         external.wikidata = wikidataPack.result;
         external.gdelt = gdeltPack.result;
         external.naver = naverPack.result;
-
-        // ⭐ 엔진별 응답시간(ms)을 기록
-        engineTimes.crossref = crossrefPack.ms;
-        engineTimes.openalex = openalexPack.ms;
-        engineTimes.wikidata = wikidataPack.ms;
-        engineTimes.gdelt = gdeltPack.ms;
-        engineTimes.naver = naverPack.ms;
 
         // QV/FV도 시의성은 GDELT 기반으로 산출
         partial_scores.recency = calcRecencyScore(external.gdelt);
@@ -1238,8 +1236,11 @@ ${JSON.stringify(external.klaw).slice(0, 6000)}
         }
 
         break;
-      }
-} // 🔹 switch (safeMode) 닫기
+      } // default 블록 닫기
+    }  // 🔹 switch (safeMode) 닫기
+
+partial_scores.engine_times = engineTimes;
+partial_scores.engine_metrics = engineMetrics;
 
     // ─────────────────────────────
     // ② LV 모드는 TruthScore/가중치 계산 없이 바로 반환
@@ -1582,6 +1583,8 @@ ${JSON.stringify(verifyInput).slice(0, 6000)}
       flash_summary: flash.slice(0, 250),
       verify_raw: verify.slice(0, 350),
       gemini_verify_model: verifyModel, // ✅ 이번 요청에서 TruthScore 계산에 사용된 모델
+      engine_times: engineTimes,
+      engine_metrics: engineMetrics,
     };
 
 
@@ -2137,18 +2140,61 @@ app.get("/admin/ui", ensureAuth, async (req, res) => {
       domainCount: Array.isArray(info?.domains) ? info.domains.length : 0,
     }));
 
+    // ✅ 최근 요청(verification_logs)에서 engine_metrics 읽기
+    const { data: recentLogsRaw, error: logsErr } = await supabase
+      .from("verification_logs")
+      .select("created_at, query, mode, truthscore, elapsed, partial_scores")
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    if (logsErr && DEBUG) {
+      console.warn("⚠️ verification_logs query error:", logsErr.message);
+    }
+
+    const recentLogs = (recentLogsRaw || []).map((r) => {
+      let ps = r.partial_scores;
+      if (typeof ps === "string") {
+        try {
+          ps = JSON.parse(ps);
+        } catch {
+          ps = {};
+        }
+      }
+      if (!ps || typeof ps !== "object") ps = {};
+      return { ...r, partial_scores_obj: ps };
+    });
+
+    const lastRequest = recentLogs[0] || null;
+
+    const em = lastRequest?.partial_scores_obj?.engine_metrics || {};
+    const et = lastRequest?.partial_scores_obj?.engine_times || {};
+
+    const lastEngineMetricsRows = Object.entries(em).map(([engine, m]) => ({
+      engine,
+      calls: m?.calls ?? 0,
+      ms_total: m?.ms_total ?? 0,
+      ms_avg: m?.ms_avg ?? null,
+      ms_last: m?.ms_last ?? null,
+    }));
+
+    const lastEngineTimesRows = Object.entries(et).map(([engine, ms]) => ({
+      engine,
+      ms,
+    }));
+
     res.render("admin-dashboard", {
   user: req.user || null,
   region: REGION,
   httpTimeoutMs: HTTP_TIMEOUT_MS,
   engineStats: engineStats || [],
   whitelistSummary,
-  baseWeights: ENGINE_BASE_WEIGHTS,   // ⬅️ 추가
-});
-  } catch (e) {
-    console.error("❌ Admin UI error:", e.message);
-    res.status(500).send("Admin UI error");
-  }
+  baseWeights: ENGINE_BASE_WEIGHTS,
+
+  // ✅ 추가
+  recentLogs,
+  lastRequest,
+  lastEngineMetricsRows,
+  lastEngineTimesRows,
 });
 
 // ─────────────────────────────

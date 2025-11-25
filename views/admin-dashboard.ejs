@@ -106,6 +106,70 @@
       <% } %>
     </div>
 
+    <!-- ✅ (추가) 최근 요청 엔진 메트릭스 -->
+    <div class="card">
+      <h2>최근 요청 엔진 메트릭스 (engine_metrics)</h2>
+
+      <% const _lastRequest = (typeof lastRequest !== "undefined") ? lastRequest : null; %>
+      <% const _m = (typeof lastEngineMetrics !== "undefined") ? lastEngineMetrics : null; %>
+      <% const _t = (typeof lastEngineTimes !== "undefined") ? lastEngineTimes : null; %>
+
+      <% if (_lastRequest) { %>
+        <p style="margin:0 0 8px; font-size:13px; color:#333;">
+          <span class="tag"><%= _lastRequest.mode %></span>
+          · truthscore: <%= _lastRequest.truthscore %>
+          · elapsed: <%= _lastRequest.elapsed %> ms
+          · model: <%= _lastRequest.gemini_model %>
+          <br/>
+          query: <strong><%= _lastRequest.query %></strong>
+          <br/>
+          at: <%= _lastRequest.created_at %>
+        </p>
+      <% } else { %>
+        <p>최근 요청 로그가 없습니다.</p>
+      <% } %>
+
+      <% 
+        const names = new Set();
+        if (_m) Object.keys(_m).forEach(k => names.add(k));
+        if (_t) Object.keys(_t).forEach(k => names.add(k));
+        const rows = Array.from(names).sort();
+      %>
+
+      <% if (rows.length) { %>
+        <table>
+          <thead>
+            <tr>
+              <th>엔진</th>
+              <th>calls</th>
+              <th>ms_last</th>
+              <th>ms_avg</th>
+              <th>ms_total</th>
+              <th>request_time(ms)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% rows.forEach(function(name) { 
+                 const mm = _m ? _m[name] : null;
+                 const tt = _t ? _t[name] : null;
+            %>
+              <tr>
+                <td><strong><%= name %></strong></td>
+                <td><%= mm && mm.calls != null ? mm.calls : "-" %></td>
+                <td><%= mm && mm.ms_last != null ? mm.ms_last : "-" %></td>
+                <td><%= mm && mm.ms_avg != null ? mm.ms_avg : "-" %></td>
+                <td><%= mm && mm.ms_total != null ? mm.ms_total : "-" %></td>
+                <td><%= tt != null ? tt : "-" %></td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      <% } else { %>
+        <p>최근 engine_metrics/engine_times 데이터가 없습니다. (최근 /api/verify 호출이 없거나 partial_scores 저장이 비어있을 수 있음)</p>
+      <% } %>
+    </div>
+
+
         <div class="card">
       <h2>엔진 통계 · 가중치 & 보정값</h2>
       <% if (engineStats && engineStats.length) { %>
