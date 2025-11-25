@@ -2182,19 +2182,30 @@ app.get("/admin/ui", ensureAuth, async (req, res) => {
       ms,
     }));
 
-    res.render("admin-dashboard", {
-  user: req.user || null,
-  region: REGION,
-  httpTimeoutMs: HTTP_TIMEOUT_MS,
-  engineStats: engineStats || [],
-  whitelistSummary,
-  baseWeights: ENGINE_BASE_WEIGHTS,
+   return res.render("admin-dashboard", {
+      user: req.user || null,
+      region: REGION,
+      httpTimeoutMs: HTTP_TIMEOUT_MS,
+      engineStats: engineStats || [],
+      whitelistSummary,
+      baseWeights: ENGINE_BASE_WEIGHTS,
 
-  // ✅ 추가
-  recentLogs,
-  lastRequest,
-  lastEngineMetricsRows,
-  lastEngineTimesRows,
+      // ✅ 추가
+      recentLogs,
+      lastRequest,
+
+      // ✅ EJS에서 쓰는 원본 객체(네가 만든 EJS 기준)
+      lastEngineMetrics: em,
+      lastEngineTimes: et,
+
+      // (선택) rows가 필요하면 유지
+      lastEngineMetricsRows,
+      lastEngineTimesRows,
+    });
+  } catch (e) {
+    console.error("❌ /admin/ui Error:", e.message);
+    return res.status(500).send("Admin UI error");
+  }
 });
 
 // ─────────────────────────────
