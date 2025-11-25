@@ -314,10 +314,24 @@ function resolveNaverTier(link) {
 // ─────────────────────────────
 // ✅ External Engines + Fail-Grace Wrapper
 // ─────────────────────────────
-async function safeFetch(name, fn, q) {
+// metrics 옵션: { [engineName]: { response_ms: number } } 형태로 응답시간 누적
+async function safeFetch(name, fn, q, metrics) {
   for (let i = 0; i < 2; i++) {
+    const t0 = Date.now();
     try {
-      return await fn(q);
+      const result = await fn(q);
+      const elapsed = Date.now() - t0;
+
+      if (metrics && typeof metrics === "object") {
+        metrics[name] = metrics[name] || {};
+        // 여러 번 부를 수도 있으니 간단히 평균으로 누적
+        metrics[name].response_ms =
+          typeof metrics[name].response_ms === "number"
+            ? (metrics[name].response_ms + elapsed) / 2
+            : elapsed;
+      }
+
+      return result;
     } catch (err) {
       if (i === 1) {
         await handleEngineFail(name, q, err.message);
@@ -325,6 +339,13 @@ async function safeFetch(name, fn, q) {
       }
     }
   }
+}
+
+async function safeFetchTimed(name, fn, q) {
+  const start = Date.now();
+  const result = await safeFetch(name, fn, q);
+  const ms = Date.now() - start;
+  return { result, ms };
 }
 
 // ─────────────────────────────
@@ -345,6 +366,17 @@ async function callNaver(query, clientId, clientSecret) {
     ];
 
     const all = [];
+
+    // 🔹 AND 조건 비슷하게 만들기 위한 핵심어 토큰
+    const tokens = String(query || "")
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length > 1);
+
+    // 토큰이 3개 이상이면 최소 2개 이상 매칭, 그보다 적으면 전부 매칭
+    const requiredHits =
+      tokens.length >= 3 ? tokens.length - 1 : tokens.length;
+
     for (const url of endpoints) {
       const { data } = await axios.get(url, {
   headers,
@@ -352,7 +384,7 @@ async function callNaver(query, clientId, clientSecret) {
   timeout: HTTP_TIMEOUT_MS,   // ✅ 추가
 });
 
-      const items =
+            let items =
         data?.items?.map((i) => {
           const cleanTitle = i.title?.replace(/<[^>]+>/g, "") || "";
           const cleanDesc = i.description?.replace(/<[^>]+>/g, "") || "";
@@ -366,10 +398,23 @@ async function callNaver(query, clientId, clientSecret) {
             desc: cleanDesc,
             link,
             origin: "naver",
-            tier: tierInfo.tier,          // 예: "T1", "T2" ...
-            tier_weight: tierInfo.weight, // 예: 1.2, 1.0 ...
+            tier: tierInfo.tier,
+            tier_weight: tierInfo.weight,
           };
         }) || [];
+
+      // 🔹 제목/요약에 핵심어가 거의 안 들어간 결과는 필터링
+      if (tokens.length > 0) {
+        items = items.filter((it) => {
+          const text = `${it.title || ""} ${it.desc || ""}`.toLowerCase();
+          let hit = 0;
+          for (const tk of tokens) {
+            if (text.includes(tk.toLowerCase())) hit++;
+          }
+          // 예: 토큰 3개 → 최소 2개 이상 포함
+          return hit >= requiredHits;
+        });
+      }
 
       all.push(...items);
     }
@@ -752,6 +797,24 @@ function normalizeKoreanQuestion(raw) {
   return s;
 }
 
+// 🔹 Naver 검색용 AND 쿼리 빌더
+//    예) "2025 한국 인구" → "+2025 +한국 +인구"
+function buildNaverAndQuery(baseKo) {
+  if (!baseKo) return "";
+
+  const tokens = baseKo
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+
+  if (!tokens.length) return baseKo;
+
+  // 한 글자(조사 등)는 그대로 두고, 나머지는 +키워드로 변환
+  return tokens
+    .map((t) => (t.length <= 1 ? t : `+${t}`))
+    .join(" ");
+}
+
 async function buildEngineQueriesForQVFV(query, gemini_key) {
   // 기본값: 한국어는 간단 정규화, 영어는 아직 비어 있음
   const baseKo = normalizeKoreanQuestion(query);
@@ -957,13 +1020,15 @@ app.post("/api/verify", async (req, res) => {
     verifyModel = "gemini-2.5-pro";
   }
 
-  const engines = [];
+    const engines = [];
   const external = {};
   const start = Date.now();
   let partial_scores = {};
   let truthscore = 0.0;
   let engineStatsMap = {};
   let engineFactor = 1.0;
+  const engineTimes = {}; // ⭐ 엔진별 응답시간(ms) 기록용
+ const engineMetrics = {}; // 🔹 엔진별 응답시간 기록용
 
   try {
     // ─────────────────────────────
@@ -1007,16 +1072,24 @@ app.post("/api/verify", async (req, res) => {
 
       // 2단계: 생성된 쿼리들로 GitHub 검색 수행
       external.github = [];
+            external.github = [];
+      let githubMsTotal = 0;
+
       for (const ghq of ghQueries) {
-        const repos = await safeFetch(
+        const { result, ms } = await safeFetchTimed(
           "github",
           (q) => fetchGitHub(q, github_token),
           ghq
         );
-        if (Array.isArray(repos) && repos.length > 0) {
-          external.github.push(...repos);
+        githubMsTotal += ms;
+        if (Array.isArray(result) && result.length > 0) {
+          external.github.push(...result);
         }
       }
+
+      // ⭐ 이번 요청에서 GitHub 엔진에 실제로 걸린 시간(ms)
+      engineTimes.github = githubMsTotal;
+
 
       // GitHub 리포 기반 유효성 평가 (Vᵣ)
       partial_scores.validity = calcValidityScore(external.github);
@@ -1085,8 +1158,8 @@ ${JSON.stringify(external.klaw).slice(0, 6000)}
 }
 
 
-                 // ── 기본검증(QV/FV) ──
-      default: {
+      // ── 기본검증(QV/FV) ──
+            default: {
         // QV/FV 모드에서는 4개 검증엔진 + Naver를 항상 동시 호출
         engines.push("crossref", "openalex", "wikidata", "gdelt", "naver");
 
@@ -1096,41 +1169,52 @@ ${JSON.stringify(external.klaw).slice(0, 6000)}
           gemini_key
         );
 
+        // 🔹 Naver용 AND 강화 쿼리 생성
+        const naverQuery = buildNaverAndQuery(q_ko);
+
         // 디버깅 / UI용: 어떤 쿼리를 썼는지 기록
         partial_scores.engine_queries = {
           crossref: q_en,
           openalex: q_en,
           wikidata: q_en,
           gdelt: q_en,
-          naver: q_ko,
+          naver: naverQuery,
         };
 
+
         // 2단계: 엔진별로 적합한 쿼리 사용
-        const [
-          crossrefRes,
-          openalexRes,
-          wikidataRes,
-          gdeltRes,
-          naverRes,
+                const [
+          crossrefPack,
+          openalexPack,
+          wikidataPack,
+          gdeltPack,
+          naverPack,
         ] = await Promise.all([
           // 영문 검색 위주 엔진
-          safeFetch("crossref", fetchCrossref, q_en),
-          safeFetch("openalex", fetchOpenAlex, q_en),
-          safeFetch("wikidata", fetchWikidata, q_en),
-          safeFetch("gdelt", fetchGDELT, q_en),
+          safeFetchTimed("crossref", fetchCrossref, q_en),
+          safeFetchTimed("openalex", fetchOpenAlex, q_en),
+          safeFetchTimed("wikidata", fetchWikidata, q_en),
+          safeFetchTimed("gdelt", fetchGDELT, q_en),
           // 네이버는 한국어 쿼리 사용
-          safeFetch(
+          safeFetchTimed(
             "naver",
             (q) => callNaver(q, naver_id, naver_secret),
-            q_ko
+            naverQuery
           ),
         ]);
 
-        external.crossref = crossrefRes;
-        external.openalex = openalexRes;
-        external.wikidata = wikidataRes;
-        external.gdelt = gdeltRes;
-        external.naver = naverRes;
+        external.crossref = crossrefPack.result;
+        external.openalex = openalexPack.result;
+        external.wikidata = wikidataPack.result;
+        external.gdelt = gdeltPack.result;
+        external.naver = naverPack.result;
+
+        // ⭐ 엔진별 응답시간(ms)을 기록
+        engineTimes.crossref = crossrefPack.ms;
+        engineTimes.openalex = openalexPack.ms;
+        engineTimes.wikidata = wikidataPack.ms;
+        engineTimes.gdelt = gdeltPack.ms;
+        engineTimes.naver = naverPack.ms;
 
         // QV/FV도 시의성은 GDELT 기반으로 산출
         partial_scores.recency = calcRecencyScore(external.gdelt);
@@ -1400,7 +1484,7 @@ ${JSON.stringify(verifyInput).slice(0, 6000)}
         ? Math.max(0.9, Math.min(1.1, engineFactor))
         : 1.0;
 
-    let hybrid;
+        let hybrid;
 
     if (safeMode === "dv" || safeMode === "cv") {
       // DV/CV:
@@ -1419,17 +1503,43 @@ ${JSON.stringify(verifyInput).slice(0, 6000)}
       hybrid = Math.max(0, Math.min(1, rawHybrid));
     }
 
+    // 최종 TruthScore (0.6 ~ 0.97 범위)
+    truthscore = Math.min(0.97, 0.6 + 0.4 * hybrid);
+
     // 요청당 경과 시간(ms)
     const elapsed = Date.now() - start;
 
-    // 최종 TruthScore (0.6 ~ 0.97 범위)
-    truthscore = Math.min(0.97, 0.6 + 0.4 * hybrid);
+    // ⭐ Pro 메타(JSON)에서 엔진별 보정 제안 맵 추출 (없으면 빈 객체)
+    const perEngineAdjust =
+      verifyMeta && typeof verifyMeta.engine_adjust === "object"
+        ? verifyMeta.engine_adjust
+        : {};
+
+    // (옵션) partial_scores에도 넣어 두면 로그에서 같이 볼 수 있음
+    partial_scores.engine_adjust = perEngineAdjust;
 
     // ─────────────────────────────
     // ⑥ 로그 및 DB 반영
     // ─────────────────────────────
     await Promise.all(
-      engines.map((eName) => updateWeight(eName, truthscore, elapsed))
+      engines.map((eName) => {
+        // 이번 요청에서 이 엔진에 적용할 truth 샘플
+        const adj =
+          typeof perEngineAdjust[eName] === "number" &&
+          Number.isFinite(perEngineAdjust[eName])
+            ? perEngineAdjust[eName]
+            : 1.0;
+
+        const engineTruth = truthscore * adj;
+
+        // per-engine 응답시간이 있으면 사용, 없으면 전체 elapsed 사용
+        const engineMs =
+          typeof engineTimes[eName] === "number" && engineTimes[eName] > 0
+            ? engineTimes[eName]
+            : elapsed;
+
+        return updateWeight(eName, engineTruth, engineMs);
+      })
     );
 
     await supabase.from("verification_logs").insert([
