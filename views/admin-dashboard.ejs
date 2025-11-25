@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cross-Verified Admin</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 24px;
+      background: #f5f7fb;
+    }
+    h1, h2 {
+      margin: 0 0 12px;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 16px 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.04);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid #e1e4eb;
+      padding: 6px 8px;
+      text-align: left;
+    }
+    th {
+      background: #f0f2f8;
+    }
+    .tag {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 8px;
+      font-size: 11px;
+      background: #e5f0ff;
+      color: #2851a3;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Cross-Verified Admin</h1>
+      <p>
+        로그인: 
+        <% if (user) { %>
+          <strong><%= user.name %></strong> &lt;<%= user.email %>&gt;
+        <% } else { %>
+          (알 수 없음)
+        <% } %>
+      </p>
+      <p>
+        Region: <span class="tag"><%= region %></span> ·
+        HTTP Timeout: <%= httpTimeoutMs %> ms
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>엔진 통계 (engine_stats)</h2>
+      <% if (engineStats && engineStats.length) { %>
+        <table>
+          <thead>
+            <tr>
+              <th>엔진</th>
+              <th>avg_truth</th>
+              <th>avg_response(ms)</th>
+              <th>window</th>
+              <th>sample_count</th>
+              <th>total_runs</th>
+              <th>auto_ce</th>
+              <th>override_ce</th>
+              <th>effective_ce</th>
+              <th>updated_at</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% engineStats.forEach(function(row) { %>
+              <tr>
+                <td><strong><%= row.engine_name %></strong></td>
+                <td><%= row.avg_truth %></td>
+                <td><%= row.avg_response %></td>
+                <td><%= row.rolling_window_size %></td>
+                <td><%= row.sample_count %></td>
+                <td><%= row.total_runs %></td>
+                <td><%= row.auto_ce %></td>
+                <td><%= row.override_ce %></td>
+                <td><%= row.effective_ce %></td>
+                <td><%= row.updated_at %></td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      <% } else { %>
+        <p>엔진 통계 데이터가 없습니다.</p>
+      <% } %>
+    </div>
+
+        <div class="card">
+      <h2>엔진 통계 · 가중치 & 보정값</h2>
+      <% if (engineStats && engineStats.length) { %>
+        <table>
+          <thead>
+            <tr>
+              <th>엔진</th>
+              <th>avg_truth</th>
+              <th>avg_response(ms)</th>
+              <th>auto_ce</th>
+              <th>override_ce</th>
+              <th>effective_ce</th>
+              <th>base_weight</th>
+              <th>final_weight<br/>(base × eff_ce)</th>
+              <th>조정</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% engineStats.forEach(function(row) { 
+                 const baseW = (baseWeights && baseWeights[row.engine_name]) || 1;
+                 const effCe = (row.effective_ce != null 
+                                ? row.effective_ce 
+                                : (row.auto_ce != null ? row.auto_ce : 1));
+                 const finalW = (baseW * effCe).toFixed(3);
+            %>
+              <tr>
+                <td><strong><%= row.engine_name %></strong></td>
+                <td><%= row.avg_truth %></td>
+                <td><%= row.avg_response %></td>
+                <td><%= row.auto_ce %></td>
+                <td><%= row.override_ce %></td>
+                <td><%= row.effective_ce %></td>
+                <td><%= baseW %></td>
+                <td><%= finalW %></td>
+                <td>
+                  <form method="post" action="/admin/engine-stats/override" style="display:flex; gap:4px; align-items:center;">
+                    <input type="hidden" name="engine_name" value="<%= row.engine_name %>" />
+                    <input
+                      type="number"
+                      name="override_ce"
+                      step="0.01"
+                      min="0.5"
+                      max="1.5"
+                      placeholder="e.g. 1.02"
+                      value="<%= (row.override_ce != null ? row.override_ce : '') %>"
+                      style="width:80px; padding:2px 4px; font-size:12px;"
+                    />
+                    <button type="submit" name="action" value="set" style="padding:4px 8px; font-size:12px; border-radius:6px; border:none; cursor:pointer;">
+                      저장
+                    </button>
+                    <button type="submit" name="action" value="clear" style="padding:4px 8px; font-size:12px; border-radius:6px; border:none; cursor:pointer; background:#eee;">
+                      초기화
+                    </button>
+                  </form>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+        <p style="margin-top:8px; font-size:12px; color:#555;">
+          · <code>auto_ce</code>: 서버가 최근 샘플(TruthScore, 응답시간)로 자동 계산한 보정값 (0.9~1.1)<br/>
+          · <code>override_ce</code>: 관리자가 수동으로 지정한 값 (입력 시 <code>0.5~1.5</code>로 제한, 권장 <code>0.9~1.1</code>)<br/>
+          · <code>effective_ce</code>: 실제 사용되는 최종 보정값 (override_ce가 있으면 그 값, 없으면 auto_ce)<br/>
+          · <code>final_weight</code>: 각 엔진이 TruthScore 계산에 반영되는 최종 가중치 = base_weight × effective_ce
+        </p>
+      <% } else { %>
+        <p>엔진 통계 데이터가 없습니다.</p>
+      <% } %>
+    </div>
+

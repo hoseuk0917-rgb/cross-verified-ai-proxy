@@ -1,5 +1,5 @@
 // =======================================================
-// Cross-Verified AI Proxy — v18.3.0
+// Cross-Verified AI Proxy — v18.4.0-pre
 // (Full Extended + LV External Module + Translation + Naver Region Detection)
 // =======================================================
 
@@ -65,6 +65,9 @@ const ENGINE_BASE_WEIGHTS = {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// ✅ EJS 뷰 엔진 설정 (어드민 페이지용)
+app.set("view engine", "ejs");
+app.set("views", path.join(__dirname, "views"));
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: true }));
@@ -256,7 +259,7 @@ app.get(
     failureRedirect: "/auth/failure",
     session: true,
   }),
-  (_, res) => res.redirect("/admin/dashboard")
+    (_, res) => res.redirect("/admin/ui")
 );
 app.get("/auth/failure", (_, res) =>
   res.status(401).send("❌ OAuth Failed")
@@ -265,7 +268,7 @@ app.get("/auth/failure", (_, res) =>
 // ─────────────────────────────
 // ✅ Naver Whitelist Tier System
 // ─────────────────────────────
-const whitelistPath = path.join(__dirname, "data", "naver_whitelist.json");
+const whitelistPath = path.join(__dirname, "config", "naver_whitelist.json");
 let whitelistData = {};
 try {
   whitelistData = JSON.parse(fs.readFileSync(whitelistPath, "utf-8"));
@@ -1342,7 +1345,7 @@ ${JSON.stringify(verifyInput).slice(0, 6000)}
           console.warn("⚠️ verifyMeta JSON parse fail");
         }
       }
-    } catch (e) {
+       } catch (e) {
       const status = e.response?.status;
       if (status === 429) {
         // 이 경우만 상위 catch 로 보내서 GEMINI_KEY_EXHAUSTED 코드로 변환
@@ -1359,81 +1362,70 @@ ${JSON.stringify(verifyInput).slice(0, 6000)}
       // 외부 엔진 기반 TruthScore만 사용
     }
 
-    // ─────────────────────────────
-    // ⑤ TruthScore 계산 (hybrid 구조)
-    //   - DV/CV: GitHub Vᵣ + engine_factor 기반
-    //   - QV/FV: GDELT 기반 recency + Naver 티어 팩터 (있으면) 사용
-    // ─────────────────────────────
-    const elapsed = Date.now() - start;
-    // 🔹 Gemini Pro 메타 결과(verifyMeta) → 부분/종합 TruthScore & 엔진 보정 제안 반영
-    let G = 0.7; // overall_truthscore_raw 기본값
+    // ⑤ TruthScore 계산용 보조 값 정리 ------------------------
+    // Gemini 메타 점수 G (0~1), 없으면 0.7 중립값
+    const G = (() => {
+      const v =
+        verifyMeta &&
+        typeof verifyMeta.overall?.overall_truthscore_raw === "number"
+          ? verifyMeta.overall.overall_truthscore_raw
+          : 0.7;
+      return Math.max(0, Math.min(1, v));
+    })();
 
-    if (typeof verifyMeta === "object" && verifyMeta !== null) {
-      // 1) 종합 TruthScore raw (0~1) 추출
-      if (
-        verifyMeta.overall &&
-        typeof verifyMeta.overall.overall_truthscore_raw === "number" &&
-        Number.isFinite(verifyMeta.overall.overall_truthscore_raw)
-      ) {
-        const rawG = verifyMeta.overall.overall_truthscore_raw;
-        G = Math.max(0, Math.min(1, rawG));
-        partial_scores.overall_truthscore_raw = G;
-        partial_scores.overall_summary = verifyMeta.overall.summary || "";
-      }
-
-      // 2) 블록별 결과 저장 (UI에서 부분 TruthScore 시각화용)
-      if (Array.isArray(verifyMeta.blocks)) {
-        partial_scores.blocks = verifyMeta.blocks;
-      }
-
-      // 3) 엔진별 국소 보정 제안 저장 (현재는 로깅/응답용만 사용)
-      if (
-        verifyMeta.engine_adjust &&
-        typeof verifyMeta.engine_adjust === "object"
-      ) {
-        partial_scores.engine_adjust = verifyMeta.engine_adjust;
-      }
-    }
-
-    // 안전한 기본값 처리 (number 타입만 인정)
+    // QV/FV: GDELT 기반 시의성 Rₜ, 그 외 모드는 1.0
     const R_t =
+      (safeMode === "qv" || safeMode === "fv") &&
       typeof partial_scores.recency === "number"
-        ? partial_scores.recency
-        : 0.7;
-
-    const V_r =
-      typeof partial_scores.validity === "number"
-        ? partial_scores.validity
-        : 0.7;
-
-    // 엔진 전역 보정계수 C (0.9~1.1 범위)
-    const C =
-      typeof partial_scores.engine_factor === "number"
-        ? partial_scores.engine_factor
-        : engineFactor ?? 1.0;
-
-    // 🔹 Naver 티어 기반 전역 보정계수 N (0.9~1.05 범위, 없으면 1.0)
-    const N =
-      typeof partial_scores.naver_tier_factor === "number"
-        ? partial_scores.naver_tier_factor
+        ? Math.max(0, Math.min(1, partial_scores.recency))
         : 1.0;
 
-        let hybrid;
+    // DV/CV: GitHub 유효성 Vᵣ, 없으면 0.7 중립값
+    const V_r =
+      (safeMode === "dv" || safeMode === "cv") &&
+      typeof partial_scores.validity === "number"
+        ? Math.max(0, Math.min(1, partial_scores.validity))
+        : 0.7;
+
+    // QV/FV: Naver 티어 팩터 N (0.9~1.05), 없으면 1.0
+    const N =
+      (safeMode === "qv" || safeMode === "fv") &&
+      typeof partial_scores.naver_tier_factor === "number"
+        ? Math.max(0.9, Math.min(1.05, partial_scores.naver_tier_factor))
+        : 1.0;
+
+    // 엔진 전역 보정계수 C (0.9~1.1)
+    const C =
+      typeof engineFactor === "number" && Number.isFinite(engineFactor)
+        ? Math.max(0.9, Math.min(1.1, engineFactor))
+        : 1.0;
+
+    let hybrid;
 
     if (safeMode === "dv" || safeMode === "cv") {
-      // DV/CV: GitHub 유효성(Vᵣ) + 엔진 전역 보정계수 C + Gemini 종합 스코어 G
-      const rawHybrid = V_r * C * G;
+      // DV/CV:
+      // - G (Gemini 종합 스코어)가 주 신뢰도
+      // - Vᵣ(GitHub 유효성)는 보조 신뢰도
+      const combined = 0.7 * G + 0.3 * V_r; // 0~1 범위
+      const rawHybrid = combined * C;
       hybrid = Math.max(0, Math.min(1, rawHybrid));
     } else {
-      // QV/FV: GDELT 기반 시의성(Rₜ) + 엔진 보정 C + Naver 티어 팩터 N + Gemini 종합 스코어 G
-      const rawHybrid = R_t * C * N * G;
+      // QV/FV:
+      // - GDELT 시의성 Rₜ
+      // - Naver 티어 팩터 N
+      // - 엔진 보정 C
+      // - Gemini 종합 스코어 G
+      const rawHybrid = R_t * N * G * C;
       hybrid = Math.max(0, Math.min(1, rawHybrid));
     }
+
+    // 요청당 경과 시간(ms)
+    const elapsed = Date.now() - start;
 
     // 최종 TruthScore (0.6 ~ 0.97 범위)
     truthscore = Math.min(0.97, 0.6 + 0.4 * hybrid);
 
-        // ─────────────────────────────
+    // ─────────────────────────────
     // ⑥ 로그 및 DB 반영
     // ─────────────────────────────
     await Promise.all(
@@ -1581,33 +1573,249 @@ app.post("/api/translate", async (req, res) => {
 
 
 // ─────────────────────────────
-// ✅ 문서 요약·분석 / Job 엔드포인트 스텁
-//   - 아직 실제 구현 전이므로 ENGINE_UNAVAILABLE로 응답
+// ✅ 문서 요약·분석 / Job 엔드포인트 (v18.4.0-pre)
+//   - 서버는 "텍스트 chunk"만 처리 (파일 분할은 앱에서 수행)
+//   - 비동기 Job/DB는 사용하지 않고, 요청당 동기 처리만 수행
 // ─────────────────────────────
+
+const DOC_MAX_CHARS = 24000; // chunk당 최대 처리 글자 수 (초과분은 잘라서 사용)
+
 app.post("/api/docs/upload", async (req, res) => {
+  // ⚠ 현재 설계에서는 파일 자체를 서버에 저장하지 않음
+  //    → 앱에서 파일을 페이지/범위별 텍스트 chunk로 쪼개서 /api/docs/analyze로 직접 보내는 구조
   return res
-    .status(500)
+    .status(400)
     .json(
       buildError(
-        "ENGINE_UNAVAILABLE",
-        "문서 요약·분석 모드는 아직 서버에 구현되지 않았습니다."
+        "DOC_UPLOAD_NOT_SUPPORTED",
+        "현재 버전에서는 파일 업로드 대신 /api/docs/analyze로 텍스트 chunk만 전송해 주세요."
       )
     );
 });
 
+/*
+  /api/docs/analyze — 문서 요약·번역 공통 엔드포인트
+
+  📌 공통 파라미터
+  - mode: "chunk" | "final"
+    - "chunk" : 페이지 일부/범위 단위로 잘라서 보낼 때
+    - "final" : 사용자가 마지막에 모은 텍스트(예: chunk 요약들 합친 것, 또는 전체 요약본)를 보낼 때
+  - task: "summary" | "translate" | ["summary","translate"]
+    - summary   : Gemini Flash로 요약
+    - translate : DeepL / Gemini로 번역
+    - 둘 다     : 먼저 요약, 그 결과를 번역 (final 모드에서)
+
+  - text: 분석/요약/번역할 텍스트 (필수)
+
+  📌 chunk 모드 추가 파라미터 (선택)
+  - chunk_index: 현재 chunk 번호 (1-based)
+  - total_chunks: 전체 chunk 개수
+  - page_range: { from: number, to: number }  // 이 chunk가 커버하는 페이지 범위
+
+  📌 번역용 파라미터
+  - source_lang: 원문 언어 (옵션, "auto" 권장)
+  - target_lang: 타겟 언어 (예: "EN","KO")
+  - deepl_key  : 사용자 DeepL API 키
+  - gemini_key : Gemini 키 (요약 + 번역 fallback용)
+*/
 app.post("/api/docs/analyze", async (req, res) => {
-  return res
-    .status(500)
-    .json(
-      buildError(
-        "ENGINE_UNAVAILABLE",
-        "문서 요약·분석 모드는 아직 서버에 구현되지 않았습니다."
-      )
+  try {
+    const {
+      mode,
+      task,
+      text,
+      chunk_index,
+      total_chunks,
+      page_range,
+      source_lang,
+      target_lang,
+      deepl_key,
+      gemini_key,
+    } = req.body;
+
+    const safeMode = (mode || "chunk").toString().toLowerCase();
+    if (!["chunk", "final"].includes(safeMode)) {
+      return sendError(
+        res,
+        400,
+        "DOC_MODE_INVALID",
+        `지원하지 않는 mode 입니다: ${mode}`
+      );
+    }
+
+    // task: "summary" | "translate" | ["summary","translate"]
+    let tasks = [];
+    if (Array.isArray(task)) {
+      tasks = task.map((t) => t.toString().toLowerCase());
+    } else if (typeof task === "string" && task.trim()) {
+      tasks = [task.toLowerCase()];
+    }
+
+    // task를 안 보내면 기본값은 "summary"
+    if (!tasks.length) {
+      tasks = ["summary"];
+    }
+
+    const wantsSummary = tasks.includes("summary");
+    const wantsTranslate = tasks.includes("translate");
+
+    if (!wantsSummary && !wantsTranslate) {
+      return sendError(
+        res,
+        400,
+        "DOC_TASK_INVALID",
+        "task에는 최소한 'summary' 또는 'translate' 중 하나가 포함되어야 합니다."
+      );
+    }
+
+    if (!text || !text.trim()) {
+      return sendError(
+        res,
+        400,
+        "VALIDATION_ERROR",
+        "text 필수 입력값이 누락되었거나 비어 있습니다."
+      );
+    }
+
+    // 길이 제한 처리
+    const rawText = text.toString();
+    const safeText = rawText.slice(0, DOC_MAX_CHARS);
+
+    if (rawText.length > DOC_MAX_CHARS && DEBUG) {
+      console.warn(
+        `ℹ️ /api/docs/analyze: 입력 텍스트가 ${DOC_MAX_CHARS}자를 초과하여 잘렸습니다. (원본: ${rawText.length}자)`
+      );
+    }
+
+    // 요약 요청인데 Gemini 키 없음
+    if (wantsSummary && !gemini_key) {
+      return sendError(
+        res,
+        400,
+        "DOC_SUMMARY_REQUIRES_GEMINI",
+        "요약(summary)을 수행하려면 gemini_key가 필요합니다."
+      );
+    }
+
+    // 번역 요청인데 DeepL/Gemini 둘 다 없음
+    if (wantsTranslate && !deepl_key && !gemini_key) {
+      return sendError(
+        res,
+        400,
+        "DOC_TRANSLATE_REQUIRES_ENGINE",
+        "번역(translate)을 수행하려면 deepl_key 또는 gemini_key 중 하나가 필요합니다."
+      );
+    }
+
+    let summaryResult = null;
+    let translateResult = null;
+
+    // ─────────────────────────────
+    // 1) 요약 (Gemini 2.5 Flash)
+    // ─────────────────────────────
+    if (wantsSummary && gemini_key) {
+      const modeLabel =
+        safeMode === "chunk" ? "부분(chunk) 요약" : "최종 요약";
+
+      const pageInfo =
+        page_range && page_range.from && page_range.to
+          ? `페이지 범위: ${page_range.from}~${page_range.to}p`
+          : "";
+
+      const chunkInfo =
+        safeMode === "chunk" && total_chunks
+          ? `chunk: ${chunk_index ?? "?"}/${total_chunks}`
+          : "";
+
+      const prompt = `
+너는 긴 기술/학술 문서를 요약하는 보조 엔진이다.
+
+[메타 정보]
+- 요약 타입: ${modeLabel}
+- ${chunkInfo}
+- ${pageInfo}
+
+[요약 지침]
+- 한국어로 5~10문장 정도로 핵심만 요약한다.
+- 중요한 정의, 수치, 조건, 예외는 최대한 보존한다.
+- 이 텍스트에서만 알 수 있는 내용 위주로 정리한다.
+- 다른 chunk 내용은 모른다고 가정한다.
+
+[원문 텍스트]
+${safeText}
+      `.trim();
+
+      const summaryText = await fetchGemini(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
+        { contents: [{ parts: [{ text: prompt }] }] }
+      );
+
+      summaryResult = (summaryText || "").trim();
+    }
+
+    // ─────────────────────────────
+    // 2) 번역 (DeepL 우선, 없으면 Gemini)
+    // ─────────────────────────────
+    if (wantsTranslate && (deepl_key || gemini_key)) {
+      const baseForTranslate =
+        // final 모드에서 summary+translate 같이 요청 → 요약 결과를 번역
+        safeMode === "final" && wantsSummary && summaryResult
+          ? summaryResult
+          : safeText;
+
+      const tr = await translateText(
+        baseForTranslate,
+        target_lang ?? null,      // null이면 모듈이 기본값(보통 EN) 선택
+        deepl_key ?? null,
+        gemini_key ?? null
+      );
+
+      translateResult = {
+        text: tr.text,
+        engine: tr.engine,
+        targetLang:
+          tr.target || (target_lang ? String(target_lang).toUpperCase() : null),
+      };
+    }
+
+    // ─────────────────────────────
+    // 3) 응답 페이로드 구성
+    // ─────────────────────────────
+    const payload =
+      safeMode === "chunk"
+        ? {
+            mode: "doc-chunk",
+            chunk_index: chunk_index ?? null,
+            total_chunks: total_chunks ?? null,
+            page_range: page_range || null,
+            summary: summaryResult,
+            translation: translateResult,
+            used_chars: safeText.length,
+          }
+        : {
+            mode: "doc-final",
+            summary: summaryResult,
+            translation: translateResult,
+            used_chars: safeText.length,
+          };
+
+    return res.json(buildSuccess(payload));
+  } catch (e) {
+    console.error("❌ /api/docs/analyze Error:", e.message);
+    return sendError(
+      res,
+      500,
+      "DOC_ANALYZE_ERROR",
+      "문서 요약·분석 처리 중 오류가 발생했습니다.",
+      e.message
     );
+  }
 });
 
+// ─────────────────────────────
+// ✅ Job 조회 (미구현 스텁 유지)
+// ─────────────────────────────
 app.get("/api/jobs/:jobId", async (req, res) => {
-  // Job 시스템 미구현 상태 → 통일된 에러 코드로 반환
   return res
     .status(404)
     .json(
@@ -1617,6 +1825,7 @@ app.get("/api/jobs/:jobId", async (req, res) => {
       )
     );
 });
+
 
 // ─────────────────────────────
 // ✅ Admin API (간단 JSON 대시보드)
@@ -1668,6 +1877,103 @@ app.get("/admin/engine-stats", ensureAuth, async (req, res) => {
   }
 });
 
+// 엔진 보정값 수동 조정 (override_ce 설정/초기화)
+app.post("/admin/engine-stats/override", ensureAuth, async (req, res) => {
+  try {
+    const { engine_name, override_ce, action } = req.body;
+
+    if (!engine_name) {
+      return sendError(
+        res,
+        400,
+        "VALIDATION_ERROR",
+        "engine_name이 누락되었습니다."
+      );
+    }
+
+    // 1) 기존 엔진 상태 조회 (auto_ce 가져오기)
+    const { data: prev, error } = await supabase
+      .from("engine_stats")
+      .select("engine_name, auto_ce")
+      .eq("engine_name", engine_name)
+      .single();
+
+    if (error || !prev) {
+      return sendError(
+        res,
+        404,
+        "ENGINE_NOT_FOUND",
+        `engine_stats에 해당 엔진이 존재하지 않습니다: ${engine_name}`,
+        error?.message
+      );
+    }
+
+    const auto_ce =
+      typeof prev.auto_ce === "number" && Number.isFinite(prev.auto_ce)
+        ? prev.auto_ce
+        : 1.0;
+
+    let newOverride = null;
+    let newEffective = auto_ce;
+
+    // 2) action 이 clear 가 아니면 override 값 파싱
+    if (action !== "clear") {
+      const num = parseFloat(override_ce);
+      if (!Number.isFinite(num)) {
+        return sendError(
+          res,
+          400,
+          "VALIDATION_ERROR",
+          "override_ce는 숫자여야 합니다."
+        );
+      }
+
+      // 안전 범위: 0.5 ~ 1.5 (실제 권장: 0.9~1.1)
+      let v = num;
+      if (v < 0.5) v = 0.5;
+      if (v > 1.5) v = 1.5;
+
+      newOverride = v;
+      newEffective = v;
+    } else {
+      // action === "clear" → override 제거, auto_ce로 복귀
+      newOverride = null;
+      newEffective = auto_ce;
+    }
+
+    // 3) engine_stats 업데이트
+    const { error: updErr } = await supabase
+      .from("engine_stats")
+      .update({
+        override_ce: newOverride,
+        effective_ce: newEffective,
+        updated_at: new Date(),
+      })
+      .eq("engine_name", engine_name);
+
+    if (updErr) {
+      return sendError(
+        res,
+        500,
+        "ENGINE_OVERRIDE_UPDATE_ERROR",
+        "엔진 보정값 업데이트 중 오류가 발생했습니다.",
+        updErr.message
+      );
+    }
+
+    return res.redirect("/admin/ui");
+  } catch (e) {
+    console.error("❌ /admin/engine-stats/override Error:", e.message);
+    return sendError(
+      res,
+      500,
+      "ENGINE_OVERRIDE_UPDATE_ERROR",
+      "엔진 보정값 업데이트 중 알 수 없는 오류가 발생했습니다.",
+      e.message
+    );
+  }
+});
+
 // Naver 화이트리스트 조회
 app.get("/admin/naver-whitelist", ensureAuth, async (req, res) => {
   return res.json(
@@ -1675,6 +1981,64 @@ app.get("/admin/naver-whitelist", ensureAuth, async (req, res) => {
       whitelist: whitelistData || { tiers: {} },
     })
   );
+});
+
+// Naver 도메인 tier 테스트용 (어드민)
+app.get("/admin/naver-test-domain", ensureAuth, (req, res) => {
+  const { link } = req.query;
+  if (!link) {
+    return sendError(
+      res,
+      400,
+      "VALIDATION_ERROR",
+      "querystring에 link가 필요합니다. 예: /admin/naver-test-domain?link=https://news.naver.com"
+    );
+  }
+  const info = resolveNaverTier(link);
+  return res.json(
+    buildSuccess({
+      link,
+      tier: info.tier,
+      weight: info.weight,
+    })
+  );
+});
+
+// ─────────────────────────────
+// ✅ Admin UI (EJS 대시보드 화면)
+// ─────────────────────────────
+app.get("/admin/ui", ensureAuth, async (req, res) => {
+  try {
+    // 엔진 통계 조회
+    const { data: engineStats, error } = await supabase
+      .from("engine_stats")
+      .select("*")
+      .order("engine_name", { ascending: true });
+
+    if (error) {
+      console.warn("⚠️ engine_stats query error:", error.message);
+    }
+
+    // 화이트리스트 요약 (티어별 도메인 개수)
+    const tiers = (whitelistData && whitelistData.tiers) || {};
+    const whitelistSummary = Object.entries(tiers).map(([tier, info]) => ({
+      tier,
+      weight: info?.weight ?? 1,
+      domainCount: Array.isArray(info?.domains) ? info.domains.length : 0,
+    }));
+
+    res.render("admin-dashboard", {
+  user: req.user || null,
+  region: REGION,
+  httpTimeoutMs: HTTP_TIMEOUT_MS,
+  engineStats: engineStats || [],
+  whitelistSummary,
+  baseWeights: ENGINE_BASE_WEIGHTS,   // ⬅️ 추가
+});
+  } catch (e) {
+    console.error("❌ Admin UI error:", e.message);
+    res.status(500).send("Admin UI error");
+  }
 });
 
 // ─────────────────────────────
@@ -1707,7 +2071,7 @@ app.get("/api/test-db", async (_, res) => {
 app.get("/health", (_, res) =>
   res.status(200).json({
     status: "ok",
-    version: "v18.3.0",
+    version: "v18.4.0-pre",
     uptime: process.uptime().toFixed(2) + "s",
     region: REGION,
     timestamp: new Date().toISOString(),
@@ -1729,7 +2093,7 @@ app.head("/", (_, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v18.3.0 running on port ${PORT}`);
+  console.log(`🚀 Cross-Verified AI Proxy v18.4.0-pre running on port ${PORT}`);
   console.log("🔹 LV 모듈 외부화 (/src/modules/klaw_module.js)");
   console.log(
     "🔹 Translation 모듈 활성화 (DeepL + Gemini Flash-Lite Fallback)"
