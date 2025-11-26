@@ -32,10 +32,68 @@ import { fetchKLawAll } from "./src/modules/klaw_module.js";
 import { translateText } from "./src/modules/translateText.js";
 
 dotenv.config();
+
+const isProd = process.env.NODE_ENV === "production";
+const DEBUG = process.env.DEBUG === "true";
+
 const app = express();
-const PORT = process.env.PORT || 3000;
-const DEBUG = process.env.DEBUG_MODE === "true";
-const REGION = process.env.REGION || "GLOBAL";
+
+const PORT = parseInt(process.env.PORT || "10000", 10);
+const REGION =
+  process.env.RENDER_REGION ||
+  process.env.FLY_REGION ||
+  process.env.AWS_REGION ||
+  process.env.REGION ||
+  "unknown";
+
+
+// ✅ 여기서 먼저 풀/스토어 준비
+const pgPool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: isProd ? { rejectUnauthorized: false } : false, // 로컬이면 false 권장
+});
+
+const PgStore = connectPgSimple(session);
+
+const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "cva.sid";
+const SESSION_SAMESITE_RAW = (process.env.SESSION_SAMESITE || "lax").toLowerCase();
+const SESSION_SAMESITE = (["lax", "none", "strict"].includes(SESSION_SAMESITE_RAW))
+  ? SESSION_SAMESITE_RAW
+  : "lax";
+const SESSION_SECURE = (SESSION_SAMESITE === "none") ? true : isProd;
+const SESSION_DOMAIN = process.env.SESSION_DOMAIN || undefined;
+
+// ✅ 운영이면 secret 강제(권장)
+if (isProd && !process.env.SESSION_SECRET) {
+  throw new Error("SESSION_SECRET is required in production");
+}
+
+app.use(
+  session({
+    name: SESSION_COOKIE_NAME,
+
+    // ✅ Postgres 세션 스토어 연결
+    store: new PgStore({
+  pool: pgPool,
+  tableName: "session_store",
+  createTableIfMissing: !isProd, // ✅ 운영은 false 권장
+}),
+
+
+    secret: process.env.SESSION_SECRET || "dev-secret",
+    resave: false,
+    saveUninitialized: false,
+    proxy: true,
+
+    cookie: {
+      httpOnly: true,
+      maxAge: 86400000,
+      secure: SESSION_SECURE,
+      sameSite: SESSION_SAMESITE,
+      ...(SESSION_DOMAIN ? { domain: SESSION_DOMAIN } : {}),
+    },
+  })
+);
 
 // ✅ 운영에서 “로그인 사용자만” 허용하려면 true
 const REQUIRE_USER_AUTH = process.env.REQUIRE_USER_AUTH === "true";
@@ -82,7 +140,24 @@ const __dirname = path.dirname(__filename);
 // ✅ EJS 뷰 엔진 설정 (어드민 페이지용)
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
-app.use(cors({ origin: true, credentials: true }));
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // 모바일 앱/서버투서버처럼 Origin이 없는 경우 허용
+    if (!origin) return cb(null, true);
+
+    // 등록된 origin만 허용
+    if (CORS_ORIGINS.includes(origin)) return cb(null, true);
+
+    return cb(new Error("CORS_NOT_ALLOWED"), false);
+  },
+  credentials: true,
+}));
+
 app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: true }));
 // ✅ Morgan: Render 헬스체크/Flutter SW 요청 로그 스킵
@@ -179,6 +254,7 @@ function safeSourcesForDB(obj, maxLen = 20000) {
       };
     }
 
+
     // external 배열은 상한 축소
     const cut = (v, n) => (Array.isArray(v) ? v.slice(0, n) : v);
     if (slim.external) {
@@ -217,11 +293,6 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
-const PgStore = connectPgSimple(session);
-const pgPool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
 
 function getBearerToken(req) {
   const h = req.headers?.authorization || req.headers?.Authorization;
@@ -285,16 +356,6 @@ async function resolveLogUserId({ user_id, user_email, user_name, auth_user }) {
   return null;
 }
 
-app.use(
-  session({
-    store: new PgStore({ pool: pgPool, tableName: "session_store" }),
-    secret: process.env.SESSION_SECRET || "dev-secret",
-    resave: false,
-    saveUninitialized: false,
-    cookie: { secure: false, httpOnly: true, maxAge: 86400000 },
-  })
-);
-
 // ─────────────────────────────
 // ✅ 공통 유틸리티
 // ─────────────────────────────
@@ -308,6 +369,21 @@ async function parseXMLtoJSON(xml) {
 
 function expDecay(days) {
   return Math.exp(-days / 90); // Rₜ = e^(-Δt/90)
+}
+
+function parseGdeltSeenDate(seen) {
+  const s = String(seen || "").trim();
+
+  // GDELT seendate: YYYYMMDDHHMMSS 형태 대응
+  const m = s.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/);
+  if (m) {
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  // ISO/일반 날짜 문자열 fallback
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 // GDELT 기반 시의성(recency) 점수 계산
@@ -526,6 +602,12 @@ async function safeFetch(name, fn, q) {
     try {
       return await fn(q);
     } catch (err) {
+      // ✅ 인증/설정 오류 같은 '치명(fatal)'은 fail-grace 하지 말고 즉시 중단
+      if (err?._fatal) {
+        await handleEngineFail(name, q, err.message);
+        throw err;
+      }
+
       if (i === 1) {
         await handleEngineFail(name, q, err.message);
         return [];
@@ -583,61 +665,85 @@ async function safeFetchTimed(name, fn, q, engineTimes, engineMetrics) {
 // ✅ Naver API (서버 직접 호출, 리전 제한 없음)
 //   - clientId / clientSecret 은 요청 바디에서 받은 값을 그대로 사용
 // ─────────────────────────────
+function sanitizeNaverQuery(q) {
+  return String(q || "")
+    .replace(/[+]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeNaverToken(t) {
+  let s = String(t || "").trim();
+  s = s.replace(/^\++/, "");
+  // 구두점 제거 (유니코드 문자/숫자만 남김)
+  s = s.replace(/[^\p{L}\p{N}]+/gu, "");
+
+  // 아주 단순 조사/어미 제거(끝에 붙은 1글자 조사만) - 과도한 필터링 방지
+  const particles = ["은", "는", "이", "가", "을", "를", "의", "도", "만"];
+  for (const p of particles) {
+    if (s.length > 2 && s.endsWith(p)) {
+      s = s.slice(0, -p.length);
+      break;
+    }
+  }
+  return s;
+}
+
 async function callNaver(query, clientId, clientSecret) {
-  try {
-    const headers = {
-      "X-Naver-Client-Id": clientId,
-      "X-Naver-Client-Secret": clientSecret,
-    };
+  const q = sanitizeNaverQuery(query);
 
-    const endpoints = [
-  { type: "news",  url: "https://openapi.naver.com/v1/search/news.json" },
-  { type: "web",   url: "https://openapi.naver.com/v1/search/webkr.json" },
-  { type: "encyc", url: "https://openapi.naver.com/v1/search/encyc.json" },
-];
+  const headers = {
+    "X-Naver-Client-Id": clientId,
+    "X-Naver-Client-Secret": clientSecret,
+  };
 
-    const all = [];
+  const endpoints = [
+    { type: "news",  url: "https://openapi.naver.com/v1/search/news.json" },
+    { type: "web",   url: "https://openapi.naver.com/v1/search/webkr.json" },
+    { type: "encyc", url: "https://openapi.naver.com/v1/search/encyc.json" },
+  ];
 
-    // 🔹 AND 조건 비슷하게 만들기 위한 핵심어 토큰
-    const tokens = String(query || "")
-  .split(/\s+/)
-  .map((t) => t.trim().replace(/^\++/, "")) // ✅ + 제거
-  .filter((t) => t.length > 1);
+  // 🔹 AND 비슷한 필터용 토큰(너무 빡세면 결과 0 나옴 → 완화)
+  const tokens = q
+    .split(/\s+/)
+    .map(normalizeNaverToken)
+    .filter((t) => t.length > 1);
 
-    // 토큰이 3개 이상이면 최소 2개 이상 매칭, 그보다 적으면 전부 매칭
-    const requiredHits =
-      tokens.length >= 3 ? tokens.length - 1 : tokens.length;
+  const requiredHits = tokens.length <= 2 ? 1 : (tokens.length - 1);
 
-    for (const ep of endpoints) {
-  const { data } = await axios.get(ep.url, {
-    headers,
-    params: { query, display: 3 },
-    timeout: HTTP_TIMEOUT_MS,
-  });
+  const all = [];
+  let lastErr = null;
 
-  let items =
-    data?.items?.map((i) => {
-      const cleanTitle = i.title?.replace(/<[^>]+>/g, "") || "";
-      const cleanDesc = i.description?.replace(/<[^>]+>/g, "") || "";
-      const link = i.link;
+  for (const ep of endpoints) {
+    try {
+      const { data } = await axios.get(ep.url, {
+        headers,
+        params: { query: q, display: 3 },
+        timeout: HTTP_TIMEOUT_MS,
+      });
 
-      const tierInfo = resolveNaverTier(link);
-      const typeWeight = NAVER_TYPE_WEIGHTS[ep.type] ?? 1;
+      let items =
+        data?.items?.map((i) => {
+          const cleanTitle = i.title?.replace(/<[^>]+>/g, "") || "";
+          const cleanDesc = i.description?.replace(/<[^>]+>/g, "") || "";
+          const link = i.link;
 
-      return {
-        title: cleanTitle,
-        desc: cleanDesc,
-        link,
-        origin: "naver",
-        naver_type: ep.type,      // ✅ 추가
-        tier: tierInfo.tier,
-        tier_weight: tierInfo.weight,
-        type_weight: typeWeight,  // ✅ 추가
-      };
-    }) || [];
+          const tierInfo = resolveNaverTier(link);
+          const typeWeight = NAVER_TYPE_WEIGHTS[ep.type] ?? 1;
 
+          return {
+            title: cleanTitle,
+            desc: cleanDesc,
+            link,
+            origin: "naver",
+            naver_type: ep.type,
+            tier: tierInfo.tier,
+            tier_weight: tierInfo.weight,
+            type_weight: typeWeight,
+          };
+        }) || [];
 
-      // 🔹 제목/요약에 핵심어가 거의 안 들어간 결과는 필터링
+      // 🔹 제목/요약 토큰 필터(완화된 requiredHits 사용)
       if (tokens.length > 0) {
         items = items.filter((it) => {
           const text = `${it.title || ""} ${it.desc || ""}`.toLowerCase();
@@ -645,19 +751,36 @@ async function callNaver(query, clientId, clientSecret) {
           for (const tk of tokens) {
             if (text.includes(tk.toLowerCase())) hit++;
           }
-          // 예: 토큰 3개 → 최소 2개 이상 포함
           return hit >= requiredHits;
         });
       }
 
       all.push(...items);
-    }
+    } catch (e) {
+      lastErr = e;
+      const s = e?.response?.status;
 
-    return all;
-  } catch (e) {
-    if (DEBUG) console.warn("⚠️ Naver fetch fail:", e.message);
-    return [];
+      // ✅ BAD 키(401/403)는 즉시 "치명 오류"로 중단시켜야 함
+      if (s === 401 || s === 403) {
+        const err = new Error("NAVER_AUTH_ERROR");
+        err.code = "NAVER_AUTH_ERROR";
+        err.httpStatus = 401;
+        err.detail = { status: s };
+        err._fatal = true;
+        throw err;
+      }
+
+      // 다른 에러는 일단 다음 endpoint 시도 (news만 죽고 web은 살 수 있음)
+      if (DEBUG) console.warn("⚠️ Naver endpoint fail:", ep.type, s, e.message);
+    }
   }
+
+  // 3개 endpoint를 다 돌렸는데도 결과 0이고 에러가 있었다면 상위로 올려서 fail-grace/로그가 가능하게
+  if (!all.length && lastErr) {
+    throw lastErr;
+  }
+
+  return all;
 }
 
 
@@ -693,16 +816,15 @@ async function fetchWikidata(q) {
 // 🔹 GDELT 뉴스 기반 시의성 엔진
 async function fetchGDELT(q) {
   const { data } = await axios.get(
-    `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(
-      q
-    )}&format=json&maxrecords=3`,
-    { timeout: HTTP_TIMEOUT_MS }                    // ✅ 추가
+    `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&format=json&maxrecords=3`,
+    { timeout: HTTP_TIMEOUT_MS }
   );
+
   return (
-    data?.articles?.map((i) => ({
-      title: i.title,
-      date: i.seendate,
-    })) || []
+    data?.articles?.map((i) => {
+      const d = parseGdeltSeenDate(i.seendate);
+      return { title: i.title, date: d ? d.toISOString() : null };
+    }) || []
   );
 }
 
@@ -785,6 +907,7 @@ async function fetchGemini(url, payload, opts = {}) {
     throw e;
   }
 }
+
 
 // ─────────────────────────────
 // ✅ 유효성 (Vᵣ) 계산식 — GitHub 기반
@@ -1087,7 +1210,7 @@ function normalizeKoreanQuestion(raw) {
 function splitIntoTwoParts(text) {
   const t = String(text || "").replace(/\s+/g, " ").trim();
   if (!t) return ["", ""];
-  if (t.length < 40) return [t, t]; // 너무 짧으면 억지 분할 대신 복제
+  if (t.length < 40) return [t, ""]; // 너무 짧으면 2개로 억지 복제하지 않음
 
   const mid = Math.floor(t.length / 2);
 
@@ -1104,19 +1227,10 @@ function splitIntoTwoParts(text) {
 }
 
 function buildNaverAndQuery(baseKo) {
-  if (!baseKo) return "";
-
-  const tokens = baseKo
-    .split(/\s+/)
-    .map((t) => t.trim())
-    .filter((t) => t.length > 0)
-    .map((t) => t.replace(/^\++/, "")); // ✅ 앞의 + 제거
-
-  if (!tokens.length) return baseKo;
-
-  return tokens
-    .map((t) => (t.length <= 1 ? t : `+${t}`))
-    .join(" ");
+  return String(baseKo || "")
+    .replace(/[+]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 const QVFV_MAX_BLOCKS = parseInt(process.env.QVFV_MAX_BLOCKS || "5", 10);
@@ -1142,7 +1256,7 @@ async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, model
 [절대 규칙 — 위반하면 실패]
 1) 출력은 JSON 1개만. (설명/접두어/접미어/코드블록/마크다운/줄바꿈 코멘트 모두 금지)
 2) JSON은 반드시 double quote(")만 사용하고, trailing comma 금지.
-3) blocks는 반드시 2~${QVFV_MAX_BLOCKS}개.
+3) blocks는 반드시 1~${QVFV_MAX_BLOCKS}개.
 4) block.text는 "검증 대상 텍스트"에서 문장을 그대로 복사해서 사용(의역/요약/새 주장 추가 금지).
 5) naver 쿼리에는 '+'를 절대 포함하지 말 것.
 
@@ -1206,16 +1320,6 @@ async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, model
 
    let blocksRaw = Array.isArray(parsed?.blocks) ? parsed.blocks : [];
 
-  // ✅ (필수) 모델이 blocks 1개만 준 경우 → 2개로 강제 분할
-  if (blocksRaw.length === 1) {
-    const seed = String(blocksRaw[0]?.text || baseCore || "").trim();
-    const [t1, t2] = splitIntoTwoParts(seed);
-    blocksRaw = [
-      { ...blocksRaw[0], id: 1, text: t1 },
-      { ...blocksRaw[0], id: 2, text: t2 },
-    ];
-  }
-
   let blocks = blocksRaw.slice(0, QVFV_MAX_BLOCKS).map((b, idx) => {
     const eq = b?.engine_queries || {};
     const naverArr = Array.isArray(eq.naver) ? eq.naver : (typeof eq.naver === "string" ? [eq.naver] : []);
@@ -1232,37 +1336,29 @@ async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, model
     };
   }).filter(b => b.text);
 
-  // ✅ filter 때문에 1개만 남은 경우도 대비
-  if (blocks.length === 1) {
-    const base = blocks[0];
-    const [t1, t2] = splitIntoTwoParts(base.text);
-    blocks = [
-      { ...base, id: 1, text: t1 },
-      { ...base, id: 2, text: t2 },
-    ];
-  }
+ // ✅ 최종 안전망: 0개면 base 텍스트로 1개 생성
+if (blocks.length === 0) {
+  const seedText =
+    (mode === "qv")
+      ? (answer_ko || baseCore || "")
+      : (baseCore || "");
 
-  // ✅ 최종 안전망: 0개면 base 텍스트로 2개 생성
-  if (blocks.length === 0) {
-    const seedText =
-      (mode === "qv")
-        ? (answer_ko || baseCore || "")
-        : (baseCore || "");
-    const [t1, t2] = splitIntoTwoParts(seedText);
+  const t1 = String(seedText || "").trim();
 
-    blocks = [
-      {
-        id: 1,
-        text: t1,
-        engine_queries: { crossref: english_core, openalex: english_core, wikidata: korean_core, gdelt: english_core, naver: [korean_core] }
+  blocks = [
+    {
+      id: 1,
+      text: t1,
+      engine_queries: {
+        crossref: english_core,
+        openalex: english_core,
+        wikidata: korean_core,
+        gdelt: english_core,
+        naver: [korean_core],
       },
-      {
-        id: 2,
-        text: t2,
-        engine_queries: { crossref: english_core, openalex: english_core, wikidata: korean_core, gdelt: english_core, naver: [korean_core] }
-      },
-    ].filter(b => b.text);
-  }
+    },
+  ].filter((b) => b.text);
+}
 
   return {
     answer_ko: (mode === "qv" ? (answer_ko || "") : ""),
@@ -1558,15 +1654,6 @@ if (!qvfvPre) {
 }
 
 
-// ✅ (옵션) QV/FV용: 전처리에서 나온 naver 쿼리를 partial_scores에 보관 (로그/키워드 품질 개선)
-partial_scores.engine_queries = {
-  naver: (qvfvPre.blocks || [])
-    .flatMap(b => (Array.isArray(b?.engine_queries?.naver) ? b.engine_queries.naver : []))
-    .map(s => String(s).trim())
-    .filter(Boolean)
-    .slice(0, 12),
-};
-
     // ✅ 블록별 엔진 호출 → verify에 넣을 “블록+증거” 패키지 구성
     external.crossref = [];
     external.openalex = [];
@@ -1575,6 +1662,8 @@ partial_scores.engine_queries = {
     external.naver = [];
 
     const blocksForVerify = [];
+const naverQueriesUsed = []; // ✅ 실제로 호출한 naver 쿼리 기록용(중복제거해서 로그에 저장)
+
 
     for (const b of qvfvPre.blocks || []) {
       const eq = b.engine_queries || {};
@@ -1592,6 +1681,9 @@ partial_scores.engine_queries = {
       if (!naverQueries.length) {
         naverQueries = [buildNaverAndQuery(qvfvPre.korean_core || query)].filter(Boolean);
       }
+
+naverQueriesUsed.push(...naverQueries); // ✅ 이번 블록에서 실제 호출한 쿼리 저장
+
 
       const [crPack, oaPack, wdPack, gdPack] = await Promise.all([
         safeFetchTimed("crossref", fetchCrossref, qCrossref, engineTimes, engineMetrics),
@@ -1635,6 +1727,15 @@ partial_scores.engine_queries = {
 
     external.naver = dedupeByLink(external.naver).slice(0, NAVER_MULTI_MAX_ITEMS);
     qvfvBlocksForVerifyFull = blocksForVerify;
+
+// ✅ 실제 호출된 naver 쿼리 로그 저장(중복 제거)
+partial_scores.engine_queries = partial_scores.engine_queries || {};
+partial_scores.engine_queries.naver = [...new Set(
+  (naverQueriesUsed || [])
+    .map((q) => buildNaverAndQuery(q))
+    .filter(Boolean)
+)].slice(0, 12);
+
 
     partial_scores.blocks_for_verify = blocksForVerify.map((x) => ({
       id: x.id,
@@ -2053,6 +2154,18 @@ try {
       break;
     } catch (e) {
       const status = e?.response?.status;
+// ✅ NAVER 인증 오류는 여기서도 401로 매핑 (외부엔진 수집 단계에서 터지는 케이스)
+if (e?.code === "NAVER_AUTH_ERROR") {
+  return res
+    .status(e.httpStatus || 401)
+    .json(
+      buildError(
+        "NAVER_AUTH_ERROR",
+        "Naver client id / secret 인증에 실패했습니다. (올바른 키인지 확인하세요)",
+        e.detail || e.message
+      )
+    );
+}
       if (status === 429) throw e; // ✅ 쿼터 소진은 즉시 상위로
       lastVerifyErr = e;
       // 다음 후보 모델로 계속 진행
@@ -2082,6 +2195,19 @@ if (!verify || !verify.trim()) {
 }
     } catch (e) {
       const status = e.response?.status;
+// ✅ NAVER 인증 오류는 401로 즉시 반환
+if (e?.code === "NAVER_AUTH_ERROR") {
+  return res
+    .status(e.httpStatus || 401)
+    .json(
+      buildError(
+        "NAVER_AUTH_ERROR",
+        "Naver client id / secret 인증에 실패했습니다. (올바른 키인지 확인하세요)",
+        e.detail || e.message
+      )
+    );
+}
+
       if (status === 429) {
         // 이 경우만 상위 catch 로 보내서 GEMINI_KEY_EXHAUSTED 코드로 변환
         throw e;
