@@ -79,7 +79,6 @@ app.use(
   createTableIfMissing: !isProd, // ✅ 운영은 false 권장
 }),
 
-
     secret: process.env.SESSION_SECRET || "dev-secret",
     resave: false,
     saveUninitialized: false,
@@ -301,6 +300,15 @@ function getBearerToken(req) {
   return m ? m[1].trim() : null;
 }
 
+function toPseudoEmail(token) {
+  // Bearer localtest 같은 값도 users 테이블에 박히게 “가짜 이메일”로 통일
+  const safe = String(token || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 60) || "anon";
+  return `${safe}@local.test`;
+}
+
 async function getSupabaseAuthUser(req) {
   const token = getBearerToken(req);
   if (!token) return null;
@@ -316,8 +324,9 @@ function isUuid(v) {
 }
 
 // user_id > user_email 기반 users 테이블에서 id 조회/생성 > DEFAULT_USER_ID
-async function resolveLogUserId({ user_id, user_email, user_name, auth_user }) {
-  // ✅ 1) 토큰으로 검증된 사용자면 그 정보를 최우선 사용 (body 값은 위조 가능)
+// user_id > user_email 기반 users 테이블에서 id 조회/생성 > DEFAULT_USER_ID
+async function resolveLogUserId({ user_id, user_email, user_name, auth_user, bearer_token }) {
+  // ✅ 1) Supabase JWT로 검증된 사용자면 그 정보를 최우선 사용 (body 값은 위조 가능)
   if (auth_user?.email) {
     user_email = auth_user.email;
     user_name =
@@ -333,7 +342,21 @@ async function resolveLogUserId({ user_id, user_email, user_name, auth_user }) {
   // ✅ 2) (레거시) 서버가 uuid user_id를 직접 받는 경우만 허용
   if (isUuid(user_id)) return user_id;
 
-  // ✅ 3) email로 users 테이블에서 id upsert/lookup
+  // ✅ 3) auth_user가 없을 때도 Bearer 토큰을 "로그 식별"로 활용 (localtest 등)
+  // - 토큰이 UUID면 그대로 user_id로 인정
+  // - 토큰이 이메일이면 user_email로 사용
+  // - 그 외면 pseudo email로 변환해서 users에 upsert/lookup
+  if (!auth_user && bearer_token) {
+    const t = String(bearer_token).trim();
+    if (t) {
+      if (isUuid(t)) return t;
+      if (!user_email) {
+        user_email = t.includes("@") ? t : toPseudoEmail(t);
+      }
+    }
+  }
+
+  // ✅ 4) email로 users 테이블에서 id upsert/lookup
   const email = (user_email || "").toString().trim().toLowerCase();
   if (email) {
     await supabase
@@ -349,7 +372,7 @@ async function resolveLogUserId({ user_id, user_email, user_name, auth_user }) {
     if (!error && data?.id) return data.id;
   }
 
-  // ✅ 4) 익명/테스트 fallback
+  // ✅ 5) DEFAULT_USER_ID (UUID) fallback
   const def = process.env.DEFAULT_USER_ID;
   if (isUuid(def)) return def;
 
@@ -1564,6 +1587,7 @@ logUserId = await resolveLogUserId({
   user_email,
   user_name,
   auth_user: authUser,
+  bearer_token: getBearerToken(req), // ✅ 추가: Bearer localtest 같은 값도 로그 식별에 사용
 });
 
 if (!logUserId) {
