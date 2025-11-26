@@ -46,6 +46,31 @@
       background: #e5f0ff;
       color: #2851a3;
     }
+
+    /* ✅ 추가: 긴 텍스트/JSON 보기 좋게 */
+    pre.wrap {
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 8px 0 0;
+      font-size: 12px;
+      line-height: 1.35;
+      background: #fafbff;
+      border: 1px solid #e7eaf3;
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    details {
+      margin-top: 10px;
+    }
+    summary {
+      cursor: pointer;
+      user-select: none;
+      font-weight: 600;
+    }
+    .muted {
+      color: #555;
+      font-size: 12px;
+    }
   </style>
 </head>
 <body>
@@ -106,7 +131,7 @@
       <% } %>
     </div>
 
-    <!-- ✅ (추가) 최근 요청 엔진 메트릭스 -->
+    <!-- ✅ 최근 요청 엔진 메트릭스 -->
     <div class="card">
       <h2>최근 요청 엔진 메트릭스 (engine_metrics)</h2>
 
@@ -169,8 +194,80 @@
       <% } %>
     </div>
 
+    <!-- ✅ 추가: Gemini 메트릭스/응답 전문 보기 -->
+    <div class="card">
+      <h2>최근 요청 Gemini 메트릭스 (gemini_metrics)</h2>
 
-        <div class="card">
+      <% const _gm = (typeof lastGeminiMetrics !== "undefined") ? lastGeminiMetrics : null; %>
+      <% const _gt = (typeof lastGeminiTimes !== "undefined") ? lastGeminiTimes : null; %>
+
+      <% 
+        const ps = (_lastRequest && _lastRequest.partial_scores_obj && typeof _lastRequest.partial_scores_obj === "object")
+          ? _lastRequest.partial_scores_obj
+          : {};
+        const geminiTotal = (ps && ps.gemini_total_ms != null) ? ps.gemini_total_ms : null;
+
+        const gnames = new Set();
+        if (_gm) Object.keys(_gm).forEach(k => gnames.add(k));
+        if (_gt) Object.keys(_gt).forEach(k => gnames.add(k));
+        const grows = Array.from(gnames).sort();
+      %>
+
+      <% if (_lastRequest) { %>
+        <p class="muted" style="margin:0 0 8px;">
+          (같은 최근 요청 기준) gemini_total_ms: <strong><%= geminiTotal != null ? geminiTotal : "-" %></strong>
+        </p>
+      <% } %>
+
+      <% if (grows.length) { %>
+        <table>
+          <thead>
+            <tr>
+              <th>단계</th>
+              <th>calls</th>
+              <th>ms_last</th>
+              <th>ms_avg</th>
+              <th>ms_total</th>
+              <th>request_time(ms)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% grows.forEach(function(name) { 
+                 const mm = _gm ? _gm[name] : null;
+                 const tt = _gt ? _gt[name] : null;
+            %>
+              <tr>
+                <td><strong><%= name %></strong></td>
+                <td><%= mm && mm.calls != null ? mm.calls : "-" %></td>
+                <td><%= mm && mm.ms_last != null ? mm.ms_last : "-" %></td>
+                <td><%= mm && mm.ms_avg != null ? mm.ms_avg : "-" %></td>
+                <td><%= mm && mm.ms_total != null ? mm.ms_total : "-" %></td>
+                <td><%= tt != null ? tt : "-" %></td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      <% } else { %>
+        <p>최근 gemini_metrics/gemini_times 데이터가 없습니다. (server.js에서 /admin/ui 렌더링 변수 전달 + partial_scores 저장이 필요)</p>
+      <% } %>
+
+      <details>
+        <summary>Flash Output (FULL)</summary>
+        <pre class="wrap"><%= ps && ps.flash_text ? ps.flash_text : "" %></pre>
+      </details>
+
+      <details>
+        <summary>Verify Output (FULL)</summary>
+        <pre class="wrap"><%= ps && ps.verify_text ? ps.verify_text : "" %></pre>
+      </details>
+
+      <details>
+        <summary>partial_scores (FULL JSON)</summary>
+        <pre class="wrap"><%= JSON.stringify(ps || {}, null, 2) %></pre>
+      </details>
+    </div>
+
+    <div class="card">
       <h2>엔진 통계 · 가중치 & 보정값</h2>
       <% if (engineStats && engineStats.length) { %>
         <table>
@@ -239,5 +336,6 @@
         <p>엔진 통계 데이터가 없습니다.</p>
       <% } %>
     </div>
+  </div>
 </body>
 </html>

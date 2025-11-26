@@ -37,6 +37,9 @@ const PORT = process.env.PORT || 3000;
 const DEBUG = process.env.DEBUG_MODE === "true";
 const REGION = process.env.REGION || "GLOBAL";
 
+// ✅ 운영에서 “로그인 사용자만” 허용하려면 true
+const REQUIRE_USER_AUTH = process.env.REQUIRE_USER_AUTH === "true";
+
 // 🔹 엔진 보정 롤오버 윈도우 (기본 20회, .env에서 ENGINE_CORRECTION_WINDOW로 조정 가능)
 const ENGINE_CORRECTION_WINDOW = parseInt(
   process.env.ENGINE_CORRECTION_WINDOW || "20",
@@ -49,6 +52,17 @@ const HTTP_TIMEOUT_MS = parseInt(
   process.env.HTTP_TIMEOUT_MS || "45000",
   10
 );
+
+// 🔹 (옵션) Flash 프롬프트에 붙일 external 길이 (기본 800 → 넉넉히 4000 권장)
+const FLASH_REF_CHARS = parseInt(process.env.FLASH_REF_CHARS || "4000", 10);
+
+// 🔹 (옵션) Pro(verify) 입력 JSON 길이 (기본 6000 → 넉넉히 12000 권장)
+const VERIFY_INPUT_CHARS = parseInt(process.env.VERIFY_INPUT_CHARS || "12000", 10);
+
+// 🔹 (옵션) DB에 저장할 Gemini 원문 텍스트 제한 (미설정이면 “무제한”)
+const MAX_LOG_TEXT_CHARS = process.env.MAX_LOG_TEXT_CHARS
+  ? parseInt(process.env.MAX_LOG_TEXT_CHARS, 10)
+  : null;
 
 
 // 🔹 엔진별 기본 가중치 (w_e)
@@ -96,6 +110,74 @@ function buildError(code, message, detail = null) {
   return payload;
 }
 
+function maybeTruncateText(s) {
+  if (s == null) return s;
+  const str = String(s);
+  if (!MAX_LOG_TEXT_CHARS || !Number.isFinite(MAX_LOG_TEXT_CHARS)) return str;
+  if (MAX_LOG_TEXT_CHARS <= 0) return str;
+  return str.length > MAX_LOG_TEXT_CHARS ? str.slice(0, MAX_LOG_TEXT_CHARS) : str;
+}
+
+function safeSourcesForDB(obj, maxLen = 20000) {
+  try {
+    let s = JSON.stringify(obj);
+    if (s.length <= maxLen) return s;
+
+    // 1) 크기 줄이기: 큰 텍스트/덩어리 제거
+    const slim = {
+      meta: obj?.meta || null,
+      external: obj?.external ? { ...obj.external } : {},
+      partial_scores: obj?.partial_scores ? { ...obj.partial_scores } : {},
+      verify_meta: obj?.verify_meta || null,
+    };
+
+    // (옵션 저장) flash/verify 원문은 가장 무거움 → 제거
+    if (slim.partial_scores) {
+      delete slim.partial_scores.flash_text;
+      delete slim.partial_scores.verify_text;
+    }
+
+    // verify_meta가 크면 최소 필드만 유지
+    if (slim.verify_meta && typeof slim.verify_meta === "object") {
+      const vm = slim.verify_meta;
+      slim.verify_meta = {
+        overall: vm?.overall ?? null,
+        engine_adjust: vm?.engine_adjust ?? null,
+        blocks: Array.isArray(vm?.blocks) ? vm.blocks.slice(0, 8) : null,
+      };
+    }
+
+    // external 배열은 상한 축소
+    const cut = (v, n) => (Array.isArray(v) ? v.slice(0, n) : v);
+    if (slim.external) {
+      slim.external.naver = cut(slim.external.naver, 8);
+      slim.external.gdelt = cut(slim.external.gdelt, 8);
+      slim.external.crossref = cut(slim.external.crossref, 8);
+      slim.external.openalex = cut(slim.external.openalex, 8);
+      slim.external.wikidata = cut(slim.external.wikidata, 8);
+      slim.external.github = cut(slim.external.github, 8);
+
+      // klaw는 객체/배열이 큰 경우가 많아서 최종 단계에서 제거 후보
+      // (LV에서는 anyhow klaw_result를 응답으로 주니까, 로그에는 축약해도 됨)
+    }
+
+    s = JSON.stringify(slim);
+    if (s.length <= maxLen) return s;
+
+    // 2) 그래도 크면 가장 큰 덩어리(klaw) 제거하고 플래그만 남김
+    if (slim.external && slim.external.klaw) {
+      slim.external.klaw = { truncated: true };
+      s = JSON.stringify(slim);
+      if (s.length <= maxLen) return s;
+    }
+
+    // 3) 마지막 안전망: 깨진 JSON로 저장하지 말고, "정상 JSON" 최소 형태로 저장
+    return JSON.stringify({ truncated: true, reason: "sources_too_large" });
+  } catch (e) {
+    return JSON.stringify({ truncated: true, reason: "sources_stringify_fail" });
+  }
+}
+
 // ─────────────────────────────
 // ✅ Supabase + PostgreSQL 세션
 // ─────────────────────────────
@@ -108,6 +190,68 @@ const pgPool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
+
+function getBearerToken(req) {
+  const h = req.headers?.authorization || req.headers?.Authorization;
+  if (!h) return null;
+  const m = String(h).match(/^Bearer\s+(.+)$/i);
+  return m ? m[1].trim() : null;
+}
+
+async function getSupabaseAuthUser(req) {
+  const token = getBearerToken(req);
+  if (!token) return null;
+
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error) return null;
+  return data?.user || null;
+}
+
+function isUuid(v) {
+  return typeof v === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+
+// user_id > user_email 기반 users 테이블에서 id 조회/생성 > DEFAULT_USER_ID
+async function resolveLogUserId({ user_id, user_email, user_name, auth_user }) {
+  // ✅ 1) 토큰으로 검증된 사용자면 그 정보를 최우선 사용 (body 값은 위조 가능)
+  if (auth_user?.email) {
+    user_email = auth_user.email;
+    user_name =
+      auth_user.user_metadata?.full_name ||
+      auth_user.user_metadata?.name ||
+      user_name ||
+      null;
+
+    // body user_id는 무시(다른 사람 id로 저장 방지)
+    user_id = null;
+  }
+
+  // ✅ 2) (레거시) 서버가 uuid user_id를 직접 받는 경우만 허용
+  if (isUuid(user_id)) return user_id;
+
+  // ✅ 3) email로 users 테이블에서 id upsert/lookup
+  const email = (user_email || "").toString().trim().toLowerCase();
+  if (email) {
+    await supabase
+      .from("users")
+      .upsert([{ email, name: user_name || null }], { onConflict: "email" });
+
+    const { data, error } = await supabase
+      .from("users")
+      .select("id")
+      .eq("email", email)
+      .single();
+
+    if (!error && data?.id) return data.id;
+  }
+
+  // ✅ 4) 익명/테스트 fallback
+  const def = process.env.DEFAULT_USER_ID;
+  if (isUuid(def)) return def;
+
+  return null;
+}
 
 app.use(
   session({
@@ -175,7 +319,13 @@ oAuth2Client.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
 
 async function sendAdminNotice(subject, html) {
   try {
-    const accessToken = await oAuth2Client.getAccessToken();
+    const at = await oAuth2Client.getAccessToken();
+    const accessToken = typeof at === "string" ? at : at?.token;
+
+    if (!accessToken) {
+      throw new Error("GMAIL_ACCESS_TOKEN_EMPTY");
+    }
+
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
@@ -184,9 +334,10 @@ async function sendAdminNotice(subject, html) {
         clientId: process.env.GMAIL_CLIENT_ID,
         clientSecret: process.env.GMAIL_CLIENT_SECRET,
         refreshToken: process.env.GMAIL_REFRESH_TOKEN,
-        accessToken,
+        accessToken, // ✅ string 보장
       },
     });
+
     await transporter.sendMail({
       from: `"Cross-Verified Notifier" <${process.env.GMAIL_USER}>`,
       to: process.env.ADMIN_EMAIL,
@@ -310,28 +461,31 @@ function resolveNaverTier(link) {
   return { tier: null, weight: 1 };
 }
 
+// 🔹 (옵션) Naver 다중 쿼리 호출 제한
+const NAVER_MULTI_MAX_QUERIES = parseInt(process.env.NAVER_MULTI_MAX_QUERIES || "3", 10);
+const NAVER_MULTI_MAX_ITEMS = parseInt(process.env.NAVER_MULTI_MAX_ITEMS || "18", 10);
+
+// 🔹 결과 중복 제거(링크 기준)
+function dedupeByLink(items = []) {
+  const seen = new Set();
+  const out = [];
+  for (const it of items) {
+    const key = (it?.link || "").toString().trim();
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(it);
+  }
+  return out;
+}
 
 // ─────────────────────────────
 // ✅ External Engines + Fail-Grace Wrapper
 // ─────────────────────────────
-// metrics 옵션: { [engineName]: { response_ms: number } } 형태로 응답시간 누적
-async function safeFetch(name, fn, q, metrics) {
+async function safeFetch(name, fn, q) {
   for (let i = 0; i < 2; i++) {
-    const t0 = Date.now();
     try {
-      const result = await fn(q);
-      const elapsed = Date.now() - t0;
-
-      if (metrics && typeof metrics === "object") {
-        metrics[name] = metrics[name] || {};
-        // 여러 번 부를 수도 있으니 간단히 평균으로 누적
-        metrics[name].response_ms =
-          typeof metrics[name].response_ms === "number"
-            ? (metrics[name].response_ms + elapsed) / 2
-            : elapsed;
-      }
-
-      return result;
+      return await fn(q);
     } catch (err) {
       if (i === 1) {
         await handleEngineFail(name, q, err.message);
@@ -347,6 +501,21 @@ function ensureMetric(engineMetrics, name) {
   }
   return engineMetrics[name];
 }
+
+function recordTime(timesObj, name, ms) {
+  if (!timesObj || typeof timesObj !== "object") return;
+  timesObj[name] = (timesObj[name] || 0) + ms; // 누적
+}
+
+function recordMetric(metricsObj, name, ms) {
+  if (!metricsObj || typeof metricsObj !== "object") return;
+  const m = ensureMetric(metricsObj, name);
+  m.calls += 1;
+  m.ms_total += ms;
+  m.ms_last = ms;
+  m.ms_avg = Math.round((m.ms_total / m.calls) * 10) / 10;
+}
+
 
 async function safeFetchTimed(name, fn, q, engineTimes, engineMetrics) {
   const start = Date.now();
@@ -392,9 +561,9 @@ async function callNaver(query, clientId, clientSecret) {
 
     // 🔹 AND 조건 비슷하게 만들기 위한 핵심어 토큰
     const tokens = String(query || "")
-      .split(/\s+/)
-      .map((t) => t.trim())
-      .filter((t) => t.length > 1);
+  .split(/\s+/)
+  .map((t) => t.trim().replace(/^\++/, "")) // ✅ + 제거
+  .filter((t) => t.length > 1);
 
     // 토큰이 3개 이상이면 최소 2개 이상 매칭, 그보다 적으면 전부 매칭
     const requiredHits =
@@ -412,6 +581,7 @@ async function callNaver(query, clientId, clientSecret) {
           const cleanTitle = i.title?.replace(/<[^>]+>/g, "") || "";
           const cleanDesc = i.description?.replace(/<[^>]+>/g, "") || "";
           const link = i.link;
+
 
           // 🔹 도메인 기반 티어 계산
           const tierInfo = resolveNaverTier(link);
@@ -463,9 +633,7 @@ async function fetchCrossref(q) {
 
 async function fetchOpenAlex(q) {
   const { data } = await axios.get(
-    `https://api.openalex.org/works?search=${encodeURIComponent(
-      q
-    )}&per-page=3`,
+    `https://api.openalex.org/works?search=${encodeURIComponent(q)}&per_page=3`,
     { timeout: HTTP_TIMEOUT_MS }                    // ✅ 추가
   );
   return data?.results?.map((i) => i.display_name) || [];
@@ -556,12 +724,10 @@ function calcValidityScore(gitItems = []) {
   const norm = gitItems.map((r) => {
     const stars = Math.min(r.stars || 0, 5000) / 5000;
     const forks = Math.min(r.forks || 0, 1000) / 1000;
-    const freshness =
-      1 -
-      Math.min(
-        (new Date() - new Date(r.updated)) / (1000 * 60 * 60 * 24 * 365),
-        1
-      );
+    const upd = new Date(r.updated);
+const freshness = isNaN(upd.getTime())
+  ? 0.5
+  : 1 - Math.min((Date.now() - upd.getTime()) / (1000 * 60 * 60 * 24 * 365), 1);
     return 0.6 * stars + 0.3 * forks + 0.1 * freshness;
   });
 
@@ -695,7 +861,46 @@ ${baseText}
     return [query];
   }
 }
-// ✅ Weight + History Update (롤오버 기반 보정 샘플 + cₑ 계산)
+
+// ✅ engine_correction_samples: 엔진별 최근 N개만 남기기 (ID 기반 트림)
+const TRIM_BATCH = 200; // 한 번에 지울 최대 개수(안전용)
+
+async function trimEngineCorrectionSamples(engine, windowSize) {
+  if (!windowSize || windowSize <= 0) return;
+
+  while (true) {
+    // 최신 windowSize개는 보존, 그 이후 것들을 range로 잡아서 배치 삭제
+    const { data: oldRows, error: selErr } = await supabase
+      .from("engine_correction_samples")
+      .select("id")
+      .eq("engine_name", engine)
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false }) // created_at 동률 대비
+      .range(windowSize, windowSize + TRIM_BATCH - 1);
+
+    if (selErr) {
+      if (DEBUG) console.warn("⚠️ trim select fail:", selErr.message);
+      break;
+    }
+
+    if (!oldRows || oldRows.length === 0) break;
+
+    const idsToDelete = oldRows.map(r => r.id).filter(v => v != null);
+    if (!idsToDelete.length) break;
+
+    const { error: delErr } = await supabase
+      .from("engine_correction_samples")
+      .delete()
+      .in("id", idsToDelete);
+
+    if (delErr) {
+      if (DEBUG) console.warn("⚠️ trim delete fail:", delErr.message);
+      break;
+    }
+  }
+}
+
+// ✅ Weight + History Update (정확히 N개 롤오버 유지 + cₑ 계산)
 async function updateWeight(engine, truth, time) {
   try {
     // 🔹 명세 Ⅲ, Ⅳ: K-Law는 가중치/보정 시스템에서 제외
@@ -715,12 +920,16 @@ async function updateWeight(engine, truth, time) {
       },
     ]);
 
-    // 2) 최근 N회(windowSize) 샘플 조회
+    // ✅ 2) 엔진별 최근 N개만 유지 (ID 기반 삭제)
+    await trimEngineCorrectionSamples(engine, windowSize);
+
+    // 3) 최근 N회(windowSize) 샘플 조회 (정렬 안정화)
     const { data: samples, error: sampleErr } = await supabase
       .from("engine_correction_samples")
-      .select("truthscore,response_ms")
+      .select("id, truthscore, response_ms")
       .eq("engine_name", engine)
       .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
       .limit(windowSize);
 
     if (sampleErr && DEBUG) {
@@ -728,19 +937,19 @@ async function updateWeight(engine, truth, time) {
     }
 
     const rows = samples || [];
-const sampleCount = rows.length;
+    const sampleCount = rows.length;
 
-const avgTruth =
-  sampleCount > 0
-    ? rows.reduce((sum, r) => sum + (r.truthscore ?? 0), 0) / sampleCount
-    : truth;
+    const avgTruth =
+      sampleCount > 0
+        ? rows.reduce((sum, r) => sum + (r.truthscore ?? 0), 0) / sampleCount
+        : truth;
 
-const avgResp =
-  sampleCount > 0
-    ? rows.reduce((sum, r) => sum + (r.response_ms ?? 0), 0) / sampleCount
-    : time;
+    const avgResp =
+      sampleCount > 0
+        ? rows.reduce((sum, r) => sum + (r.response_ms ?? 0), 0) / sampleCount
+        : time;
 
-    // 3) 기존 total_runs, override_ce 조회
+    // 4) 기존 total_runs, override_ce 조회
     const { data: prev, error: prevErr } = await supabase
       .from("engine_stats")
       .select("total_runs, override_ce")
@@ -754,7 +963,7 @@ const avgResp =
 
     const totalRuns = (prev?.total_runs || 0) + 1;
 
-    // 4) avgTruth / avgResp 기반 자동 보정계수(auto_ce) 계산 (0.9~1.1)
+    // 5) avgTruth / avgResp 기반 자동 보정계수(auto_ce) 계산 (0.9~1.1)
     const targetTruth = 0.7; // 기준 Truth
     let truthAdj = avgTruth / targetTruth;
     if (truthAdj < 0.9) truthAdj = 0.9;
@@ -768,22 +977,23 @@ const avgResp =
 
     const auto_ce = Math.max(0.9, Math.min(1.1, truthAdj * speedAdj));
 
-    // 5) override_ce가 있으면 그 값을, 없으면 auto_ce를 effective_ce로 사용
+    // 6) override_ce가 있으면 그 값을, 없으면 auto_ce를 effective_ce로 사용
     const override_ce =
       typeof prev?.override_ce === "number" ? prev.override_ce : null;
+
     const effective_ce =
       typeof override_ce === "number" && Number.isFinite(override_ce)
         ? override_ce
         : auto_ce;
 
-    // 6) engine_stats 갱신 (Ⅲ, Ⅳ 명세 반영)
+    // 7) engine_stats 갱신 (Ⅲ, Ⅳ 명세 반영)
     await supabase.from("engine_stats").upsert([
       {
         engine_name: engine,
         avg_truth: avgTruth,
         avg_response: avgResp,
         rolling_window_size: windowSize,
-        sample_count: sampleCount,
+        sample_count: sampleCount, // ✅ 이제 진짜로 "최대 N" 유지됨
         total_runs: totalRuns,
         auto_ce,
         override_ce,
@@ -795,6 +1005,7 @@ const avgResp =
     if (DEBUG) console.warn("⚠️ Weight update fail:", e.message);
   }
 }
+
 
 // ─────────────────────────────
 // ✅ QV/FV용 검색어 전처리기
@@ -824,36 +1035,57 @@ function buildNaverAndQuery(baseKo) {
 }
 
 async function buildEngineQueriesForQVFV(query, gemini_key) {
-  // 기본값: 한국어는 간단 정규화, 영어는 아직 비어 있음
   const baseKo = normalizeKoreanQuestion(query);
   let qKo = baseKo;
   let qEn = "";
 
-  // 혹시라도 gemini_key가 없으면 그냥 원래 query 사용
+  // ✅ 엔진별 쿼리(최종 목표)
+  let engineQueries = null;
+
+  // gemini_key 없으면 fallback
   if (!gemini_key) {
-    return {
-      q_ko: qKo || query,
-      q_en: query,
+    const fallback = {
+      crossref: query,
+      openalex: query,
+      wikidata: baseKo || query,
+      gdelt: query,
+      naver: [baseKo || query],
     };
+    return { q_ko: baseKo || query, q_en: query, engine_queries: fallback };
   }
 
   try {
     const prompt = `
-아래 사용자의 질의를 보고, 검색 엔진용 핵심 검색어를 뽑으세요.
+아래 사용자의 질의를 보고, "검증 엔진별 최적화 검색 쿼리"를 생성하세요.
 
-요구사항:
-- korean: 네이버/한국어 검색엔진용 핵심어 (2~6단어, 조사/어미/존댓말 제거)
-- english: Crossref/OpenAlex/Wikidata/GDELT용 영어 키워드 (2~8단어의 간단한 구문)
-- 질의가 영어라면 korean은 비워두거나 원 문장을 그대로 둘 수 있습니다.
-- 질의가 한국어라면 english는 자연스러운 영어 표현으로 옮기세요.
+규칙:
+- korean_core: 네이버/한국어 검색용 핵심어(2~8단어). 조사/어미 제거.
+- english_core: 해외 엔진용(2~10단어) 간단 구문.
+- engine_queries:
+  - crossref: 논문 검색에 적합한 영어 쿼리 (자연어 구문)
+  - openalex: crossref와 유사하되 키워드 중심
+  - wikidata: 가능한 한 '한국어 엔티티/명사' 중심(짧게)
+  - gdelt: 가능하면 boolean 쿼리(AND/OR 괄호 허용)
+  - naver: 네이버는 OR을 한 줄에 때리지 말고 "쿼리 여러 개 배열"로 분리 (2~4개)
+    - 각 원소는 짧은 한국어 키워드열(예: "한국 UAM 항공교통관리 동향")
+    - 여기서는 + 기호를 붙이지 말 것(서버에서 붙임)
 
 사용자 질의:
 ${query}
 
-반드시 아래 JSON 형식 **그대로**만 출력하세요. 설명 텍스트는 절대 쓰지 마세요.
-
-{"korean":"서울 인구","english":"population of Seoul"}
-`;
+반드시 JSON만 출력:
+{
+  "korean_core":"...",
+  "english_core":"...",
+  "engine_queries":{
+    "crossref":"...",
+    "openalex":"...",
+    "wikidata":"...",
+    "gdelt":"...",
+    "naver":["...","..."]
+  }
+}
+`.trim();
 
     const text = await fetchGemini(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
@@ -865,30 +1097,49 @@ ${query}
     const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
 
     let parsed = null;
-    try {
-      parsed = JSON.parse(jsonText);
-    } catch {
-      parsed = null;
-    }
+    try { parsed = JSON.parse(jsonText); } catch { parsed = null; }
 
     if (parsed && typeof parsed === "object") {
-      if (typeof parsed.korean === "string" && parsed.korean.trim()) {
-        qKo = parsed.korean.trim();
+      if (typeof parsed.korean_core === "string" && parsed.korean_core.trim()) {
+        qKo = parsed.korean_core.trim();
       }
-      if (typeof parsed.english === "string" && parsed.english.trim()) {
-        qEn = parsed.english.trim();
+      if (typeof parsed.english_core === "string" && parsed.english_core.trim()) {
+        qEn = parsed.english_core.trim();
+      }
+      if (parsed.engine_queries && typeof parsed.engine_queries === "object") {
+        engineQueries = parsed.engine_queries;
       }
     }
   } catch (e) {
-    if (DEBUG) {
-      console.warn("⚠️ buildEngineQueriesForQVFV fail:", e.message);
-    }
+    if (DEBUG) console.warn("⚠️ buildEngineQueriesForQVFV fail:", e.message);
   }
 
-  // 최종 fallback: 비어 있으면 원래 query 사용
+  if (!qEn) qEn = query;
+
+  // ✅ 최종 fallback / 정규화
+  const eq = (engineQueries && typeof engineQueries === "object") ? engineQueries : {};
+
+  const naverRaw = eq.naver;
+  const naverArr = Array.isArray(naverRaw)
+    ? naverRaw
+    : (typeof naverRaw === "string" && naverRaw.trim() ? [naverRaw.trim()] : []);
+
+  const cleanedNaver = naverArr
+    .map((s) => String(s).trim())
+    .filter(Boolean);
+
+  const finalEngineQueries = {
+    crossref: (typeof eq.crossref === "string" && eq.crossref.trim()) ? eq.crossref.trim() : qEn,
+    openalex: (typeof eq.openalex === "string" && eq.openalex.trim()) ? eq.openalex.trim() : qEn,
+    wikidata: (typeof eq.wikidata === "string" && eq.wikidata.trim()) ? eq.wikidata.trim() : (qKo || qEn),
+    gdelt:    (typeof eq.gdelt === "string" && eq.gdelt.trim()) ? eq.gdelt.trim() : qEn,
+    naver: cleanedNaver.length ? cleanedNaver : [qKo || baseKo || query],
+  };
+
   return {
-    q_ko: qKo || query,
+    q_ko: qKo || baseKo || query,
     q_en: qEn || query,
+    engine_queries: finalEngineQueries,
   };
 }
 
@@ -964,18 +1215,26 @@ function computeEngineCorrectionFactor(engines = [], statsMap = {}) {
 //   - DV/CV: GitHub 기반 TruthScore 직접 계산 (Gemini→GitHub)
 //   - LV: TruthScore 없이 K-Law 결과만 제공 (Ⅸ 명세 반영)
 // ─────────────────────────────
+
 app.post("/api/verify", async (req, res) => {
+let logUserId = null;   // ✅ 요청마다 독립
+  let authUser = null;    // ✅ 요청마다 독립
   const {
-    query,
-    mode,
-    gemini_key,
-    naver_id,
-    naver_secret,
-    klaw_key,
-    user_answer,
-    github_token,     // ✅ DV/CV GitHub 토큰
-    gemini_model,     // ✅ QV/FV에서만 Flash/Pro 토글용
-  } = req.body;
+  query,
+  mode,
+  gemini_key,
+  naver_id,
+  naver_secret,
+  klaw_key,
+  user_answer,
+  github_token,     // ✅ DV/CV GitHub 토큰
+  gemini_model,     // ✅ QV/FV에서만 Flash/Pro 토글용
+
+  // ✅ 추가: verification_logs.user_id NOT NULL 대응
+  user_id,
+  user_email,
+  user_name,
+} = req.body;
 
   const safeMode = (mode || "").trim().toLowerCase();
 
@@ -986,18 +1245,20 @@ app.post("/api/verify", async (req, res) => {
       .json(buildError("VALIDATION_ERROR", "query가 누락되었습니다."));
   }
 
-  if (safeMode !== "lv" && !gemini_key) {
-    return res
-      .status(400)
-      .json(buildError("VALIDATION_ERROR", "Gemini 키가 누락되었습니다."));
-  }
-
   const allowedModes = ["qv", "fv", "dv", "cv", "lv"];
-  if (!allowedModes.includes(safeMode)) {
-    return res
-      .status(400)
-      .json(buildError("INVALID_MODE", `지원하지 않는 모드입니다: ${mode}`));
-  }
+if (!allowedModes.includes(safeMode)) {
+  return res
+    .status(400)
+    .json(buildError("INVALID_MODE", `지원하지 않는 모드입니다: ${mode}`));
+}
+
+// ✅ 모드가 확정된 다음에 키 검증
+if (safeMode !== "lv" && !gemini_key) {
+  return res
+    .status(400)
+    .json(buildError("VALIDATION_ERROR", "Gemini 키가 누락되었습니다."));
+}
+
   // QV/FV 모드는 네이버 옵션 해제 → 항상 Naver 엔진 사용
   if ((safeMode === "qv" || safeMode === "fv") && (!naver_id || !naver_secret)) {
     return res
@@ -1009,6 +1270,13 @@ app.post("/api/verify", async (req, res) => {
         )
       );
   }
+
+// ✅ LV는 klaw_key 필수
+if (safeMode === "lv" && !klaw_key) {
+  return res.status(400).json(
+    buildError("VALIDATION_ERROR", "LV 모드에서는 klaw_key가 필요합니다.")
+  );
+}
 
   // 🔹 QV/FV용 Gemini 모델 토글 (Flash / Pro)
   // - 클라이언트에서 gemini_model: "flash" | "pro" | undefined 로 보냄
@@ -1037,8 +1305,35 @@ app.post("/api/verify", async (req, res) => {
   let engineFactor = 1.0;
   const engineTimes = {};    // ⭐ 엔진별 총 소요시간(ms)
 const engineMetrics = {};  // ⭐ 엔진별 calls/ms_total/ms_avg/ms_last (어드민 표시용)
+const geminiTimes = {};     // ⭐ Gemini 단계별 총 시간(ms)
+const geminiMetrics = {};   // ⭐ Gemini 단계별 calls/ms_total/ms_avg/ms_last
+
 
   try {
+  // ✅ 추가: verification_logs.user_id NOT NULL 대응
+  authUser = await getSupabaseAuthUser(req);
+
+// ✅ 운영모드: 로그인 토큰 없으면 차단
+if (REQUIRE_USER_AUTH && !authUser) {
+  return res.status(401).json(buildError("UNAUTHORIZED", "로그인이 필요합니다. (Authorization: Bearer <token>)"));
+}
+
+logUserId = await resolveLogUserId({
+  user_id,
+  user_email,
+  user_name,
+  auth_user: authUser,
+});
+
+if (!logUserId) {
+  return res.status(400).json(
+    buildError(
+      "VALIDATION_ERROR",
+      "로그 식별자(user) 확정 실패: Authorization Bearer 토큰 또는 DEFAULT_USER_ID가 필요합니다."
+    )
+  );
+}
+
     // ─────────────────────────────
     // ① 모드별 외부엔진 호출 (DV/CV/QV/FV/LV)
     // ─────────────────────────────
@@ -1071,12 +1366,17 @@ const engineMetrics = {};  // ⭐ 엔진별 calls/ms_total/ms_avg/ms_last (어�
           : "";
 
       // 1단계: Gemini Flash를 사용해서 GitHub 검색용 쿼리 생성
-      const ghQueries = await buildGithubQueriesFromGemini(
-        safeMode,
-        query,
-        answerText,   // ⬅️ DV는 "", CV는 user_answer
-        gemini_key
-      );
+      const t_ghq = Date.now();
+const ghQueries = await buildGithubQueriesFromGemini(
+  safeMode,
+  query,
+  answerText,
+  gemini_key
+);
+const ms_ghq = Date.now() - t_ghq;
+recordTime(geminiTimes, "github_query_builder_ms", ms_ghq);
+recordMetric(geminiMetrics, "github_query_builder", ms_ghq);
+
 
       // 2단계: 생성된 쿼리들로 GitHub 검색 수행
       external.github = [];
@@ -1101,13 +1401,17 @@ const engineMetrics = {};  // ⭐ 엔진별 calls/ms_total/ms_avg/ms_last (어�
       partial_scores.github_queries = ghQueries;
 
       // GitHub 메타데이터와 검증 대상 내용 간 일치도(Consistency) 평가
-      partial_scores.consistency = await calcConsistencyFromGemini(
-        safeMode,
-        query,
-        answerText,   // ⬅️ DV: 질문 기준, CV: 질문 + user_answer 기준
-        external.github,
-        gemini_key
-      );
+      const t_cons = Date.now();
+partial_scores.consistency = await calcConsistencyFromGemini(
+  safeMode,
+  query,
+  answerText,
+  external.github,
+  gemini_key
+);
+const ms_cons = Date.now() - t_cons;
+recordTime(geminiTimes, "consistency_ms", ms_cons);
+recordMetric(geminiMetrics, "consistency", ms_cons);
       break;
     }
 
@@ -1144,10 +1448,14 @@ ${JSON.stringify(external.klaw).slice(0, 6000)}
     `.trim();
 
     try {
-      lvSummary = await fetchGemini(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${gemini_key}`,
-        { contents: [{ parts: [{ text: prompt }] }] }
-      );
+      const t_lv = Date.now();
+lvSummary = await fetchGemini(
+  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${gemini_key}`,
+  { contents: [{ parts: [{ text: prompt }] }] }
+);
+const ms_lv = Date.now() - t_lv;
+recordTime(geminiTimes, "lv_flash_lite_summary_ms", ms_lv);
+recordMetric(geminiMetrics, "lv_flash_lite_summary", ms_lv);
     } catch (e) {
       if (DEBUG) {
         console.warn("⚠️ LV Flash-Lite summary fail:", e.message);
@@ -1168,51 +1476,61 @@ ${JSON.stringify(external.klaw).slice(0, 6000)}
         engines.push("crossref", "openalex", "wikidata", "gdelt", "naver");
 
         // 1단계: Gemini Flash로 엔진 공통 핵심 검색어 생성
-        const { q_ko, q_en } = await buildEngineQueriesForQVFV(
-          query,
-          gemini_key
-        );
+const t_qbuild = Date.now();
+const { q_ko, q_en, engine_queries } = await buildEngineQueriesForQVFV(query, gemini_key);
+const ms_qbuild = Date.now() - t_qbuild;
+recordTime(geminiTimes, "qvfv_query_builder_ms", ms_qbuild);
+recordMetric(geminiMetrics, "qvfv_query_builder", ms_qbuild);
 
-        // 🔹 Naver용 AND 강화 쿼리 생성
-        const naverQuery = buildNaverAndQuery(q_ko);
+// 엔진별 최적화 쿼리
+const qCrossref = engine_queries?.crossref || q_en;
+const qOpenalex = engine_queries?.openalex || q_en;
+const qWikidata = engine_queries?.wikidata || q_ko || q_en;
+const qGdelt    = engine_queries?.gdelt || q_en;
 
-        // 디버깅 / UI용: 어떤 쿼리를 썼는지 기록
-        partial_scores.engine_queries = {
-          crossref: q_en,
-          openalex: q_en,
-          wikidata: q_en,
-          gdelt: q_en,
-          naver: naverQuery,
-        };
+// ✅ Naver: 여러 쿼리 배열 → +AND 형태로 변환
+let naverQueries = Array.isArray(engine_queries?.naver) ? engine_queries.naver : [];
+naverQueries = naverQueries
+  .map((q) => buildNaverAndQuery(q))
+  .filter(Boolean)
+  .slice(0, NAVER_MULTI_MAX_QUERIES);
 
+if (!naverQueries.length) naverQueries = [buildNaverAndQuery(q_ko || query)].filter(Boolean);
 
-        // 2단계: 엔진별로 적합한 쿼리 사용
-                const [
-          crossrefPack,
-          openalexPack,
-          wikidataPack,
-          gdeltPack,
-          naverPack,
-        ] = await Promise.all([
-          // 영문 검색 위주 엔진
-         safeFetchTimed("crossref", fetchCrossref, q_en, engineTimes, engineMetrics),
-safeFetchTimed("openalex", fetchOpenAlex, q_en, engineTimes, engineMetrics),
-safeFetchTimed("wikidata", fetchWikidata, q_en, engineTimes, engineMetrics),
-safeFetchTimed("gdelt", fetchGDELT, q_en, engineTimes, engineMetrics),
-safeFetchTimed(
-  "naver",
-  (q) => callNaver(q, naver_id, naver_secret),
-  naverQuery,
-  engineTimes,
-  engineMetrics
-),
-        ]);
+partial_scores.engine_queries = {
+  crossref: qCrossref,
+  openalex: qOpenalex,
+  wikidata: qWikidata,
+  gdelt: qGdelt,
+  naver: naverQueries,
+};
 
-        external.crossref = crossrefPack.result;
-        external.openalex = openalexPack.result;
-        external.wikidata = wikidataPack.result;
-        external.gdelt = gdeltPack.result;
-        external.naver = naverPack.result;
+// ✅ 4개 엔진은 병렬
+const [crossrefPack, openalexPack, wikidataPack, gdeltPack] = await Promise.all([
+  safeFetchTimed("crossref", fetchCrossref, qCrossref, engineTimes, engineMetrics),
+  safeFetchTimed("openalex", fetchOpenAlex, qOpenalex, engineTimes, engineMetrics),
+  safeFetchTimed("wikidata", fetchWikidata, qWikidata, engineTimes, engineMetrics),
+  safeFetchTimed("gdelt", fetchGDELT, qGdelt, engineTimes, engineMetrics),
+]);
+
+external.crossref = crossrefPack.result;
+external.openalex = openalexPack.result;
+external.wikidata = wikidataPack.result;
+external.gdelt = gdeltPack.result;
+
+// ✅ Naver는 여러 번 호출해서 합치기(+중복 제거/상한)
+external.naver = [];
+for (const nq of naverQueries) {
+  const { result } = await safeFetchTimed(
+    "naver",
+    (q) => callNaver(q, naver_id, naver_secret),
+    nq,
+    engineTimes,
+    engineMetrics
+  );
+  if (Array.isArray(result) && result.length) external.naver.push(...result);
+}
+external.naver = dedupeByLink(external.naver).slice(0, NAVER_MULTI_MAX_ITEMS);
 
         // QV/FV도 시의성은 GDELT 기반으로 산출
         partial_scores.recency = calcRecencyScore(external.gdelt);
@@ -1241,6 +1559,9 @@ safeFetchTimed(
 
 partial_scores.engine_times = engineTimes;
 partial_scores.engine_metrics = engineMetrics;
+partial_scores.gemini_times = geminiTimes;
+partial_scores.gemini_metrics = geminiMetrics;
+
 
     // ─────────────────────────────
     // ② LV 모드는 TruthScore/가중치 계산 없이 바로 반환
@@ -1248,20 +1569,43 @@ partial_scores.engine_metrics = engineMetrics;
    if (safeMode === "lv") {
   const elapsed = Date.now() - start;
 
-  // LV 모드는 엔진 보정/TruthScore 없이 법령 정보 + 선택적 요약만 제공 (Ⅸ 명세)
-  await supabase.from("verification_logs").insert([
-    {
-      query,
-      mode: safeMode,
-      truthscore: null,
-      elapsed,
-      // 🔹 여기서 lv_summary 들어간 partial_scores를 그대로 저장
-      partial_scores: JSON.stringify(partial_scores || {}),
-      engines: JSON.stringify(engines),
-      gemini_model: null,   // ✅ LV는 TruthScore 계산용 Gemini 모델 없음
-      created_at: new Date(),
-    },
-  ]);
+// ✅ LV도 Gemini 총합(ms) 계산 (Flash-Lite 요약 등 포함)
+partial_scores.gemini_total_ms = Object.values(geminiTimes)
+  .filter((v) => typeof v === "number" && Number.isFinite(v))
+  .reduce((s, v) => s + v, 0);
+
+// sources(text)에 서버 메타/부분점수 등을 JSON으로 저장(필요한 만큼만)
+const sourcesText = safeSourcesForDB(
+  {
+    meta: { mode: safeMode },
+    external,
+    partial_scores,
+  },
+  20000
+);
+
+await supabase.from("verification_logs").insert([
+  {
+    user_id: logUserId,
+    question: query,          // ✅ 대표 질문
+    query: query,             // ✅ (스키마에 있으니 같이)
+    truth_score: null,        // ✅ LV는 TruthScore 없음
+    summary: partial_scores.lv_summary || null,
+    cross_score: null,
+    adjusted_score: null,
+    status: safeMode,         // ✅ mode 컬럼이 없으니 status에 mode 저장
+    engines,                  // ✅ jsonb (stringify 금지)
+    keywords: null,           // ✅ 필요하면 배열 넣기
+    elapsed: String(elapsed), // ✅ text 컬럼
+    model_main: partial_scores.lv_summary ? "gemini-2.5-flash-lite" : null,
+    model_eval: null,
+    sources: sourcesText,
+    gemini_model: null,
+    error: null,
+    created_at: new Date(),
+  },
+]);
+
 
   return res.json(
     buildSuccess({
@@ -1295,13 +1639,18 @@ partial_scores.engine_metrics = engineMetrics;
 
     try {
       // 4-1) Flash: 외부엔진 결과를 붙여서 1차 응답 생성
-      const flashPrompt = `[${mode.toUpperCase()}] ${query}\n참조자료: ${JSON.stringify(
-        external
-      ).slice(0, 800)}`;
-      flash = await fetchGemini(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
-        { contents: [{ parts: [{ text: flashPrompt }] }] }
-      );
+      const flashPrompt =
+  `[${safeMode.toUpperCase()}] ${query}\n` +
+  `참조자료:\n${JSON.stringify(external).slice(0, FLASH_REF_CHARS)}`;
+
+const t_flash = Date.now();
+flash = await fetchGemini(
+  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
+  { contents: [{ parts: [{ text: flashPrompt }] }] }
+);
+const ms_flash = Date.now() - t_flash;
+recordTime(geminiTimes, "flash_ms", ms_flash);
+recordMetric(geminiMetrics, "flash", ms_flash);
 
       // 🔹 CV일 때만 user_answer를 검증 대상으로 사용
       const coreText =
@@ -1331,7 +1680,7 @@ partial_scores.engine_metrics = engineMetrics;
   4) 각 검증엔진별로 이번 질의에 대한 국소 보정값(0.9~1.1) 제안
 
 [입력 JSON]
-${JSON.stringify(verifyInput).slice(0, 6000)}
+${JSON.stringify(verifyInput).slice(0, VERIFY_INPUT_CHARS)}
 
 입력 필드 설명(요약):
 - mode: "qv" | "fv" | "dv" | "cv" 중 하나
@@ -1413,10 +1762,17 @@ ${JSON.stringify(verifyInput).slice(0, 6000)}
 }
 `;
 
-            verify = await fetchGemini(
-        `https://generativelanguage.googleapis.com/v1beta/models/${verifyModel}:generateContent?key=${gemini_key}`,
-        { contents: [{ parts: [{ text: verifyPrompt }] }] }
-      );
+const t_verify = Date.now();
+
+verify = await fetchGemini(
+  `https://generativelanguage.googleapis.com/v1beta/models/${verifyModel}:generateContent?key=${gemini_key}`,
+  { contents: [{ parts: [{ text: verifyPrompt }] }] }
+);
+
+const ms_verify = Date.now() - t_verify;
+recordTime(geminiTimes, "verify_ms", ms_verify);
+recordMetric(geminiMetrics, "verify", ms_verify);
+
 
       // Pro 결과(JSON) 파싱 시도
       try {
@@ -1523,93 +1879,176 @@ ${JSON.stringify(verifyInput).slice(0, 6000)}
     // ⑥ 로그 및 DB 반영
     // ─────────────────────────────
     await Promise.all(
-      engines.map((eName) => {
-        // 이번 요청에서 이 엔진에 적용할 truth 샘플
-        const adj =
-          typeof perEngineAdjust[eName] === "number" &&
-          Number.isFinite(perEngineAdjust[eName])
-            ? perEngineAdjust[eName]
-            : 1.0;
+  engines.map((eName) => {
+    // 이번 요청에서 이 엔진에 적용할 truth 샘플
+    const adjRaw =
+      typeof perEngineAdjust?.[eName] === "number" &&
+      Number.isFinite(perEngineAdjust[eName])
+        ? perEngineAdjust[eName]
+        : 1.0;
 
-        const engineTruth = truthscore * adj;
+    // ✅ 명세 범위(0.9~1.1)로 제한
+    const adj = Math.max(0.9, Math.min(1.1, adjRaw));
 
-        // per-engine 응답시간이 있으면 사용, 없으면 전체 elapsed 사용
-        const engineMs =
-          typeof engineTimes[eName] === "number" && engineTimes[eName] > 0
-            ? engineTimes[eName]
-            : elapsed;
+    // ✅ truth는 0~1로 고정 (0.97*1.1 같은 케이스 방지)
+    const engineTruth = Math.max(0, Math.min(1, truthscore * adj));
 
-        return updateWeight(eName, engineTruth, engineMs);
-      })
-    );
+    // per-engine 응답시간이 있으면 사용, 없으면 전체 elapsed 사용
+    const engineMs =
+      typeof engineTimes[eName] === "number" && engineTimes[eName] > 0
+        ? engineTimes[eName]
+        : elapsed;
 
-    await supabase.from("verification_logs").insert([
+    return updateWeight(eName, engineTruth, engineMs);
+  })
+);
+
+// ✅ Gemini 총합(ms) — 모든 Gemini 단계 완료 후 계산
+partial_scores.gemini_total_ms = Object.values(geminiTimes)
+  .filter((v) => typeof v === "number" && Number.isFinite(v))
+  .reduce((s, v) => s + v, 0);
+
+const STORE_GEMINI_TEXT = process.env.STORE_GEMINI_TEXT === "true";
+
+// 길이/메타만 남기기(가볍고 유용)
+partial_scores.flash_len = (flash || "").length;
+partial_scores.verify_len = (verify || "").length;
+
+// 원문 저장은 옵션
+if (STORE_GEMINI_TEXT) {
+  partial_scores.flash_text = maybeTruncateText(flash);
+  partial_scores.verify_text = maybeTruncateText(verify);
+}
+
+    // 요약(summary) 필드: Pro 메타 요약 우선, 없으면 flash 일부라도
+const summaryText =
+  (verifyMeta && typeof verifyMeta.overall?.summary === "string" && verifyMeta.overall.summary.trim())
+    ? verifyMeta.overall.summary.trim()
+    : (flash || "").slice(0, 2000) || null;
+
+// keywords는 선택: QV/FV는 naverQuery 토큰, DV/CV는 github_queries 등
+const keywordsForLog =
+  (safeMode === "dv" || safeMode === "cv")
+    ? (Array.isArray(partial_scores.github_queries) ? partial_scores.github_queries.slice(0, 12) : null)
+    : (safeMode === "qv" || safeMode === "fv")
+     ? (() => {
+    const nq = partial_scores.engine_queries?.naver;
+    const txt = Array.isArray(nq) ? nq.join(" ") : String(nq || query);
+    return txt;
+  })()
+          .replace(/\+/g, "")
+          .split(/\s+/)
+          .filter(Boolean)
+          .slice(0, 12)
+      : null;
+
+const sourcesText = safeSourcesForDB(
   {
-    query,
-    mode: safeMode,
-    truthscore,
-    elapsed,
-    partial_scores: JSON.stringify(partial_scores),
-    engines: JSON.stringify(engines),
+    meta: { mode: safeMode },
+    external,
+    partial_scores,
+    verify_meta: verifyMeta || null,
+  },
+  20000
+);
+
+await supabase.from("verification_logs").insert([
+  {
+    user_id: logUserId,
+    question: query,
+    query: query,
+
+    truth_score: Number(truthscore),     // ✅ double precision
+    summary: summaryText,
+
+    cross_score: Number(G),              // ✅ raw(0~1)
+    adjusted_score: Number(hybrid),      // ✅ adjusted(0~1)
+
+    status: safeMode,                    // ✅ mode 컬럼 없으니 여기 저장
+    engines,                             // ✅ jsonb
+    keywords: keywordsForLog,            // ✅ array(text[])
+    elapsed: String(elapsed),            // ✅ text
+
+    model_main: "gemini-2.5-flash",
+    model_eval: verifyModel,
+    sources: sourcesText,
+
     gemini_model: verifyModel,
+    error: null,
     created_at: new Date(),
   },
 ]);
 
-    // ─────────────────────────────
-    // ⑦ 결과 반환 (ⅩⅤ 규약 형태로 래핑)
-    // ─────────────────────────────
-    const normalizedPartial = { ...partial_scores };
+// ─────────────────────────────
+// ⑦ 결과 반환 (ⅩⅤ 규약 형태로 래핑)
+// ─────────────────────────────
+const truthscore_pct = Math.round(truthscore * 10000) / 100; // 2 decimals
+const truthscore_text = `${truthscore_pct.toFixed(2)}%`;
 
-    if (safeMode === "dv" || safeMode === "cv") {
-      // DV/CV 모드에서 명세 기본 필드 보장
-      normalizedPartial.validity =
-        typeof partial_scores.validity === "number"
-          ? partial_scores.validity
-          : 0.7;
+// ✅ normalizedPartial이 따로 없으니 일단 동일하게 사용
+const normalizedPartial = partial_scores;
 
-      normalizedPartial.engine_factor =
-        typeof partial_scores.engine_factor === "number"
-          ? partial_scores.engine_factor
-          : C;
-    }
+const payload = {
+  mode: safeMode,
+  truthscore: truthscore_text,
+  truthscore_pct,
+  truthscore_01: Number(truthscore.toFixed(4)),
+  elapsed,
+  engines,
+  partial_scores: normalizedPartial,
+  flash_summary: flash,
+  verify_raw: verify,
+  gemini_verify_model: verifyModel,
+  engine_times: engineTimes,
+  engine_metrics: engineMetrics,
+};
 
-  const payload = {
-      mode: safeMode,
-      truthscore: truthscore.toFixed(3),
-      elapsed,
-      engines,
-      partial_scores: normalizedPartial,
-      flash_summary: flash.slice(0, 250),
-      verify_raw: verify.slice(0, 350),
-      gemini_verify_model: verifyModel, // ✅ 이번 요청에서 TruthScore 계산에 사용된 모델
-      engine_times: engineTimes,
-      engine_metrics: engineMetrics,
-    };
+// 🔹 DV/CV 모드에서는 GitHub 검색 결과도 같이 내려줌
+if (safeMode === "dv" || safeMode === "cv") {
+  payload.github_repos = external.github ?? [];
+}
 
-
-    // 🔹 DV/CV 모드에서는 GitHub 검색 결과도 같이 내려줌
-    if (safeMode === "dv" || safeMode === "cv") {
-      payload.github_repos = external.github ?? [];
-    }
-
-    // 🔹 QV/FV 모드에서는 Naver 검색 결과도 같이 내려줌
-    if ((safeMode === "qv" || safeMode === "fv") && external.naver) {
-      payload.naver_results = external.naver;
-    }
+// 🔹 QV/FV 모드에서는 Naver 검색 결과도 같이 내려줌
+if ((safeMode === "qv" || safeMode === "fv") && external.naver) {
+  payload.naver_results = external.naver;
+}
 
     return res.json(buildSuccess(payload));
     } catch (e) {
-    console.error("❌ Verify Error:", e.message);
-    await supabase.from("verification_logs").insert([
+  console.error("❌ Verify Error:", e.message);
+
+  try {
+    const fallbackUserId = logUserId || process.env.DEFAULT_USER_ID;
+    if (fallbackUserId) {
+      await supabase.from("verification_logs").insert([
   {
-    query,
-    mode: safeMode,
-    error: e.message,
+    user_id: logUserId || process.env.DEFAULT_USER_ID, // logUserId 없으면 DEFAULT 필요
+    question: query || null,
+    query: query || null,
+
+    truth_score: null,
+    summary: null,
+    cross_score: null,
+    adjusted_score: null,
+
+    status: safeMode || null,
+    engines: engines || null,
+    keywords: null,
+    elapsed: null,
+
+    model_main: "gemini-2.5-flash",
+    model_eval: verifyModel || null,
+    sources: null,
+
     gemini_model: verifyModel || null,
+    error: e.message,
     created_at: new Date(),
   },
 ]);
+ }
+  } catch (logErr) {
+    console.error("❌ verification_logs insert failed:", logErr.message);
+  }
 
     const status = e.response?.status;
 
@@ -2142,32 +2581,35 @@ app.get("/admin/ui", ensureAuth, async (req, res) => {
 
     // ✅ 최근 요청(verification_logs)에서 engine_metrics 읽기
     const { data: recentLogsRaw, error: logsErr } = await supabase
-      .from("verification_logs")
-      .select("created_at, query, mode, truthscore, elapsed, partial_scores")
-      .order("created_at", { ascending: false })
-      .limit(10);
+  .from("verification_logs")
+  .select("created_at, question, truth_score, cross_score, adjusted_score, status, engines, keywords, elapsed, model_main, model_eval, sources, gemini_model, error")
+  .order("created_at", { ascending: false })
+  .limit(10);
 
-    if (logsErr && DEBUG) {
-      console.warn("⚠️ verification_logs query error:", logsErr.message);
-    }
+const recentLogs = (recentLogsRaw || []).map((r) => {
+  let src = r.sources;
+  if (typeof src === "string") {
+    try { src = JSON.parse(src); } catch { src = {}; }
+  }
+  if (!src || typeof src !== "object") src = {};
 
-    const recentLogs = (recentLogsRaw || []).map((r) => {
-      let ps = r.partial_scores;
-      if (typeof ps === "string") {
-        try {
-          ps = JSON.parse(ps);
-        } catch {
-          ps = {};
-        }
-      }
-      if (!ps || typeof ps !== "object") ps = {};
-      return { ...r, partial_scores_obj: ps };
-    });
+  const ps = (src && typeof src.partial_scores === "object") ? src.partial_scores : {};
+
+  // (기존 EJS 호환용으로 query/mode 같은 키를 억지로 만들어 주고 싶으면)
+  return {
+    ...r,
+    query: r.question,              // ✅ 기존 template이 r.query를 쓰면 깨져서
+    mode: r.status,                // ✅ 기존 template이 r.mode를 쓰면 깨져서
+    partial_scores_obj: ps,         // ✅ 기존 로직 유지
+    sources_obj: src,
+  };
+});
 
     const lastRequest = recentLogs[0] || null;
-
     const em = lastRequest?.partial_scores_obj?.engine_metrics || {};
     const et = lastRequest?.partial_scores_obj?.engine_times || {};
+const gm = lastRequest?.partial_scores_obj?.gemini_metrics || {};
+const gt = lastRequest?.partial_scores_obj?.gemini_times || {};
 
     const lastEngineMetricsRows = Object.entries(em).map(([engine, m]) => ({
       engine,
@@ -2197,6 +2639,9 @@ app.get("/admin/ui", ensureAuth, async (req, res) => {
       // ✅ EJS에서 쓰는 원본 객체(네가 만든 EJS 기준)
       lastEngineMetrics: em,
       lastEngineTimes: et,
+ 
+ lastGeminiMetrics: gm,
+  lastGeminiTimes: gt,
 
       // (선택) rows가 필요하면 유지
       lastEngineMetricsRows,
@@ -2252,7 +2697,7 @@ app.get("/health", (_, res) =>
 app.get("/", (_, res) => {
   res
     .status(200)
-    .send("OK - Cross-Verified AI Proxy v18.3.0 (root health check)");
+    .send("OK - Cross-Verified AI Proxy v18.4.0-pre (root health check)");
 });
 
 app.head("/", (_, res) => {
