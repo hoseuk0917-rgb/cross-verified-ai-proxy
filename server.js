@@ -24,6 +24,7 @@ import { fileURLToPath } from "url";
 import ejs from "ejs";
 import nodemailer from "nodemailer";
 import { google } from "googleapis";
+import "express-async-errors";
 
 // ✅ LV (법령검증) 모듈 외부화
 import { fetchKLawAll } from "./src/modules/klaw_module.js";
@@ -37,6 +38,7 @@ const isProd = process.env.NODE_ENV === "production";
 const DEBUG = process.env.DEBUG === "true";
 
 const app = express();
+app.set("trust proxy", 1);
 
 const PORT = parseInt(process.env.PORT || "10000", 10);
 const REGION =
@@ -156,6 +158,23 @@ app.use(cors({
   },
   credentials: true,
 }));
+
+// ─────────────────────────────
+// ✅ (추가) CORS 에러를 JSON으로 정리해서 반환
+//   - cors가 next(err)를 호출하면, "바로 다음" 에러핸들러가 잡음
+// ─────────────────────────────
+app.use((err, req, res, next) => {
+  if (err && err.message === "CORS_NOT_ALLOWED") {
+    return res.status(403).json(
+      buildError(
+        "CORS_NOT_ALLOWED",
+        "허용되지 않은 Origin입니다.",
+        { origin: req.headers?.origin || null }
+      )
+    );
+  }
+  return next(err);
+});
 
 app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: true }));
@@ -283,6 +302,96 @@ function safeSourcesForDB(obj, maxLen = 20000) {
   } catch (e) {
     return JSON.stringify({ truncated: true, reason: "sources_stringify_fail" });
   }
+}
+
+// ─────────────────────────────
+// ✅ (추가) Gemini verifyInput 안전 직렬화 (slice로 JSON 깨지는 것 방지)
+// ─────────────────────────────
+function safeVerifyInputForGemini(input, maxLen) {
+  const limit = Number.isFinite(maxLen) ? maxLen : 12000;
+
+  const tryStr = (obj) => {
+    try {
+      const s = JSON.stringify(obj);
+      return s.length <= limit ? s : null;
+    } catch {
+      return null;
+    }
+  };
+
+  // 0) 원본 그대로 시도
+  let s0 = tryStr(input);
+  if (s0) return s0;
+
+  // 1) blocks evidence를 가볍게 (naver는 title/link만)
+  const slimBlocks = Array.isArray(input?.blocks)
+    ? input.blocks.map((b) => {
+        const ev = b?.evidence || {};
+        const cutArr = (v, n) => (Array.isArray(v) ? v.slice(0, n) : []);
+        const slimNaver = cutArr(ev.naver, 4).map((x) => ({
+          title: x?.title || null,
+          link: x?.link || null,
+          naver_type: x?.naver_type || null,
+          tier: x?.tier || null,
+        }));
+
+        return {
+          id: b?.id ?? null,
+          text: (String(b?.text || "")).slice(0, 320),
+          queries: b?.queries || null,
+          evidence: {
+            crossref: cutArr(ev.crossref, 3),
+            openalex: cutArr(ev.openalex, 3),
+            wikidata: cutArr(ev.wikidata, 5),
+            gdelt: cutArr(ev.gdelt, 3),
+            naver: slimNaver,
+          },
+        };
+      })
+    : [];
+
+  const slim1 = {
+    mode: input?.mode,
+    query: input?.query,
+    core_text: input?.core_text ? String(input.core_text).slice(0, 2000) : "",
+    blocks: slimBlocks,
+    external: { truncated: true },
+    partial_scores: input?.partial_scores
+      ? {
+          recency: input.partial_scores.recency ?? null,
+          validity: input.partial_scores.validity ?? null,
+          consistency: input.partial_scores.consistency ?? null,
+          engine_factor: input.partial_scores.engine_factor ?? null,
+          naver_tier_factor: input.partial_scores.naver_tier_factor ?? null,
+          engines_used: input.partial_scores.engines_used ?? null,
+          engine_results: input.partial_scores.engine_results ?? null,
+        }
+      : {},
+  };
+
+  let s1 = tryStr(slim1);
+  if (s1) return s1;
+
+  // 2) 마지막 안전망
+  const slimmer = {
+    mode: slim1.mode,
+    query: slim1.query,
+    core_text: slim1.core_text,
+    blocks: slimBlocks.slice(0, 3),
+    partial_scores: slim1.partial_scores,
+    external: { truncated: true, reason: "too_large" },
+  };
+
+  let s2 = tryStr(slimmer);
+  if (s2) return s2;
+
+  // 3) 진짜 최종: 최소 JSON
+  return JSON.stringify({
+    mode: input?.mode || null,
+    query: input?.query || null,
+    core_text: input?.core_text ? String(input.core_text).slice(0, 1500) : "",
+    truncated: true,
+  });
 }
 
 // ─────────────────────────────
@@ -604,17 +713,83 @@ const NAVER_MULTI_MAX_QUERIES = parseInt(process.env.NAVER_MULTI_MAX_QUERIES || 
 const NAVER_MULTI_MAX_ITEMS = parseInt(process.env.NAVER_MULTI_MAX_ITEMS || "18", 10);
 
 // 🔹 결과 중복 제거(링크 기준)
-function dedupeByLink(items = []) {
-  const seen = new Set();
+function uniqStrings(arr, max = 50) {
   const out = [];
-  for (const it of items) {
-    const key = (it?.link || "").toString().trim();
+  const seen = new Set();
+  for (const v of (arr || [])) {
+    const s = String(v || "").trim();
+    if (!s) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function dedupeByLink(items = []) {
+  const out = [];
+  const seen = new Set();
+
+  for (const it of (items || [])) {
+    const link = String(it?.link || "").trim();
+    const key = link || JSON.stringify(it).slice(0, 200);
+
     if (!key) continue;
     if (seen.has(key)) continue;
+
     seen.add(key);
     out.push(it);
   }
   return out;
+}
+
+function engineQueriesPresent(q) {
+  if (Array.isArray(q)) {
+    return q.some((v) => String(v || "").trim().length > 0);
+  }
+  if (typeof q === "string") {
+    return q.trim().length > 0;
+  }
+  return false;
+}
+
+// ✅ “쿼리(검색어) 없으면 제외”, “실제 호출(calls) 없으면 제외”
+function computeEnginesUsed({ enginesRequested = [], partial_scores = {}, engineMetrics = {} }) {
+  const used = [];
+  const excluded = [];
+
+  const eq = partial_scores?.engine_queries || {};
+  const er = partial_scores?.engine_results || {};
+
+  for (const e of enginesRequested) {
+    if (e === "klaw") {
+      used.push(e);
+      continue;
+    }
+
+    const calls = Number(engineMetrics?.[e]?.calls ?? 0);
+    if (!(calls > 0)) {
+      excluded.push({ engine: e, reason: "no_calls" });
+      continue;
+    }
+
+    const q = eq?.[e];
+    if (!engineQueriesPresent(q)) {
+      excluded.push({ engine: e, reason: "empty_query" });
+      continue;
+    }
+
+    const results = Number(er?.[e] ?? 0);
+    if (!(results > 0)) {
+      excluded.push({ engine: e, reason: "no_results" });
+      continue;
+    }
+
+    used.push(e);
+  }
+
+  return { used, excluded };
 }
 
 // ─────────────────────────────
@@ -784,14 +959,15 @@ async function callNaver(query, clientId, clientSecret) {
       const s = e?.response?.status;
 
       // ✅ BAD 키(401/403)는 즉시 "치명 오류"로 중단시켜야 함
-      if (s === 401 || s === 403) {
-        const err = new Error("NAVER_AUTH_ERROR");
-        err.code = "NAVER_AUTH_ERROR";
-        err.httpStatus = 401;
-        err.detail = { status: s };
-        err._fatal = true;
-        throw err;
-      }
+     if (s === 401 || s === 403) {
+  const err = new Error("NAVER_AUTH_ERROR");
+  err.code = "NAVER_AUTH_ERROR";
+  err.httpStatus = 401;
+  err.detail = { status: s };
+  err.publicMessage = "Naver client id / secret 인증에 실패했습니다. (올바른 키인지 확인하세요)";
+  err._fatal = true;
+  throw err;
+}
 
       // 다른 에러는 일단 다음 endpoint 시도 (news만 죽고 web은 살 수 있음)
       if (DEBUG) console.warn("⚠️ Naver endpoint fail:", ep.type, s, e.message);
@@ -862,24 +1038,38 @@ async function fetchGitHub(q, token) {
   }
   headers.Authorization = `Bearer ${token}`;
 
-  const { data } = await axios.get(
-    `https://api.github.com/search/repositories?q=${encodeURIComponent(
-      q
-    )}&per_page=3`,
-    {
-      headers,
-      timeout: HTTP_TIMEOUT_MS,                     // ✅ 추가
-    }
+  let data;
+try {
+  const resp = await axios.get(
+    `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=3`,
+    { headers, timeout: HTTP_TIMEOUT_MS }
   );
+  data = resp.data;
+} catch (e) {
+  const s = e?.response?.status;
 
-  return (
-    data?.items?.map((i) => ({
-      name: i.full_name,
-      stars: i.stargazers_count,
-      forks: i.forks_count,
-      updated: i.updated_at,
-    })) || []
-  );
+  // ✅ GitHub 토큰 불량/만료/권한없음 → 즉시 치명 오류로 중단
+  if (s === 401 || s === 403) {
+    const err = new Error("GITHUB_AUTH_ERROR");
+    err.code = "GITHUB_AUTH_ERROR";
+    err.httpStatus = 401;
+    err.detail = { status: s };
+    err.publicMessage = "GitHub token 인증에 실패했습니다. (토큰 만료/권한/형식 확인)";
+    err._fatal = true;
+    throw err;
+  }
+
+  throw e;
+}
+
+return (
+  data?.items?.map((i) => ({
+    name: i.full_name,
+    stars: i.stargazers_count,
+    forks: i.forks_count,
+    updated: i.updated_at,
+  })) || []
+);
 }
 
 // ─────────────────────────────
@@ -1249,6 +1439,15 @@ function splitIntoTwoParts(text) {
   return [a, b];
 }
 
+// ─────────────────────────────
+// ✅ (추가) 블록 텍스트 상한 클립 (verify 흔들림 방지)
+// ─────────────────────────────
+function clipBlockText(s, max = 260) {
+  const t = String(s || "").replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  return t.length > max ? t.slice(0, max).trim() : t;
+}
+
 function buildNaverAndQuery(baseKo) {
   return String(baseKo || "")
     .replace(/[+]/g, " ")
@@ -1348,14 +1547,14 @@ async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, model
     const naverArr = Array.isArray(eq.naver) ? eq.naver : (typeof eq.naver === "string" ? [eq.naver] : []);
     return {
       id: Number.isFinite(Number(b?.id)) ? Number(b.id) : (idx + 1),
-      text: String(b?.text || "").trim(),
-      engine_queries: {
-        crossref: String(eq.crossref || "").trim() || english_core,
-        openalex: String(eq.openalex || "").trim() || english_core,
-        wikidata: String(eq.wikidata || "").trim() || korean_core,
-        gdelt: String(eq.gdelt || "").trim() || english_core,
-        naver: naverArr.map(s => String(s).trim()).filter(Boolean).slice(0, BLOCK_NAVER_MAX_QUERIES),
-      },
+      text: clipBlockText(String(b?.text || "").trim(), 260),
+    engine_queries: {
+  crossref: String(eq.crossref || "").trim(),
+  openalex: String(eq.openalex || "").trim(),
+  wikidata: String(eq.wikidata || "").trim(),
+  gdelt: String(eq.gdelt || "").trim(),
+  naver: naverArr.map(s => String(s).trim()).filter(Boolean).slice(0, BLOCK_NAVER_MAX_QUERIES),
+},
     };
   }).filter(b => b.text);
 
@@ -1509,18 +1708,17 @@ if (safeMode !== "lv" && !gemini_key) {
 }
 
   // QV/FV 모드는 네이버 옵션 해제 → 항상 Naver 엔진 사용
-  if ((safeMode === "qv" || safeMode === "fv") && (!naver_id || !naver_secret)) {
-    return res
-      .status(400)
-      .json(
-        buildError(
-          "VALIDATION_ERROR",
-          "QV/FV 모드에서는 Naver client id / secret이 필요합니다."
-        )
-      );
-  }
+  // ✅ QV/FV: 네이버 필수
+if ((safeMode === "qv" || safeMode === "fv") && (!naver_id || !naver_secret)) {
+  return res.status(400).json(
+    buildError(
+      "VALIDATION_ERROR",
+      "QV/FV 모드에서는 Naver client id / secret이 필요합니다."
+    )
+  );
+}
 
-// ✅ LV는 klaw_key 필수
+// ✅ LV: klaw_key 필수
 if (safeMode === "lv" && !klaw_key) {
   return res.status(400).json(
     buildError("VALIDATION_ERROR", "LV 모드에서는 klaw_key가 필요합니다.")
@@ -1653,7 +1851,7 @@ if (!qvfvPre) {
     blocks: [
       {
         id: 1,
-        text: t1,
+        text: clipBlockText(t1, 260),
         engine_queries: {
           crossref: String(baseCore).trim(),
           openalex: String(baseCore).trim(),
@@ -1664,7 +1862,7 @@ if (!qvfvPre) {
       },
       {
         id: 2,
-        text: t2,
+        text: clipBlockText(t2, 260),
         engine_queries: {
           crossref: String(baseCore).trim(),
           openalex: String(baseCore).trim(),
@@ -1685,81 +1883,119 @@ if (!qvfvPre) {
     external.gdelt = [];
     external.naver = [];
 
-    const blocksForVerify = [];
-const naverQueriesUsed = []; // ✅ 실제로 호출한 naver 쿼리 기록용(중복제거해서 로그에 저장)
+const blocksForVerify = [];
+
+// ✅ 엔진별 "실제로 사용한 검색어(쿼리)" 모음
+const engineQueriesUsed = {
+  crossref: [],
+  openalex: [],
+  wikidata: [],
+  gdelt: [],
+  naver: [],
+};
+
+// ✅ 쿼리가 비면 아예 호출하지 않고 result=[]로 처리 (calls 안 늘어남)
+const runOrEmpty = async (name, fn, q) => {
+  const qq = String(q || "").trim();
+  if (!qq) return { result: [], ms: 0, skipped: true };
+  return await safeFetchTimed(name, fn, qq, engineTimes, engineMetrics);
+};
+
+for (const b of (qvfvPre.blocks || [])) {
+  const eq = b.engine_queries || {};
+
+const qCrossref = String(eq.crossref || "").trim();
+const qOpenalex = String(eq.openalex || "").trim();
+const qWikidata = String(eq.wikidata || "").trim();
+const qGdelt   = String(eq.gdelt   || "").trim();
+
+  // ✅ 엔진별 쿼리 기록(빈 값 제외)
+  if (qCrossref) engineQueriesUsed.crossref.push(qCrossref);
+  if (qOpenalex) engineQueriesUsed.openalex.push(qOpenalex);
+  if (qWikidata) engineQueriesUsed.wikidata.push(qWikidata);
+  if (qGdelt) engineQueriesUsed.gdelt.push(qGdelt);
+
+let naverQueries = Array.isArray(eq.naver) ? eq.naver : [];
+naverQueries = naverQueries
+  .map((q) => buildNaverAndQuery(q))
+  .filter(Boolean)
+  .slice(0, BLOCK_NAVER_MAX_QUERIES);
+
+// ✅ (엄격 버전) fallback 없이 비면 스킵
+// if (!naverQueries.length) naverQueries = [];
 
 
-    for (const b of qvfvPre.blocks || []) {
-      const eq = b.engine_queries || {};
-      const qCrossref = eq.crossref || qvfvPre.english_core || query;
-      const qOpenalex = eq.openalex || qvfvPre.english_core || query;
-      const qWikidata = eq.wikidata || qvfvPre.korean_core || query;
-      const qGdelt = eq.gdelt || qvfvPre.english_core || query;
+  if (!naverQueries.length) {
+    const fallbackNq = buildNaverAndQuery(qvfvPre.korean_core || query);
+    if (fallbackNq) naverQueries = [fallbackNq];
+  }
 
-      let naverQueries = Array.isArray(eq.naver) ? eq.naver : [];
-      naverQueries = naverQueries
-        .map((q) => buildNaverAndQuery(q))
-        .filter(Boolean)
-        .slice(0, BLOCK_NAVER_MAX_QUERIES);
+  // ✅ 네이버 쿼리 기록(빈 값 제외)
+  for (const nq of naverQueries) {
+    const s = String(nq || "").trim();
+    if (s) engineQueriesUsed.naver.push(s);
+  }
 
-      if (!naverQueries.length) {
-        naverQueries = [buildNaverAndQuery(qvfvPre.korean_core || query)].filter(Boolean);
-      }
+  const [crPack, oaPack, wdPack, gdPack] = await Promise.all([
+    runOrEmpty("crossref", fetchCrossref, qCrossref),
+    runOrEmpty("openalex", fetchOpenAlex, qOpenalex),
+    runOrEmpty("wikidata", fetchWikidata, qWikidata),
+    runOrEmpty("gdelt", fetchGDELT, qGdelt),
+  ]);
 
-naverQueriesUsed.push(...naverQueries); // ✅ 이번 블록에서 실제 호출한 쿼리 저장
+  let naverItems = [];
+  for (const nq0 of naverQueries) {
+    const nq = String(nq0 || "").trim();
+    if (!nq) continue;
 
+    const { result } = await safeFetchTimed(
+      "naver",
+      (qq) => callNaver(qq, naver_id, naver_secret),
+      nq,
+      engineTimes,
+      engineMetrics
+    );
+    if (Array.isArray(result) && result.length) naverItems.push(...result);
+  }
+  naverItems = dedupeByLink(naverItems).slice(0, BLOCK_NAVER_MAX_ITEMS);
 
-      const [crPack, oaPack, wdPack, gdPack] = await Promise.all([
-        safeFetchTimed("crossref", fetchCrossref, qCrossref, engineTimes, engineMetrics),
-        safeFetchTimed("openalex", fetchOpenAlex, qOpenalex, engineTimes, engineMetrics),
-        safeFetchTimed("wikidata", fetchWikidata, qWikidata, engineTimes, engineMetrics),
-        safeFetchTimed("gdelt", fetchGDELT, qGdelt, engineTimes, engineMetrics),
-      ]);
+  external.crossref.push(...(crPack.result || []));
+  external.openalex.push(...(oaPack.result || []));
+  external.wikidata.push(...(wdPack.result || []));
+  external.gdelt.push(...(gdPack.result || []));
+  external.naver.push(...(naverItems || []));
 
-      let naverItems = [];
-      for (const nq of naverQueries) {
-        const { result } = await safeFetchTimed(
-          "naver",
-          (qq) => callNaver(qq, naver_id, naver_secret),
-          nq,
-          engineTimes,
-          engineMetrics
-        );
-        if (Array.isArray(result) && result.length) naverItems.push(...result);
-      }
-      naverItems = dedupeByLink(naverItems).slice(0, BLOCK_NAVER_MAX_ITEMS);
+  blocksForVerify.push({
+    id: b.id,
+    text: b.text,
+    queries: {
+      crossref: qCrossref,
+      openalex: qOpenalex,
+      wikidata: qWikidata,
+      gdelt: qGdelt,
+      naver: naverQueries
+    },
+    evidence: {
+      crossref: crPack.result || [],
+      openalex: oaPack.result || [],
+      wikidata: wdPack.result || [],
+      gdelt: gdPack.result || [],
+      naver: naverItems || [],
+    },
+  });
+}
 
-      external.crossref.push(...(crPack.result || []));
-      external.openalex.push(...(oaPack.result || []));
-      external.wikidata.push(...(wdPack.result || []));
-      external.gdelt.push(...(gdPack.result || []));
-      external.naver.push(...(naverItems || []));
+external.naver = dedupeByLink(external.naver).slice(0, NAVER_MULTI_MAX_ITEMS);
+qvfvBlocksForVerifyFull = blocksForVerify;
 
-      blocksForVerify.push({
-        id: b.id,
-        text: b.text,
-        queries: { crossref: qCrossref, openalex: qOpenalex, wikidata: qWikidata, gdelt: qGdelt, naver: naverQueries },
-        evidence: {
-          crossref: crPack.result || [],
-          openalex: oaPack.result || [],
-          wikidata: wdPack.result || [],
-          gdelt: gdPack.result || [],
-          naver: naverItems || [],
-        },
-      });
-    }
-
-    external.naver = dedupeByLink(external.naver).slice(0, NAVER_MULTI_MAX_ITEMS);
-    qvfvBlocksForVerifyFull = blocksForVerify;
-
-// ✅ 실제 호출된 naver 쿼리 로그 저장(중복 제거)
-partial_scores.engine_queries = partial_scores.engine_queries || {};
-partial_scores.engine_queries.naver = [...new Set(
-  (naverQueriesUsed || [])
-    .map((q) => buildNaverAndQuery(q))
-    .filter(Boolean)
-)].slice(0, 12);
-
+// ✅ 엔진별 쿼리를 partial_scores.engine_queries에 “전부” 저장
+partial_scores.engine_queries = {
+  crossref: uniqStrings(engineQueriesUsed.crossref, 12),
+  openalex: uniqStrings(engineQueriesUsed.openalex, 12),
+  wikidata: uniqStrings(engineQueriesUsed.wikidata, 12),
+  gdelt: uniqStrings(engineQueriesUsed.gdelt, 12),
+  naver: uniqStrings(engineQueriesUsed.naver, 12),
+};
 
     partial_scores.blocks_for_verify = blocksForVerify.map((x) => ({
       id: x.id,
@@ -1830,6 +2066,10 @@ partial_scores.engine_queries.naver = [...new Set(
 
     partial_scores.validity = calcValidityScore(external.github);
     partial_scores.github_queries = ghQueries;
+partial_scores.engine_queries = {
+  github: uniqStrings(Array.isArray(ghQueries) ? ghQueries : [], 12),
+};
+
 
     // ✅ consistency (Gemini Pro)
     const t_cons = Date.now();
@@ -1894,11 +2134,35 @@ ${JSON.stringify(external.klaw).slice(0, 6000)}
   }
 }
 
+// ✅ 엔진별 "결과 개수" 기록 (no_results 제외 로직용)
+partial_scores.engine_results = {
+  crossref: Array.isArray(external.crossref) ? external.crossref.length : 0,
+  openalex: Array.isArray(external.openalex) ? external.openalex.length : 0,
+  wikidata: Array.isArray(external.wikidata) ? external.wikidata.length : 0,
+  gdelt: Array.isArray(external.gdelt) ? external.gdelt.length : 0,
+  naver: Array.isArray(external.naver) ? external.naver.length : 0,
+  github: Array.isArray(external.github) ? external.github.length : 0,
+  klaw: external.klaw ? 1 : 0,
+};
 
 partial_scores.engine_times = engineTimes;
 partial_scores.engine_metrics = engineMetrics;
 partial_scores.gemini_times = geminiTimes;
 partial_scores.gemini_metrics = geminiMetrics;
+
+// ✅ “검색어(쿼리) 없는 엔진은 제외” + “실제 호출(calls) 없는 엔진은 제외”
+const enginesRequested = [...engines];
+const { used: enginesUsed, excluded: enginesExcluded } = computeEnginesUsed({
+  enginesRequested,
+  partial_scores,
+  engineMetrics,
+});
+
+partial_scores.engines_requested = enginesRequested;
+partial_scores.engines_used = enginesUsed;
+partial_scores.engines_excluded = enginesExcluded;
+
+// ✅ 이후 로직(보정계수/로그/응답)은 enginesUsed를 기준으로 사용
 
 
     // ─────────────────────────────
@@ -1960,11 +2224,21 @@ await supabase.from("verification_logs").insert([
     // ─────────────────────────────
     // ③ 엔진 보정계수 조회 (서버 통계 기반)
     // ─────────────────────────────
-    if (engines.length > 0) {
-      engineStatsMap = await fetchEngineStatsMap(engines);
-      engineFactor = computeEngineCorrectionFactor(engines, engineStatsMap); // 0.9~1.1
-      partial_scores.engine_factor = engineFactor;
-    }
+    const enginesForCorrection = Array.isArray(partial_scores.engines_used)
+  ? partial_scores.engines_used.filter((x) => x !== "klaw")
+  : engines.filter((x) => x !== "klaw");
+
+if (enginesForCorrection.length > 0) {
+  engineStatsMap = await fetchEngineStatsMap(enginesForCorrection);
+  engineFactor = computeEngineCorrectionFactor(enginesForCorrection, engineStatsMap); // 0.9~1.1
+  partial_scores.engine_factor = engineFactor;
+  partial_scores.engine_factor_engines = enginesForCorrection;
+} else {
+  engineFactor = 1.0;
+  partial_scores.engine_factor = 1.0;
+  partial_scores.engine_factor_engines = [];
+}
+
 
     // ─────────────────────────────
     // ④ Gemini 요청 단계 (Flash → Pro)
@@ -2062,7 +2336,7 @@ let answerModelUsed = "gemini-2.5-flash";
   4) 각 검증엔진별로 이번 질의에 대한 국소 보정값(0.9~1.1) 제안
 
 [입력 JSON]
-${JSON.stringify(verifyInput).slice(0, VERIFY_INPUT_CHARS)}
+${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
 
 입력 필드 설명(요약):
 - mode: "qv" | "fv" | "dv" | "cv" 중 하나
@@ -2178,18 +2452,7 @@ try {
       break;
     } catch (e) {
       const status = e?.response?.status;
-// ✅ NAVER 인증 오류는 여기서도 401로 매핑 (외부엔진 수집 단계에서 터지는 케이스)
-if (e?.code === "NAVER_AUTH_ERROR") {
-  return res
-    .status(e.httpStatus || 401)
-    .json(
-      buildError(
-        "NAVER_AUTH_ERROR",
-        "Naver client id / secret 인증에 실패했습니다. (올바른 키인지 확인하세요)",
-        e.detail || e.message
-      )
-    );
-}
+
       if (status === 429) throw e; // ✅ 쿼터 소진은 즉시 상위로
       lastVerifyErr = e;
       // 다음 후보 모델로 계속 진행
@@ -2219,18 +2482,6 @@ if (!verify || !verify.trim()) {
 }
     } catch (e) {
       const status = e.response?.status;
-// ✅ NAVER 인증 오류는 401로 즉시 반환
-if (e?.code === "NAVER_AUTH_ERROR") {
-  return res
-    .status(e.httpStatus || 401)
-    .json(
-      buildError(
-        "NAVER_AUTH_ERROR",
-        "Naver client id / secret 인증에 실패했습니다. (올바른 키인지 확인하세요)",
-        e.detail || e.message
-      )
-    );
-}
 
       if (status === 429) {
         // 이 경우만 상위 catch 로 보내서 GEMINI_KEY_EXHAUSTED 코드로 변환
@@ -2258,12 +2509,26 @@ if (e?.code === "NAVER_AUTH_ERROR") {
       return Math.max(0, Math.min(1, v));
     })();
 
-    // QV/FV: GDELT 기반 시의성 Rₜ, 그 외 모드는 1.0
-    const R_t =
-      (safeMode === "qv" || safeMode === "fv") &&
-      typeof partial_scores.recency === "number"
-        ? Math.max(0, Math.min(1, partial_scores.recency))
-        : 1.0;
+const enginesUsedSet = new Set(
+  Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines
+);
+
+const useGdelt = enginesUsedSet.has("gdelt");
+const useNaver = enginesUsedSet.has("naver");
+
+const R_t =
+  (safeMode === "qv" || safeMode === "fv") &&
+  useGdelt &&
+  typeof partial_scores.recency === "number"
+    ? Math.max(0, Math.min(1, partial_scores.recency))
+    : 1.0;
+
+const N =
+  (safeMode === "qv" || safeMode === "fv") &&
+  useNaver &&
+  typeof partial_scores.naver_tier_factor === "number"
+    ? Math.max(0.9, Math.min(1.05, partial_scores.naver_tier_factor))
+    : 1.0;
 
     // DV/CV: GitHub 유효성 Vᵣ, 없으면 0.7 중립값
     const V_r =
@@ -2271,13 +2536,6 @@ if (e?.code === "NAVER_AUTH_ERROR") {
       typeof partial_scores.validity === "number"
         ? Math.max(0, Math.min(1, partial_scores.validity))
         : 0.7;
-
-    // QV/FV: Naver 티어 팩터 N (0.9~1.05), 없으면 1.0
-    const N =
-      (safeMode === "qv" || safeMode === "fv") &&
-      typeof partial_scores.naver_tier_factor === "number"
-        ? Math.max(0.9, Math.min(1.05, partial_scores.naver_tier_factor))
-        : 1.0;
 
     // 엔진 전역 보정계수 C (0.9~1.1)
     const C =
@@ -2322,22 +2580,21 @@ if (e?.code === "NAVER_AUTH_ERROR") {
     // ─────────────────────────────
     // ⑥ 로그 및 DB 반영
     // ─────────────────────────────
-    await Promise.all(
-  engines.map((eName) => {
-    // 이번 요청에서 이 엔진에 적용할 truth 샘플
+const enginesForWeight = Array.isArray(partial_scores.engines_used)
+  ? partial_scores.engines_used.filter((x) => x !== "klaw")
+  : engines.filter((x) => x !== "klaw");
+
+await Promise.all(
+  enginesForWeight.map((eName) => {
     const adjRaw =
       typeof perEngineAdjust?.[eName] === "number" &&
       Number.isFinite(perEngineAdjust[eName])
         ? perEngineAdjust[eName]
         : 1.0;
 
-    // ✅ 명세 범위(0.9~1.1)로 제한
     const adj = Math.max(0.9, Math.min(1.1, adjRaw));
-
-    // ✅ truth는 0~1로 고정 (0.97*1.1 같은 케이스 방지)
     const engineTruth = Math.max(0, Math.min(1, hybrid * adj));
 
-    // per-engine 응답시간이 있으면 사용, 없으면 전체 elapsed 사용
     const engineMs =
       typeof engineTimes[eName] === "number" && engineTimes[eName] > 0
         ? engineTimes[eName]
@@ -2346,6 +2603,7 @@ if (e?.code === "NAVER_AUTH_ERROR") {
     return updateWeight(eName, engineTruth, engineMs);
   })
 );
+
 
 // ✅ Gemini 총합(ms) — 모든 Gemini 단계 완료 후 계산
 partial_scores.gemini_total_ms = Object.values(geminiTimes)
@@ -2409,7 +2667,7 @@ await supabase.from("verification_logs").insert([
     adjusted_score: Number(hybrid),      // ✅ adjusted(0~1)
 
     status: safeMode,                    // ✅ mode 컬럼 없으니 여기 저장
-    engines,                             // ✅ jsonb
+    engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
     keywords: keywordsForLog,            // ✅ array(text[])
     elapsed: String(elapsed),            // ✅ text
 
@@ -2438,7 +2696,8 @@ const payload = {
   truthscore_pct,
   truthscore_01: Number(truthscore.toFixed(4)),
   elapsed,
-  engines,
+ engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
+engines_requested: partial_scores.engines_requested || engines,
   partial_scores: normalizedPartial,
   flash_summary: flash,
   verify_raw: verify,
@@ -2494,9 +2753,31 @@ if ((safeMode === "qv" || safeMode === "fv") && external.naver) {
     console.error("❌ verification_logs insert failed:", logErr.message);
   }
 
+  // ✅ 외부엔진 인증/설정 등 치명 오류는 즉시 반환
+  if (e?._fatal && e?.httpStatus) {
+    return res.status(e.httpStatus).json(
+      buildError(
+        e.code || "FATAL_ERROR",
+        e.publicMessage || "요청을 처리할 수 없습니다.",
+        e.detail || e.message
+      )
+    );
+  }
+
     const status = e.response?.status;
 
-    // Gemini 429 → GEMINI_KEY_EXHAUSTED (ⅩⅤ 3.2)
+// ✅ NAVER 인증 오류는 401로 즉시 반환
+if (e?.code === "NAVER_AUTH_ERROR") {
+  return res.status(e.httpStatus || 401).json(
+    buildError(
+      "NAVER_AUTH_ERROR",
+      "Naver client id / secret 인증에 실패했습니다. (올바른 키인지 확인하세요)",
+      e.detail || e.message
+    )
+  );
+}
+   
+ // Gemini 429 → GEMINI_KEY_EXHAUSTED (ⅩⅤ 3.2)
     if (status === 429) {
       return res
         .status(200)
@@ -3146,6 +3427,61 @@ app.get("/", (_, res) => {
 
 app.head("/", (_, res) => {
   res.status(200).end();
+});
+
+// ─────────────────────────────
+// ✅ (선택 권장) API 404도 JSON으로 통일
+//   - /api/* 중 라우트에 매칭 안 되면 여기로 옴
+// ─────────────────────────────
+app.use("/api", (req, res) => {
+  return res.status(404).json(
+    buildError(
+      "API_NOT_FOUND",
+      "존재하지 않는 API입니다.",
+      { method: req.method, path: req.originalUrl }
+    )
+  );
+});
+
+// ─────────────────────────────
+// ✅ (선택 권장) 전역 에러도 JSON으로 통일 (Express Error Handler)
+//   - 반드시 "모든 라우트 선언이 끝난 뒤" + "app.listen 전"에 위치해야 함
+// ─────────────────────────────
+app.use((err, req, res, next) => {
+  const p = String(req.originalUrl || "");
+const wantsJson = p.startsWith("/api") || p.startsWith("/admin");
+  if (!wantsJson) {
+    // admin/ejs 같은 화면 요청은 기존처럼 텍스트로 내보내고 싶으면 이렇게 둬도 됨
+    // (원하면 여기도 JSON으로 바꿔도 됨)
+    return res.status(err?.status || 500).send("Server error");
+  }
+
+  // body parser JSON 파싱 실패
+  if (err?.type === "entity.parse.failed") {
+    return res.status(400).json(
+      buildError("INVALID_JSON", "JSON 파싱에 실패했습니다.", err?.message)
+    );
+  }
+
+  // body size 초과
+  if (err?.type === "entity.too.large") {
+    return res.status(413).json(
+      buildError("PAYLOAD_TOO_LARGE", "요청 바디가 너무 큽니다.", err?.message)
+    );
+  }
+
+  // 기본값
+  const status = err?.httpStatus || err?.status || 500;
+  const code = err?.code || (status >= 500 ? "INTERNAL_SERVER_ERROR" : "REQUEST_ERROR");
+  const message =
+    err?.publicMessage ||
+    (status >= 500
+      ? "서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
+      : (err?.message || "요청 처리 중 오류가 발생했습니다."));
+
+  const detail = DEBUG ? { message: err?.message, stack: err?.stack } : (err?.detail || null);
+
+  return res.status(status).json(buildError(code, message, detail));
 });
 
 app.listen(PORT, () => {
