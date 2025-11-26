@@ -85,7 +85,39 @@ app.set("views", path.join(__dirname, "views"));
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: true }));
-app.use(morgan("dev"));
+// ✅ Morgan: Render 헬스체크/Flutter SW 요청 로그 스킵
+// ✅ Morgan: Render 헬스체크/노이즈 요청 로그 스킵 (더 강력 버전)
+function getBasePath(req) {
+  const u = (req.originalUrl || req.url || "").toString();
+  return u.split("?")[0] || "";
+}
+
+function shouldSkipMorgan(req) {
+  const p = getBasePath(req);
+
+  // health/root
+  if (p === "/health" || p === "/") return true;
+
+  // flutter/pwa noise
+  if (p === "/flutter_service_worker.js") return true;
+  if (p === "/manifest.json") return true;
+  if (p === "/favicon.ico") return true;
+
+  // (선택) admin/ui가 너무 시끄러우면 켜기
+  // if (p.startsWith("/admin/ui")) return true;
+
+  // CORS preflight
+  if (req.method === "OPTIONS") return true;
+
+  return false;
+}
+
+app.use(
+  morgan(DEBUG ? "dev" : "combined", {
+    skip: (req, res) => shouldSkipMorgan(req),
+  })
+);
+
 if (DEBUG) console.log("🧩 Debug mode enabled");
 
 // ─────────────────────────────
@@ -706,22 +738,52 @@ async function fetchGitHub(q, token) {
 }
 
 // ─────────────────────────────
-// ✅ Gemini 호출 공통 유틸
-//   - URL: 모델 엔드포인트 (flash / pro / flash-lite 등)
-//   - payload: { contents: [...] } 형식
-//   - 반환: text(string)
+// ✅ Gemini 호출 공통 유틸 (빈문자 방지 + 원인 로그 + fallback 지원용)
 // ─────────────────────────────
-async function fetchGemini(url, payload) {
-  const { data } = await axios.post(url, payload, {
-    timeout: HTTP_TIMEOUT_MS,                       // ✅ 추가
-  });
+function extractGeminiText(data) {
+  const parts = data?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return "";
+  return parts.map((p) => (p?.text ? String(p.text) : "")).join("\n");
+}
 
-  const text =
-    data?.candidates?.[0]?.content?.parts
-      ?.map((p) => p.text || "")
-      .join("\n") || "";
+function geminiErrMessage(e) {
+  const status = e?.response?.status;
+  const apiMsg =
+    e?.response?.data?.error?.message ||
+    e?.response?.data?.message ||
+    null;
+  return `[status=${status ?? "?"}] ${apiMsg || e?.message || "Unknown Gemini error"}`;
+}
 
-  return text;
+// ✅ url: generateContent endpoint
+// ✅ payload: { contents:[{parts:[{text:"..."}]}] }
+// ✅ opts: { label?:string, minChars?:number }
+async function fetchGemini(url, payload, opts = {}) {
+  const label = opts.label || "gemini";
+  const minChars = Number.isFinite(opts.minChars) ? opts.minChars : 1;
+
+  try {
+    const { data } = await axios.post(url, payload, { timeout: HTTP_TIMEOUT_MS });
+
+    const text = extractGeminiText(data);
+
+    // ✅ 후보가 없거나 텍스트가 비면 "실패"로 처리 (fallback이 작동하도록 throw)
+    if ((text || "").trim().length < minChars) {
+      const finishReason = data?.candidates?.[0]?.finishReason;
+      const blockReason = data?.promptFeedback?.blockReason;
+      const err = new Error(
+        `${label}: GEMINI_EMPTY_TEXT (finish=${finishReason || "?"}, block=${blockReason || "?"})`
+      );
+      err._gemini_empty = true;
+      throw err;
+    }
+
+    return text;
+  } catch (e) {
+    // ✅ DEBUG가 꺼져 있어도 원인 파악 가능하게 항상 로그
+    console.error("❌ Gemini call failed:", label, geminiErrMessage(e));
+    throw e;
+  }
 }
 
 // ─────────────────────────────
@@ -1357,19 +1419,21 @@ if ((safeMode === "dv" || safeMode === "cv") && !github_token) {
   // - 클라이언트에서 gemini_model: "flash" | "pro" | undefined 로 보냄
   // - QV/FV에서만 토글, DV/CV는 항상 Pro 고정
     const geminiModelRaw = (gemini_model || "").toString().trim().toLowerCase();
-  let verifyModel = null; // 기본값: 모드별로 아래에서 설정
+let verifyModel = null;        // 요청에서 "의도한" verify 모델
+let verifyModelUsed = null;    // ✅ 실제로 성공한 verify 모델(에러 캐치에서도 써야 하므로 바깥 스코프)
 
-  if (safeMode === "qv" || safeMode === "fv") {
-    if (geminiModelRaw === "flash") {
-      verifyModel = "gemini-2.5-flash";
-    } else {
-      // gemini_model이 "pro"이거나 없으면 Pro 사용
-      verifyModel = "gemini-2.5-pro";
-    }
-  } else if (safeMode === "dv" || safeMode === "cv") {
-    // DV/CV는 항상 Pro 고정
+if (safeMode === "qv" || safeMode === "fv") {
+  if (geminiModelRaw === "flash") {
+    verifyModel = "gemini-2.5-flash";
+  } else {
     verifyModel = "gemini-2.5-pro";
   }
+} else if (safeMode === "dv" || safeMode === "cv") {
+  verifyModel = "gemini-2.5-pro";
+}
+
+// ✅ 기본값은 "의도한 모델"로 세팅 (fallback 성공 시 아래에서 덮어씀)
+verifyModelUsed = verifyModel;
 
     const engines = [];
   const external = {};
@@ -1782,12 +1846,15 @@ await supabase.from("verification_logs").insert([
     //   - QV/FV: 전처리에서 이미 답변/블록 생성 → 여기서는 검증(verify)만 수행
     //   - DV/CV: external을 포함한 요약(flash) + 검증(verify)
     // ─────────────────────────────
-    let flash = "";
-    let verify = "";
-    let verifyMeta = null;
+let flash = "";
+let verify = "";
+let verifyMeta = null;
 
-    // flash(답변/요약) 단계에서 실제 사용한 모델을 로그에 남기기 위함
-    let answerModelUsed = "gemini-2.5-flash";
+// ✅ 여기서는 "선언(let)" 하지 말고, 필요하면 값만 리셋
+verifyModelUsed = verifyModel;
+
+// flash(답변/요약) 단계에서 실제 사용한 모델을 로그에 남기기 위함
+let answerModelUsed = "gemini-2.5-flash";
 
     if (safeMode === "qv" || safeMode === "fv") {
       // QV/FV는 gemini_model 토글을 그대로 사용
@@ -1961,27 +2028,58 @@ ${JSON.stringify(verifyInput).slice(0, VERIFY_INPUT_CHARS)}
 }
 `.trim();
 
-      const t_verify = Date.now();
-      verify = await fetchGemini(
-        `https://generativelanguage.googleapis.com/v1beta/models/${verifyModel}:generateContent?key=${gemini_key}`,
-        { contents: [{ parts: [{ text: verifyPrompt }] }] }
-      );
-      const ms_verify = Date.now() - t_verify;
-      recordTime(geminiTimes, "verify_ms", ms_verify);
-      recordMetric(geminiMetrics, "verify", ms_verify);
+      // ✅ verify는 모델 실패/빈문자 발생이 있어서 fallback 시도
+const verifyPayload = { contents: [{ parts: [{ text: verifyPrompt }] }] };
 
-      // Pro 결과(JSON) 파싱 시도
-      try {
-        const trimmed = (verify || "").trim();
-        const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
-        const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
-        verifyMeta = JSON.parse(jsonText);
-      } catch {
-        verifyMeta = null;
-        if (DEBUG) {
-          console.warn("⚠️ verifyMeta JSON parse fail");
-        }
-      }
+// 1순위: verifyModel, 2순위: flash, 3순위: flash-lite
+const verifyModelCandidates = [
+  verifyModel,
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+].filter((v, i, a) => v && a.indexOf(v) === i);
+
+let lastVerifyErr = null;
+
+const t_verify = Date.now();
+try {
+  for (const m of verifyModelCandidates) {
+    try {
+      verify = await fetchGemini(
+        `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${gemini_key}`,
+        verifyPayload,
+        { label: `verify:${m}`, minChars: 20 } // ✅ 너무 짧은 텍스트(빈문자)도 실패로 처리
+      );
+      verifyModelUsed = m; // ✅ 실제 성공 모델 기록
+      break;
+    } catch (e) {
+      const status = e?.response?.status;
+      if (status === 429) throw e; // ✅ 쿼터 소진은 즉시 상위로
+      lastVerifyErr = e;
+      // 다음 후보 모델로 계속 진행
+    }
+  }
+} finally {
+  const ms_verify = Date.now() - t_verify;
+  recordTime(geminiTimes, "verify_ms", ms_verify);
+  recordMetric(geminiMetrics, "verify", ms_verify);
+}
+
+// ✅ 끝까지 실패했으면 기존 정책대로: verifyMeta 없이 외부엔진 기반으로만 진행
+if (!verify || !verify.trim()) {
+  verifyMeta = null;
+  if (DEBUG) console.warn("⚠️ verify failed on all models:", lastVerifyErr?.message || "unknown");
+} else {
+  // ✅ Pro 결과(JSON) 파싱 시도
+  try {
+    const trimmed = (verify || "").trim();
+    const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+    const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
+    verifyMeta = JSON.parse(jsonText);
+  } catch {
+    verifyMeta = null;
+    if (DEBUG) console.warn("⚠️ verifyMeta JSON parse fail");
+  }
+}
     } catch (e) {
       const status = e.response?.status;
       if (status === 429) {
@@ -2166,12 +2264,12 @@ await supabase.from("verification_logs").insert([
     elapsed: String(elapsed),            // ✅ text
 
     model_main: answerModelUsed,  // ✅ QV/FV 토글 반영 (또는 기본 flash)
-    model_eval: verifyModel,
-    sources: sourcesText,
+model_eval: verifyModelUsed,  // ✅ 실제 성공한 verify 모델
+sources: sourcesText,
 
-    gemini_model: verifyModel,
-    error: null,
-    created_at: new Date(),
+gemini_model: verifyModelUsed, // ✅ 실제 성공한 verify 모델
+error: null,
+created_at: new Date(),
   },
 ]);
 
@@ -2194,7 +2292,7 @@ const payload = {
   partial_scores: normalizedPartial,
   flash_summary: flash,
   verify_raw: verify,
-  gemini_verify_model: verifyModel,
+  gemini_verify_model: verifyModelUsed, // ✅ 실제로 성공한 모델
   engine_times: engineTimes,
   engine_metrics: engineMetrics,
 };
@@ -2233,10 +2331,10 @@ if ((safeMode === "qv" || safeMode === "fv") && external.naver) {
     elapsed: null,
 
     model_main: "gemini-2.5-flash",
-    model_eval: verifyModel || null,
+    model_eval: verifyModelUsed || verifyModel || null,
     sources: null,
 
-    gemini_model: verifyModel || null,
+    gemini_model: verifyModelUsed || verifyModel || null,
     error: e.message,
     created_at: new Date(),
   },
