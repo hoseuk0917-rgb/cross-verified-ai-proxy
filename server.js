@@ -435,6 +435,13 @@ const tierWeights = Object.entries(whitelistData.tiers || {}).map(
   })
 );
 
+// ✅ Naver 타입별 가중치(필요시 조정)
+const NAVER_TYPE_WEIGHTS = {
+  news: 1.0,
+  web: 0.9,
+  encyc: 1.05,
+};
+
 // 🔹 Naver 링크의 도메인을 기준으로 티어/가중치 찾기
 function resolveNaverTier(link) {
   try {
@@ -552,10 +559,10 @@ async function callNaver(query, clientId, clientSecret) {
     };
 
     const endpoints = [
-      "https://openapi.naver.com/v1/search/news.json",
-      "https://openapi.naver.com/v1/search/webkr.json",
-      "https://openapi.naver.com/v1/search/encyc.json",
-    ];
+  { type: "news",  url: "https://openapi.naver.com/v1/search/news.json" },
+  { type: "web",   url: "https://openapi.naver.com/v1/search/webkr.json" },
+  { type: "encyc", url: "https://openapi.naver.com/v1/search/encyc.json" },
+];
 
     const all = [];
 
@@ -569,32 +576,34 @@ async function callNaver(query, clientId, clientSecret) {
     const requiredHits =
       tokens.length >= 3 ? tokens.length - 1 : tokens.length;
 
-    for (const url of endpoints) {
-      const { data } = await axios.get(url, {
-  headers,
-  params: { query, display: 3 },
-  timeout: HTTP_TIMEOUT_MS,   // ✅ 추가
-});
+    for (const ep of endpoints) {
+  const { data } = await axios.get(ep.url, {
+    headers,
+    params: { query, display: 3 },
+    timeout: HTTP_TIMEOUT_MS,
+  });
 
-            let items =
-        data?.items?.map((i) => {
-          const cleanTitle = i.title?.replace(/<[^>]+>/g, "") || "";
-          const cleanDesc = i.description?.replace(/<[^>]+>/g, "") || "";
-          const link = i.link;
+  let items =
+    data?.items?.map((i) => {
+      const cleanTitle = i.title?.replace(/<[^>]+>/g, "") || "";
+      const cleanDesc = i.description?.replace(/<[^>]+>/g, "") || "";
+      const link = i.link;
 
+      const tierInfo = resolveNaverTier(link);
+      const typeWeight = NAVER_TYPE_WEIGHTS[ep.type] ?? 1;
 
-          // 🔹 도메인 기반 티어 계산
-          const tierInfo = resolveNaverTier(link);
+      return {
+        title: cleanTitle,
+        desc: cleanDesc,
+        link,
+        origin: "naver",
+        naver_type: ep.type,      // ✅ 추가
+        tier: tierInfo.tier,
+        tier_weight: tierInfo.weight,
+        type_weight: typeWeight,  // ✅ 추가
+      };
+    }) || [];
 
-          return {
-            title: cleanTitle,
-            desc: cleanDesc,
-            link,
-            origin: "naver",
-            tier: tierInfo.tier,
-            tier_weight: tierInfo.weight,
-          };
-        }) || [];
 
       // 🔹 제목/요약에 핵심어가 거의 안 들어간 결과는 필터링
       if (tokens.length > 0) {
@@ -963,19 +972,15 @@ async function updateWeight(engine, truth, time) {
 
     const totalRuns = (prev?.total_runs || 0) + 1;
 
-    // 5) avgTruth / avgResp 기반 자동 보정계수(auto_ce) 계산 (0.9~1.1)
-    const targetTruth = 0.7; // 기준 Truth
-    let truthAdj = avgTruth / targetTruth;
-    if (truthAdj < 0.9) truthAdj = 0.9;
-    if (truthAdj > 1.1) truthAdj = 1.1;
+// 5) avgTruth 기반 자동 보정계수(auto_ce) 계산 (0.9~1.1)
+//    ✅ 응답시간(avgResp)은 모니터링(저장)만 하고, 신뢰도 보정에는 반영하지 않음
+const targetTruth = 0.7; // 기준 Truth
+let truthAdj = avgTruth / targetTruth;
+if (truthAdj < 0.9) truthAdj = 0.9;
+if (truthAdj > 1.1) truthAdj = 1.1;
 
-    const baseResp = 800; // 0.8초 기준
-    const ratio = baseResp / (baseResp + avgResp); // 0~1
-    let speedAdj = 0.9 + 0.2 * ratio; // 0.9~1.1 근처
-    if (speedAdj < 0.9) speedAdj = 0.9;
-    if (speedAdj > 1.1) speedAdj = 1.1;
-
-    const auto_ce = Math.max(0.9, Math.min(1.1, truthAdj * speedAdj));
+const auto_ce = Math.max(0.9, Math.min(1.1, truthAdj));
+;
 
     // 6) override_ce가 있으면 그 값을, 없으면 auto_ce를 effective_ce로 사용
     const override_ce =
@@ -1017,6 +1022,24 @@ function normalizeKoreanQuestion(raw) {
   return String(raw).replace(/\s+/g, " ").trim();
 }
 
+function splitIntoTwoParts(text) {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  if (!t) return ["", ""];
+  if (t.length < 40) return [t, t]; // 너무 짧으면 억지 분할 대신 복제
+
+  const mid = Math.floor(t.length / 2);
+
+  // 중간 근처에서 공백 기준으로 자연스럽게 자르기
+  let cut = t.lastIndexOf(" ", mid);
+  if (cut < 10) cut = t.indexOf(" ", mid);
+  if (cut < 10) cut = mid;
+
+  const a = t.slice(0, cut).trim();
+  const b = t.slice(cut).trim();
+  if (!a || !b) return [t, t]; // 결과가 비면 복제
+
+  return [a, b];
+}
 
 function buildNaverAndQuery(baseKo) {
   if (!baseKo) return "";
@@ -1034,112 +1057,156 @@ function buildNaverAndQuery(baseKo) {
     .join(" ");
 }
 
-async function buildEngineQueriesForQVFV(query, gemini_key) {
-  const baseKo = normalizeKoreanQuestion(query);
-  let qKo = baseKo;
-  let qEn = "";
+const QVFV_MAX_BLOCKS = parseInt(process.env.QVFV_MAX_BLOCKS || "5", 10);
+const BLOCK_NAVER_MAX_QUERIES = parseInt(process.env.BLOCK_NAVER_MAX_QUERIES || "2", 10);
+const BLOCK_NAVER_MAX_ITEMS = parseInt(process.env.BLOCK_NAVER_MAX_ITEMS || "6", 10);
 
-  // ✅ 엔진별 쿼리(최종 목표)
-  let engineQueries = null;
+async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, modelName }) {
+  // mode: "qv" | "fv"
+  // QV: 답변 생성 + 답변 기준 블록/쿼리 생성
+  // FV: core_text(사실문장) 기준 블록/쿼리 생성 (답변 생성 X)
 
-  // gemini_key 없으면 fallback
-  if (!gemini_key) {
-    const fallback = {
-      crossref: query,
-      openalex: query,
-      wikidata: baseKo || query,
-      gdelt: query,
-      naver: [baseKo || query],
-    };
-    return { q_ko: baseKo || query, q_en: query, engine_queries: fallback };
-  }
+  const baseCore = (core_text || query || "").toString().trim();
 
-  try {
-    const prompt = `
-아래 사용자의 질의를 보고, "검증 엔진별 최적화 검색 쿼리"를 생성하세요.
+ const prompt = `
+너는 Cross-Verified AI의 "전처리 엔진"이다.
+목표: (QV) 답변 생성 + 의미블록 분해 + 블록별 외부검증 엔진 쿼리 생성을 한 번에 수행한다.
 
-규칙:
-- korean_core: 네이버/한국어 검색용 핵심어(2~8단어). 조사/어미 제거.
-- english_core: 해외 엔진용(2~10단어) 간단 구문.
-- engine_queries:
-  - crossref: 논문 검색에 적합한 영어 쿼리 (자연어 구문)
-  - openalex: crossref와 유사하되 키워드 중심
-  - wikidata: 가능한 한 '한국어 엔티티/명사' 중심(짧게)
-  - gdelt: 가능하면 boolean 쿼리(AND/OR 괄호 허용)
-  - naver: 네이버는 OR을 한 줄에 때리지 말고 "쿼리 여러 개 배열"로 분리 (2~4개)
-    - 각 원소는 짧은 한국어 키워드열(예: "한국 UAM 항공교통관리 동향")
-    - 여기서는 + 기호를 붙이지 말 것(서버에서 붙임)
+[입력]
+- mode: ${mode}                // "qv" | "fv"
+- user_query: ${query}
+- core_text(FV에서만 사용): ${mode === "fv" ? baseCore : "(QV에서는 무시)"}
 
-사용자 질의:
-${query}
+[절대 규칙 — 위반하면 실패]
+1) 출력은 JSON 1개만. (설명/접두어/접미어/코드블록/마크다운/줄바꿈 코멘트 모두 금지)
+2) JSON은 반드시 double quote(")만 사용하고, trailing comma 금지.
+3) blocks는 반드시 2~${QVFV_MAX_BLOCKS}개.
+4) block.text는 "검증 대상 텍스트"에서 문장을 그대로 복사해서 사용(의역/요약/새 주장 추가 금지).
+5) naver 쿼리에는 '+'를 절대 포함하지 말 것.
 
-반드시 JSON만 출력:
+[QV 규칙]
+- 질문에 대해 최선의 한국어 답변(answer_ko)을 6~10문장으로 작성한다.
+- 웹검색/브라우징/실시간 조회를 했다고 주장하지 말라.
+- 확실하지 않은 고유명사/수치/날짜는 단정하지 말고 '불확실'로 표시한다.
+
+[FV 규칙]
+- answer_ko는 반드시 "" (빈 문자열).
+- 검증 대상 텍스트는 core_text(없으면 user_query) 그대로.
+
+[blocks 규칙]
+- 각 블록은 "주장/수치/조건" 단위로 1~2문장씩 묶는다.
+- 각 block.text는 30~260자 내로 유지(너무 짧거나 너무 길면 실패).
+- id는 1부터 순서대로.
+
+[engine_queries 규칙]
+- crossref/openalex: 영어 키워드/짧은 구문(2~10단어, 90자 이내)
+- wikidata: 한국어 엔티티/명사 중심(2~8단어, 50자 이내)
+- gdelt: 영어 boolean 쿼리(AND/OR 괄호 허용, 120자 이내)
+- naver: 한국어 짧은 키워드열 배열 1~${BLOCK_NAVER_MAX_QUERIES}개 (각 원소 30자 이내, '+' 금지)
+
+[출력 JSON 스키마]
 {
-  "korean_core":"...",
-  "english_core":"...",
-  "engine_queries":{
-    "crossref":"...",
-    "openalex":"...",
-    "wikidata":"...",
-    "gdelt":"...",
-    "naver":["...","..."]
-  }
+  "answer_ko": "...",          // FV는 ""
+  "korean_core": "...",
+  "english_core": "...",
+  "blocks": [
+    {
+      "id": 1,
+      "text": "...",
+      "engine_queries": {
+        "crossref": "...",
+        "openalex": "...",
+        "wikidata": "...",
+        "gdelt": "...",
+        "naver": ["...", "..."]
+      }
+    }
+  ]
 }
 `.trim();
 
-    const text = await fetchGemini(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
-      { contents: [{ parts: [{ text: prompt }] }] }
-    );
 
-    const trimmed = (text || "").trim();
-    const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
-    const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
+  const text = await fetchGemini(
+    `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${gemini_key}`,
+    { contents: [{ parts: [{ text: prompt }] }] }
+  );
 
-    let parsed = null;
-    try { parsed = JSON.parse(jsonText); } catch { parsed = null; }
+  const trimmed = (text || "").trim();
+  const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+  const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
 
-    if (parsed && typeof parsed === "object") {
-      if (typeof parsed.korean_core === "string" && parsed.korean_core.trim()) {
-        qKo = parsed.korean_core.trim();
-      }
-      if (typeof parsed.english_core === "string" && parsed.english_core.trim()) {
-        qEn = parsed.english_core.trim();
-      }
-      if (parsed.engine_queries && typeof parsed.engine_queries === "object") {
-        engineQueries = parsed.engine_queries;
-      }
-    }
-  } catch (e) {
-    if (DEBUG) console.warn("⚠️ buildEngineQueriesForQVFV fail:", e.message);
+  let parsed = null;
+  try { parsed = JSON.parse(jsonText); } catch { parsed = null; }
+
+  const answer_ko = String(parsed?.answer_ko || "").trim();
+  const korean_core = String(parsed?.korean_core || "").trim() || normalizeKoreanQuestion(baseCore);
+  const english_core = String(parsed?.english_core || "").trim() || String(query || "").trim();
+
+   let blocksRaw = Array.isArray(parsed?.blocks) ? parsed.blocks : [];
+
+  // ✅ (필수) 모델이 blocks 1개만 준 경우 → 2개로 강제 분할
+  if (blocksRaw.length === 1) {
+    const seed = String(blocksRaw[0]?.text || baseCore || "").trim();
+    const [t1, t2] = splitIntoTwoParts(seed);
+    blocksRaw = [
+      { ...blocksRaw[0], id: 1, text: t1 },
+      { ...blocksRaw[0], id: 2, text: t2 },
+    ];
   }
 
-  if (!qEn) qEn = query;
+  let blocks = blocksRaw.slice(0, QVFV_MAX_BLOCKS).map((b, idx) => {
+    const eq = b?.engine_queries || {};
+    const naverArr = Array.isArray(eq.naver) ? eq.naver : (typeof eq.naver === "string" ? [eq.naver] : []);
+    return {
+      id: Number.isFinite(Number(b?.id)) ? Number(b.id) : (idx + 1),
+      text: String(b?.text || "").trim(),
+      engine_queries: {
+        crossref: String(eq.crossref || "").trim() || english_core,
+        openalex: String(eq.openalex || "").trim() || english_core,
+        wikidata: String(eq.wikidata || "").trim() || korean_core,
+        gdelt: String(eq.gdelt || "").trim() || english_core,
+        naver: naverArr.map(s => String(s).trim()).filter(Boolean).slice(0, BLOCK_NAVER_MAX_QUERIES),
+      },
+    };
+  }).filter(b => b.text);
 
-  // ✅ 최종 fallback / 정규화
-  const eq = (engineQueries && typeof engineQueries === "object") ? engineQueries : {};
+  // ✅ filter 때문에 1개만 남은 경우도 대비
+  if (blocks.length === 1) {
+    const base = blocks[0];
+    const [t1, t2] = splitIntoTwoParts(base.text);
+    blocks = [
+      { ...base, id: 1, text: t1 },
+      { ...base, id: 2, text: t2 },
+    ];
+  }
 
-  const naverRaw = eq.naver;
-  const naverArr = Array.isArray(naverRaw)
-    ? naverRaw
-    : (typeof naverRaw === "string" && naverRaw.trim() ? [naverRaw.trim()] : []);
+  // ✅ 최종 안전망: 0개면 base 텍스트로 2개 생성
+  if (blocks.length === 0) {
+    const seedText =
+      (mode === "qv")
+        ? (answer_ko || baseCore || "")
+        : (baseCore || "");
+    const [t1, t2] = splitIntoTwoParts(seedText);
 
-  const cleanedNaver = naverArr
-    .map((s) => String(s).trim())
-    .filter(Boolean);
-
-  const finalEngineQueries = {
-    crossref: (typeof eq.crossref === "string" && eq.crossref.trim()) ? eq.crossref.trim() : qEn,
-    openalex: (typeof eq.openalex === "string" && eq.openalex.trim()) ? eq.openalex.trim() : qEn,
-    wikidata: (typeof eq.wikidata === "string" && eq.wikidata.trim()) ? eq.wikidata.trim() : (qKo || qEn),
-    gdelt:    (typeof eq.gdelt === "string" && eq.gdelt.trim()) ? eq.gdelt.trim() : qEn,
-    naver: cleanedNaver.length ? cleanedNaver : [qKo || baseKo || query],
-  };
+    blocks = [
+      {
+        id: 1,
+        text: t1,
+        engine_queries: { crossref: english_core, openalex: english_core, wikidata: korean_core, gdelt: english_core, naver: [korean_core] }
+      },
+      {
+        id: 2,
+        text: t2,
+        engine_queries: { crossref: english_core, openalex: english_core, wikidata: korean_core, gdelt: english_core, naver: [korean_core] }
+      },
+    ].filter(b => b.text);
+  }
 
   return {
-    q_ko: qKo || baseKo || query,
-    q_en: qEn || query,
-    engine_queries: finalEngineQueries,
+    answer_ko: (mode === "qv" ? (answer_ko || "") : ""),
+    korean_core,
+    english_core,
+    blocks, // ✅ 여기서 항상 2개 이상이 되도록 보장됨
   };
 }
 
@@ -1174,40 +1241,36 @@ async function fetchEngineStatsMap(engines = []) {
 function computeEngineCorrectionFactor(engines = [], statsMap = {}) {
   if (!engines.length) return 1.0;
 
-  const factors = [];
+  let num = 0;
+  let den = 0;
 
   for (const name of engines) {
-    // K-Law는 보정 시스템에서 제외 (명세 Ⅲ, Ⅳ)
     if (name === "klaw") continue;
 
-    const base = ENGINE_BASE_WEIGHTS[name] ?? 1.0;
+    const base = Number(ENGINE_BASE_WEIGHTS[name] ?? 1.0);
+    if (!Number.isFinite(base) || base <= 0) continue;
+
     const st = statsMap[name];
 
-    // 1) per-engine cₑ 선택: effective_ce → auto_ce → 1.0
     let ce = 1.0;
     if (st) {
-      if (typeof st.effective_ce === "number") {
-        ce = st.effective_ce;
-      } else if (typeof st.auto_ce === "number") {
-        ce = st.auto_ce;
-      }
+      if (typeof st.effective_ce === "number") ce = st.effective_ce;
+      else if (typeof st.auto_ce === "number") ce = st.auto_ce;
     }
 
-    // 0.9~1.1 범위로 클램핑
-    if (ce < 0.9) ce = 0.9;
-    if (ce > 1.1) ce = 1.1;
+    ce = Math.max(0.9, Math.min(1.1, ce));
 
-    // 2) wₑ(eff) = wₑ(0) × cₑ
-    const wEff = base * ce;
-    factors.push(wEff);
+    num += base * ce;
+    den += base;
   }
 
-  if (!factors.length) return 1.0;
-  const avg = factors.reduce((s, v) => s + v, 0) / factors.length;
+  if (den <= 0) return 1.0;
 
-  // 글로벌 보정계수 C (0.9~1.1)
-  return Math.max(0.9, Math.min(1.1, avg));
+  const C = num / den;
+  return Math.max(0.9, Math.min(1.1, C));
 }
+
+  
 
 
 // ─────────────────────────────
@@ -1219,7 +1282,7 @@ function computeEngineCorrectionFactor(engines = [], statsMap = {}) {
 app.post("/api/verify", async (req, res) => {
 let logUserId = null;   // ✅ 요청마다 독립
   let authUser = null;    // ✅ 요청마다 독립
-  const {
+ const {
   query,
   mode,
   gemini_key,
@@ -1227,16 +1290,21 @@ let logUserId = null;   // ✅ 요청마다 독립
   naver_secret,
   klaw_key,
   user_answer,
-  github_token,     // ✅ DV/CV GitHub 토큰
-  gemini_model,     // ✅ QV/FV에서만 Flash/Pro 토글용
+  github_token,
+  gemini_model,
 
-  // ✅ 추가: verification_logs.user_id NOT NULL 대응
+  // ✅ FV에서 "사실 문장"을 query와 분리해서 보내고 싶을 때 사용
+  core_text,
+
   user_id,
   user_email,
   user_name,
 } = req.body;
 
-  const safeMode = (mode || "").trim().toLowerCase();
+const safeMode = (mode || "").trim().toLowerCase();
+
+// ✅ FV 검증 대상(사실 문장) 우선 입력값
+const userCoreText = (core_text || "").toString().trim();
 
   // 기본 검증
   if (!query) {
@@ -1278,6 +1346,13 @@ if (safeMode === "lv" && !klaw_key) {
   );
 }
 
+// ✅ DV/CV는 github_token 필수
+if ((safeMode === "dv" || safeMode === "cv") && !github_token) {
+  return res.status(400).json(
+    buildError("VALIDATION_ERROR", "DV/CV 모드에서는 github_token이 필요합니다.")
+  );
+}
+
   // 🔹 QV/FV용 Gemini 모델 토글 (Flash / Pro)
   // - 클라이언트에서 gemini_model: "flash" | "pro" | undefined 로 보냄
   // - QV/FV에서만 토글, DV/CV는 항상 Pro 고정
@@ -1303,11 +1378,17 @@ if (safeMode === "lv" && !klaw_key) {
   let truthscore = 0.0;
   let engineStatsMap = {};
   let engineFactor = 1.0;
-  const engineTimes = {};    // ⭐ 엔진별 총 소요시간(ms)
-const engineMetrics = {};  // ⭐ 엔진별 calls/ms_total/ms_avg/ms_last (어드민 표시용)
-const geminiTimes = {};     // ⭐ Gemini 단계별 총 시간(ms)
-const geminiMetrics = {};   // ⭐ Gemini 단계별 calls/ms_total/ms_avg/ms_last
 
+  // ✅ 엔진/LLM 시간·메트릭 누적용 객체
+  const engineTimes = {};
+  const engineMetrics = {};
+  const geminiTimes = {};
+  const geminiMetrics = {};
+
+  // ✅ QV/FV 2-call 구조용: 전처리 결과(답변/블록/증거)를 요청 스코프에 보관
+  let qvfvPre = null;                 
+  let qvfvBlocksForVerifyFull = null; // [{id,text,queries,evidence...}, ...]
+  let qvfvPreDone = false;            // 전처리 성공 여부
 
   try {
   // ✅ 추가: verification_logs.user_id NOT NULL 대응
@@ -1334,228 +1415,296 @@ if (!logUserId) {
   );
 }
 
-    // ─────────────────────────────
-    // ① 모드별 외부엔진 호출 (DV/CV/QV/FV/LV)
-    // ─────────────────────────────
-    switch (safeMode) {
-      // ── 개발검증(DV) / 코드검증(CV)
-      //   👉 Gemini Flash로 GitHub 검색어를 먼저 만들고,
-      //      그 검색어들로 GitHub 리포를 찾은 뒤 유효성(Vᵣ) 계산
-         case "dv":
-    case "cv": {
-      // 🔹 DV/CV에서는 github_token이 반드시 필요
-      if (!github_token) {
-        return res
-          .status(400)
-          .json(
-            buildError(
-              "VALIDATION_ERROR",
-              "DV/CV 모드에서는 github_token이 필요합니다."
-            )
-          );
-      }
+// ─────────────────────────────
+// ① 모드별 외부엔진 호출 (DV/CV/QV/FV/LV)
+// ─────────────────────────────
+switch (safeMode) {
+  case "qv":
+  case "fv": {
+    engines.push("crossref", "openalex", "wikidata", "gdelt", "naver");
 
-      engines.push("github");
+    const preprocessModel =
+      geminiModelRaw === "flash" ? "gemini-2.5-flash" : "gemini-2.5-pro";
 
-      // 🔹 CV일 때만 user_answer를 GitHub 쿼리/일치도에 사용
-      const answerText =
-        safeMode === "cv" &&
-        user_answer &&
-        user_answer.trim().length > 0
-          ? user_answer
-          : "";
+    const qvfvBaseText = (safeMode === "fv" && userCoreText) ? userCoreText : query;
 
-      // 1단계: Gemini Flash를 사용해서 GitHub 검색용 쿼리 생성
-      const t_ghq = Date.now();
-const ghQueries = await buildGithubQueriesFromGemini(
-  safeMode,
-  query,
-  answerText,
-  gemini_key
-);
-const ms_ghq = Date.now() - t_ghq;
-recordTime(geminiTimes, "github_query_builder_ms", ms_ghq);
-recordMetric(geminiMetrics, "github_query_builder", ms_ghq);
+    // ✅ QV/FV 전처리 원샷 (답변+블록+블록별 쿼리)
+    try {
+      const t_pre = Date.now();
+      const pre = await preprocessQVFVOneShot({
+        mode: safeMode,
+        query,
+        core_text: qvfvBaseText,
+        gemini_key,
+        modelName: preprocessModel,
+      });
+      const ms_pre = Date.now() - t_pre;
+      recordTime(geminiTimes, "qvfv_preprocess_ms", ms_pre);
+      recordMetric(geminiMetrics, "qvfv_preprocess", ms_pre);
 
+      qvfvPre = pre;
+      qvfvPreDone = true;
 
-      // 2단계: 생성된 쿼리들로 GitHub 검색 수행
-      external.github = [];
-
-      for (const ghq of ghQueries) {
-  const { result } = await safeFetchTimed(
-    "github",
-    (q) => fetchGitHub(q, github_token),
-    ghq,
-    engineTimes,
-    engineMetrics
-  );
-
-  if (Array.isArray(result) && result.length > 0) {
-    external.github.push(...result);
-  }
-}
-
-      // GitHub 리포 기반 유효성 평가 (Vᵣ)
-      partial_scores.validity = calcValidityScore(external.github);
-      // (옵션) 나중에 UI에서 보여주고 싶으면 쿼리들도 같이 내려줌
-      partial_scores.github_queries = ghQueries;
-
-      // GitHub 메타데이터와 검증 대상 내용 간 일치도(Consistency) 평가
-      const t_cons = Date.now();
-partial_scores.consistency = await calcConsistencyFromGemini(
-  safeMode,
-  query,
-  answerText,
-  external.github,
-  gemini_key
-);
-const ms_cons = Date.now() - t_cons;
-recordTime(geminiTimes, "consistency_ms", ms_cons);
-recordMetric(geminiMetrics, "consistency", ms_cons);
-      break;
+      partial_scores.qvfv_pre = {
+        korean_core: pre.korean_core,
+        english_core: pre.english_core,
+        blocks_count: pre.blocks.length,
+      };
+      partial_scores.qv_answer = safeMode === "qv" ? pre.answer_ko : null;
+    } catch (e) {
+      qvfvPre = null;
+      qvfvPreDone = false;
+      if (DEBUG) console.warn("⚠️ QV/FV preprocess one-shot fail:", e.message);
     }
 
+ // ✅ 전처리 실패 fallback
+if (!qvfvPre) {
+  const baseCore = qvfvBaseText || query || "";
+  const [t1, t2] = splitIntoTwoParts(baseCore);
 
-      // ── 법령검증(LV) ──
-      //   TruthScore 없이 K-Law 결과만 제공
-      case "lv": {
-  engines.push("klaw");
-  external.klaw = await fetchKLawAll(klaw_key, query);
+  qvfvPre = {
+    answer_ko: "",
+    korean_core: normalizeKoreanQuestion(baseCore),
+    english_core: String(baseCore).trim(),
+    blocks: [
+      {
+        id: 1,
+        text: t1,
+        engine_queries: {
+          crossref: String(baseCore).trim(),
+          openalex: String(baseCore).trim(),
+          wikidata: normalizeKoreanQuestion(baseCore),
+          gdelt: String(baseCore).trim(),
+          naver: [normalizeKoreanQuestion(baseCore)],
+        },
+      },
+      {
+        id: 2,
+        text: t2,
+        engine_queries: {
+          crossref: String(baseCore).trim(),
+          openalex: String(baseCore).trim(),
+          wikidata: normalizeKoreanQuestion(baseCore),
+          gdelt: String(baseCore).trim(),
+          naver: [normalizeKoreanQuestion(baseCore)],
+        },
+      },
+    ].filter((b) => b.text),
+  };
+}
 
-  // 🔹 선택적 Flash-Lite 요약 (gemini_key가 있을 때만)
-  let lvSummary = null;
 
-  if (gemini_key) {
-    const prompt = `
+// ✅ (옵션) QV/FV용: 전처리에서 나온 naver 쿼리를 partial_scores에 보관 (로그/키워드 품질 개선)
+partial_scores.engine_queries = {
+  naver: (qvfvPre.blocks || [])
+    .flatMap(b => (Array.isArray(b?.engine_queries?.naver) ? b.engine_queries.naver : []))
+    .map(s => String(s).trim())
+    .filter(Boolean)
+    .slice(0, 12),
+};
+
+    // ✅ 블록별 엔진 호출 → verify에 넣을 “블록+증거” 패키지 구성
+    external.crossref = [];
+    external.openalex = [];
+    external.wikidata = [];
+    external.gdelt = [];
+    external.naver = [];
+
+    const blocksForVerify = [];
+
+    for (const b of qvfvPre.blocks || []) {
+      const eq = b.engine_queries || {};
+      const qCrossref = eq.crossref || qvfvPre.english_core || query;
+      const qOpenalex = eq.openalex || qvfvPre.english_core || query;
+      const qWikidata = eq.wikidata || qvfvPre.korean_core || query;
+      const qGdelt = eq.gdelt || qvfvPre.english_core || query;
+
+      let naverQueries = Array.isArray(eq.naver) ? eq.naver : [];
+      naverQueries = naverQueries
+        .map((q) => buildNaverAndQuery(q))
+        .filter(Boolean)
+        .slice(0, BLOCK_NAVER_MAX_QUERIES);
+
+      if (!naverQueries.length) {
+        naverQueries = [buildNaverAndQuery(qvfvPre.korean_core || query)].filter(Boolean);
+      }
+
+      const [crPack, oaPack, wdPack, gdPack] = await Promise.all([
+        safeFetchTimed("crossref", fetchCrossref, qCrossref, engineTimes, engineMetrics),
+        safeFetchTimed("openalex", fetchOpenAlex, qOpenalex, engineTimes, engineMetrics),
+        safeFetchTimed("wikidata", fetchWikidata, qWikidata, engineTimes, engineMetrics),
+        safeFetchTimed("gdelt", fetchGDELT, qGdelt, engineTimes, engineMetrics),
+      ]);
+
+      let naverItems = [];
+      for (const nq of naverQueries) {
+        const { result } = await safeFetchTimed(
+          "naver",
+          (qq) => callNaver(qq, naver_id, naver_secret),
+          nq,
+          engineTimes,
+          engineMetrics
+        );
+        if (Array.isArray(result) && result.length) naverItems.push(...result);
+      }
+      naverItems = dedupeByLink(naverItems).slice(0, BLOCK_NAVER_MAX_ITEMS);
+
+      external.crossref.push(...(crPack.result || []));
+      external.openalex.push(...(oaPack.result || []));
+      external.wikidata.push(...(wdPack.result || []));
+      external.gdelt.push(...(gdPack.result || []));
+      external.naver.push(...(naverItems || []));
+
+      blocksForVerify.push({
+        id: b.id,
+        text: b.text,
+        queries: { crossref: qCrossref, openalex: qOpenalex, wikidata: qWikidata, gdelt: qGdelt, naver: naverQueries },
+        evidence: {
+          crossref: crPack.result || [],
+          openalex: oaPack.result || [],
+          wikidata: wdPack.result || [],
+          gdelt: gdPack.result || [],
+          naver: naverItems || [],
+        },
+      });
+    }
+
+    external.naver = dedupeByLink(external.naver).slice(0, NAVER_MULTI_MAX_ITEMS);
+    qvfvBlocksForVerifyFull = blocksForVerify;
+
+    partial_scores.blocks_for_verify = blocksForVerify.map((x) => ({
+      id: x.id,
+      text: String(x.text || "").slice(0, 400),
+      queries: x.queries,
+      evidence_counts: {
+        crossref: (x.evidence?.crossref || []).length,
+        openalex: (x.evidence?.openalex || []).length,
+        wikidata: (x.evidence?.wikidata || []).length,
+        gdelt: (x.evidence?.gdelt || []).length,
+        naver: (x.evidence?.naver || []).length,
+      },
+    }));
+
+    partial_scores.recency = calcRecencyScore(external.gdelt);
+
+    // naver tier × type factor
+    if (Array.isArray(external.naver) && external.naver.length > 0) {
+      const weights = external.naver
+        .map((item) => {
+          const tw = (typeof item.tier_weight === "number" && Number.isFinite(item.tier_weight)) ? item.tier_weight : 1;
+          const vw = (typeof item.type_weight === "number" && Number.isFinite(item.type_weight)) ? item.type_weight : 1;
+          return tw * vw;
+        })
+        .filter((w) => Number.isFinite(w) && w > 0);
+
+      if (weights.length > 0) {
+        const avg = weights.reduce((s, v) => s + v, 0) / weights.length;
+        partial_scores.naver_tier_factor = Math.max(0.9, Math.min(1.05, avg));
+      }
+    }
+
+    break;
+  }
+
+  case "dv":
+  case "cv": {
+    engines.push("github");
+    external.github = [];
+
+    const answerText =
+      (safeMode === "cv" && user_answer && user_answer.trim().length > 0)
+        ? user_answer
+        : query;
+
+    // ✅ GitHub 쿼리 생성 (Gemini)
+    const t_q = Date.now();
+    const ghQueries = await buildGithubQueriesFromGemini(
+      safeMode, query, answerText, gemini_key
+    );
+    const ms_q = Date.now() - t_q;
+    recordTime(geminiTimes, "github_query_builder_ms", ms_q);
+    recordMetric(geminiMetrics, "github_query_builder", ms_q);
+
+    // ✅ GitHub 검색(최대 3쿼리)
+    for (const q of (ghQueries || []).slice(0, 3)) {
+      const { result } = await safeFetchTimed(
+        "github",
+        (qq) => fetchGitHub(qq, github_token),
+        q,
+        engineTimes,
+        engineMetrics
+      );
+      if (Array.isArray(result) && result.length) external.github.push(...result);
+    }
+
+    external.github = (external.github || []).slice(0, 12);
+
+    partial_scores.validity = calcValidityScore(external.github);
+    partial_scores.github_queries = ghQueries;
+
+    // ✅ consistency (Gemini Pro)
+    const t_cons = Date.now();
+    partial_scores.consistency = await calcConsistencyFromGemini(
+      safeMode,
+      query,
+      answerText,
+      external.github,
+      gemini_key
+    );
+    const ms_cons = Date.now() - t_cons;
+    recordTime(geminiTimes, "consistency_ms", ms_cons);
+    recordMetric(geminiMetrics, "consistency", ms_cons);
+
+    break;
+  }
+
+  case "lv": {
+    engines.push("klaw");
+    external.klaw = await fetchKLawAll(klaw_key, query);
+
+    let lvSummary = null;
+    if (gemini_key) {
+      const prompt = `
 너는 대한민국 항공·교통 법령 및 판례를 요약해주는 엔진이다.
-
 [사용자 질의]
 ${query}
 
 [아래는 K-Law API에서 가져온 JSON 응답이다.]
-이 JSON 안에 포함된 관련 법령·판례를 확인하고, 질의에 답하는 데 중요한 내용만 뽑아서 요약해라.
+이 JSON 안에 포함된 관련 법령·판례를 확인하고 질의에 답하는 데 중요한 내용만 요약해라.
 
-요약 지침:
-- 한국어로 3~7개의 bullet로 정리
-- 각 bullet은
-  - 관련 법령/조문 제목 또는 사건명
-  - 핵심 내용 (의무, 금지, 허용, 절차 등)
-  - UAM 운항/운영과의 연관성을 짧게 포함
-- 불필요한 부연 설명, 서론/결론 문장은 넣지 말 것.
+- 한국어로 3~7개의 bullet
+- 법령/조문 또는 사건명 + 핵심(의무/금지/절차) + UAM 연관성
+- 서론/결론 금지
 
-[K-Law JSON 응답 요약본]
+[K-Law JSON]
 ${JSON.stringify(external.klaw).slice(0, 6000)}
-    `.trim();
+      `.trim();
 
-    try {
-      const t_lv = Date.now();
-lvSummary = await fetchGemini(
-  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${gemini_key}`,
-  { contents: [{ parts: [{ text: prompt }] }] }
-);
-const ms_lv = Date.now() - t_lv;
-recordTime(geminiTimes, "lv_flash_lite_summary_ms", ms_lv);
-recordMetric(geminiMetrics, "lv_flash_lite_summary", ms_lv);
-    } catch (e) {
-      if (DEBUG) {
-        console.warn("⚠️ LV Flash-Lite summary fail:", e.message);
+      try {
+        const t_lv = Date.now();
+        lvSummary = await fetchGemini(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${gemini_key}`,
+          { contents: [{ parts: [{ text: prompt }] }] }
+        );
+        const ms_lv = Date.now() - t_lv;
+        recordTime(geminiTimes, "lv_flash_lite_summary_ms", ms_lv);
+        recordMetric(geminiMetrics, "lv_flash_lite_summary", ms_lv);
+      } catch (e) {
+        if (DEBUG) console.warn("⚠️ LV Flash-Lite summary fail:", e.message);
+        lvSummary = null;
       }
-      lvSummary = null;
     }
+
+    partial_scores.lv_summary = lvSummary || null;
+    break;
   }
 
-  // safeMode === "lv" 블록에서 같이 내려주기 위해
-  partial_scores.lv_summary = lvSummary || null;
-  break;
+  default: {
+    // 여기까지 오면 allowedModes 검증에서 이미 걸러짐
+    break;
+  }
 }
 
-
-      // ── 기본검증(QV/FV) ──
-            default: {
-        // QV/FV 모드에서는 4개 검증엔진 + Naver를 항상 동시 호출
-        engines.push("crossref", "openalex", "wikidata", "gdelt", "naver");
-
-        // 1단계: Gemini Flash로 엔진 공통 핵심 검색어 생성
-const t_qbuild = Date.now();
-const { q_ko, q_en, engine_queries } = await buildEngineQueriesForQVFV(query, gemini_key);
-const ms_qbuild = Date.now() - t_qbuild;
-recordTime(geminiTimes, "qvfv_query_builder_ms", ms_qbuild);
-recordMetric(geminiMetrics, "qvfv_query_builder", ms_qbuild);
-
-// 엔진별 최적화 쿼리
-const qCrossref = engine_queries?.crossref || q_en;
-const qOpenalex = engine_queries?.openalex || q_en;
-const qWikidata = engine_queries?.wikidata || q_ko || q_en;
-const qGdelt    = engine_queries?.gdelt || q_en;
-
-// ✅ Naver: 여러 쿼리 배열 → +AND 형태로 변환
-let naverQueries = Array.isArray(engine_queries?.naver) ? engine_queries.naver : [];
-naverQueries = naverQueries
-  .map((q) => buildNaverAndQuery(q))
-  .filter(Boolean)
-  .slice(0, NAVER_MULTI_MAX_QUERIES);
-
-if (!naverQueries.length) naverQueries = [buildNaverAndQuery(q_ko || query)].filter(Boolean);
-
-partial_scores.engine_queries = {
-  crossref: qCrossref,
-  openalex: qOpenalex,
-  wikidata: qWikidata,
-  gdelt: qGdelt,
-  naver: naverQueries,
-};
-
-// ✅ 4개 엔진은 병렬
-const [crossrefPack, openalexPack, wikidataPack, gdeltPack] = await Promise.all([
-  safeFetchTimed("crossref", fetchCrossref, qCrossref, engineTimes, engineMetrics),
-  safeFetchTimed("openalex", fetchOpenAlex, qOpenalex, engineTimes, engineMetrics),
-  safeFetchTimed("wikidata", fetchWikidata, qWikidata, engineTimes, engineMetrics),
-  safeFetchTimed("gdelt", fetchGDELT, qGdelt, engineTimes, engineMetrics),
-]);
-
-external.crossref = crossrefPack.result;
-external.openalex = openalexPack.result;
-external.wikidata = wikidataPack.result;
-external.gdelt = gdeltPack.result;
-
-// ✅ Naver는 여러 번 호출해서 합치기(+중복 제거/상한)
-external.naver = [];
-for (const nq of naverQueries) {
-  const { result } = await safeFetchTimed(
-    "naver",
-    (q) => callNaver(q, naver_id, naver_secret),
-    nq,
-    engineTimes,
-    engineMetrics
-  );
-  if (Array.isArray(result) && result.length) external.naver.push(...result);
-}
-external.naver = dedupeByLink(external.naver).slice(0, NAVER_MULTI_MAX_ITEMS);
-
-        // QV/FV도 시의성은 GDELT 기반으로 산출
-        partial_scores.recency = calcRecencyScore(external.gdelt);
-
-        // 🔹 Naver 호출 + 티어 기반 가중치 산출 (항상 시도, 결과 없으면 스킵)
-        if (Array.isArray(external.naver) && external.naver.length > 0) {
-          const weights = external.naver
-            .map((item) =>
-              typeof item.tier_weight === "number" ? item.tier_weight : 1
-            )
-            .filter((w) => Number.isFinite(w) && w > 0);
-
-          if (weights.length > 0) {
-            // 티어 설정 평균 → 0.9~1.05로 클램핑
-            const avgTierWeight =
-              weights.reduce((s, v) => s + v, 0) / weights.length;
-
-            const tierFactor = Math.max(0.9, Math.min(1.05, avgTierWeight));
-            partial_scores.naver_tier_factor = tierFactor;
-          }
-        }
-
-        break;
-      } // default 블록 닫기
-    }  // 🔹 switch (safeMode) 닫기
 
 partial_scores.engine_times = engineTimes;
 partial_scores.engine_metrics = engineMetrics;
@@ -1628,43 +1777,84 @@ await supabase.from("verification_logs").insert([
       partial_scores.engine_factor = engineFactor;
     }
 
-        // ─────────────────────────────
+    // ─────────────────────────────
     // ④ Gemini 요청 단계 (Flash → Pro)
-    //   - Flash: 1차 요약/설명용
-    //   - Pro: 의미블록/부분 TruthScore/종합 TruthScore/엔진보정 JSON 한 번에 계산
+    //   - QV/FV: 전처리에서 이미 답변/블록 생성 → 여기서는 검증(verify)만 수행
+    //   - DV/CV: external을 포함한 요약(flash) + 검증(verify)
     // ─────────────────────────────
     let flash = "";
     let verify = "";
-    let verifyMeta = null; // Pro 결과(JSON)를 파싱한 메타 정보 저장
+    let verifyMeta = null;
+
+    // flash(답변/요약) 단계에서 실제 사용한 모델을 로그에 남기기 위함
+    let answerModelUsed = "gemini-2.5-flash";
+
+    if (safeMode === "qv" || safeMode === "fv") {
+      // QV/FV는 gemini_model 토글을 그대로 사용
+      answerModelUsed =
+        geminiModelRaw === "flash" ? "gemini-2.5-flash" : "gemini-2.5-pro";
+    }
 
     try {
-      // 4-1) Flash: 외부엔진 결과를 붙여서 1차 응답 생성
-      const flashPrompt =
-  `[${safeMode.toUpperCase()}] ${query}\n` +
-  `참조자료:\n${JSON.stringify(external).slice(0, FLASH_REF_CHARS)}`;
+      // 4-1) Flash 단계
+      if (safeMode === "qv") {
+  flash = (partial_scores.qv_answer || "").toString();
 
-const t_flash = Date.now();
-flash = await fetchGemini(
-  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
-  { contents: [{ parts: [{ text: flashPrompt }] }] }
-);
-const ms_flash = Date.now() - t_flash;
-recordTime(geminiTimes, "flash_ms", ms_flash);
-recordMetric(geminiMetrics, "flash", ms_flash);
+  // 전처리 실패 시: 여기서라도 답변 생성
+  if (!flash.trim()) {
+    const flashPrompt = `[QV] ${query}\n한국어로 6~10문장으로 답변만 작성하세요.`;
+    const t_flash = Date.now();
+    flash = await fetchGemini(
+      `https://generativelanguage.googleapis.com/v1beta/models/${answerModelUsed}:generateContent?key=${gemini_key}`,
+      { contents: [{ parts: [{ text: flashPrompt }] }] }
+    );
+    const ms_flash = Date.now() - t_flash;
+    recordTime(geminiTimes, "flash_ms", ms_flash);
+    recordMetric(geminiMetrics, "flash", ms_flash);
+  }
+}
+ else if (safeMode === "fv") {
+        // ✅ FV: 검증 대상은 사용자가 준 사실 문장(core_text)이므로 별도 flash 불필요
+        flash = "";
+      } else {
+        // ✅ DV/CV: external을 포함한 1차 요약/설명 생성 (기존 로직 유지)
+        const flashPrompt =
+          `[${safeMode.toUpperCase()}] ${query}\n` +
+          `참조자료:\n${JSON.stringify(external).slice(0, FLASH_REF_CHARS)}`;
 
-      // 🔹 CV일 때만 user_answer를 검증 대상으로 사용
+        const t_flash = Date.now();
+        flash = await fetchGemini(
+          `https://generativelanguage.googleapis.com/v1beta/models/${answerModelUsed}:generateContent?key=${gemini_key}`,
+          { contents: [{ parts: [{ text: flashPrompt }] }] }
+        );
+        const ms_flash = Date.now() - t_flash;
+        recordTime(geminiTimes, "flash_ms", ms_flash);
+        recordMetric(geminiMetrics, "flash", ms_flash);
+      }
+
+      // 4-2) verify 입력 패키지 구성
+      const blocksForVerify =
+        (safeMode === "qv" || safeMode === "fv") &&
+        Array.isArray(qvfvBlocksForVerifyFull)
+          ? qvfvBlocksForVerifyFull
+          : [];
+
       const coreText =
-        safeMode === "cv" &&
-        user_answer &&
-        user_answer.trim().length > 0
+        safeMode === "qv"
+          ? flash && flash.trim().length > 0
+            ? flash
+            : qvfvPre?.korean_core || query
+          : safeMode === "fv"
+          ? userCoreText || query
+          : safeMode === "cv" && user_answer && user_answer.trim().length > 0
           ? user_answer
           : query;
 
-      // Pro에 넘길 입력 패키지 (너무 길어지지 않게 슬라이스)
       const verifyInput = {
         mode: safeMode,
         query,
         core_text: coreText,
+        blocks: blocksForVerify, // ✅ QV/FV: 전처리 블록 + 증거
         external,
         partial_scores,
       };
@@ -1673,9 +1863,9 @@ recordMetric(geminiMetrics, "flash", ms_flash);
 당신은 "Cross-Verified AI" 시스템의 메타 검증 엔진입니다.
 
 목표:
-- 하나의 요청으로 아래 네 가지를 모두 수행합니다.
-  1) 검증 대상 텍스트(core_text)를 의미 단위 블록으로 나누기
-  2) 각 블록을 외부 검증엔진 결과(external)와 비교하여 부분별 TruthScore(0~1) 계산
+- 하나의 요청으로 아래 작업을 모두 수행합니다.
+  1) (필요한 경우에만) core_text를 의미 단위 블록으로 나누기
+  2) 각 블록을 외부 검증엔진 결과 및 blocks[i].evidence와 비교하여 부분 TruthScore(0~1) 계산
   3) 전체 문장/코드에 대한 종합 TruthScore(0~1 구간, raw) 계산
   4) 각 검증엔진별로 이번 질의에 대한 국소 보정값(0.9~1.1) 제안
 
@@ -1686,22 +1876,31 @@ ${JSON.stringify(verifyInput).slice(0, VERIFY_INPUT_CHARS)}
 - mode: "qv" | "fv" | "dv" | "cv" 중 하나
 - query: 사용자가 입력한 질문 또는 사실 문장
 - core_text:
-    - QV/FV: 주로 query 기반 핵심 주장/내용
+    - QV: Gemini가 생성한 "답변" (검증 대상)
+    - FV: 사용자가 입력한 "사실 문장" (검증 대상)
     - DV: "어떤 개발 과제를 하려는지"에 대한 설명
     - CV: 실제 검증 대상 코드/설계 또는 요약
+- blocks:
+    - QV/FV: 전처리 단계에서 이미 생성된 의미 블록 배열
+      (각 요소는 id, text, queries, evidence(crossref/openalex/wikidata/gdelt/naver) 를 포함)
+    - DV/CV: 서버에서 비워둘 수 있음([])
 - external: crossref / openalex / wikidata / gdelt / naver / github / klaw 등 외부 엔진 결과
 - partial_scores: 서버에서 미리 계산된 전역 스코어
     (예: recency, validity, consistency, engine_factor, naver_tier_factor 등)
 
 [작업 지침]
 
-1. 의미 단위 분할
-   - core_text를 의미적으로 자연스러운 2~8개 블록으로 분할하십시오.
-   - 각 블록은 하나의 주장, 기능, 단계, 조건 등을 기준으로 나누고,
-     너무 잘게 쪼개지 말고 한 문장 또는 밀접한 1~3문장 정도로 묶습니다.
+1. 블록 사용 규칙
+   - blocks 배열이 "비어있지 않은 경우"(QV/FV):
+     - blocks[i]를 그대로 사용하고, 절대 재분해/병합/삭제하지 마세요.
+     - 각 blocks[i].text가 이미 의미 단위로 분리된 상태입니다.
+     - 각 blocks[i].evidence 안의 엔진별 결과를 근거로 block_truthscore를 계산하세요.
+   - blocks 배열이 "비어있는 경우"(주로 DV/CV):
+     - core_text를 의미적으로 자연스러운 2~8개 블록으로 직접 분할해도 좋습니다.
+     - 이때 evidence는 external 전체를 참고하여 간접적으로 판단합니다.
 
 2. 블록별 TruthScore(block_truthscore, 0~1)
-   - 각 블록에 대해 external 안의 증거들과 비교하여 0~1 사이 점수를 매기십시오.
+   - 각 블록에 대해 외부 증거와 비교하여 0~1 사이 점수를 매기십시오.
    - 기준:
      - 0.90~1.00: 강하게 뒷받침됨 (여러 엔진에서 일관되게 지지)
      - 0.70~0.89: 대체로 타당 (직접적인 증거는 일부지만, 방향성 일치)
@@ -1714,8 +1913,8 @@ ${JSON.stringify(verifyInput).slice(0, VERIFY_INPUT_CHARS)}
    - 블록별 점수와 partial_scores(recency, validity, consistency 등)를 종합하여
      0~1 사이의 overall_truthscore_raw를 계산하십시오.
    - 이 값은 "순수 0~1 척도"이며, 서버에서는
-     truthscore = 0.6 + 0.4 * overall_truthscore_raw
-     와 같은 방식으로 0.6~0.97 범위로 변환하여 사용할 수 있습니다.
+     truthscore = overall_truthscore_raw
+     와 같이 0~1 범위 그대로 사용합니다.
    - overall_truthscore_raw가 1에 가까울수록 전체 내용이 매우 잘 뒷받침됨을 의미합니다.
 
 4. 엔진별 보정 제안(engine_adjust)
@@ -1760,19 +1959,16 @@ ${JSON.stringify(verifyInput).slice(0, VERIFY_INPUT_CHARS)}
     "github": 1.04
   }
 }
-`;
+`.trim();
 
-const t_verify = Date.now();
-
-verify = await fetchGemini(
-  `https://generativelanguage.googleapis.com/v1beta/models/${verifyModel}:generateContent?key=${gemini_key}`,
-  { contents: [{ parts: [{ text: verifyPrompt }] }] }
-);
-
-const ms_verify = Date.now() - t_verify;
-recordTime(geminiTimes, "verify_ms", ms_verify);
-recordMetric(geminiMetrics, "verify", ms_verify);
-
+      const t_verify = Date.now();
+      verify = await fetchGemini(
+        `https://generativelanguage.googleapis.com/v1beta/models/${verifyModel}:generateContent?key=${gemini_key}`,
+        { contents: [{ parts: [{ text: verifyPrompt }] }] }
+      );
+      const ms_verify = Date.now() - t_verify;
+      recordTime(geminiTimes, "verify_ms", ms_verify);
+      recordMetric(geminiMetrics, "verify", ms_verify);
 
       // Pro 결과(JSON) 파싱 시도
       try {
@@ -1786,7 +1982,7 @@ recordMetric(geminiMetrics, "verify", ms_verify);
           console.warn("⚠️ verifyMeta JSON parse fail");
         }
       }
-       } catch (e) {
+    } catch (e) {
       const status = e.response?.status;
       if (status === 429) {
         // 이 경우만 상위 catch 로 보내서 GEMINI_KEY_EXHAUSTED 코드로 변환
@@ -1861,7 +2057,7 @@ recordMetric(geminiMetrics, "verify", ms_verify);
     }
 
     // 최종 TruthScore (0.6 ~ 0.97 범위)
-    truthscore = Math.min(0.97, 0.6 + 0.4 * hybrid);
+    truthscore = hybrid; // 0~1
 
     // 요청당 경과 시간(ms)
     const elapsed = Date.now() - start;
@@ -1891,7 +2087,7 @@ recordMetric(geminiMetrics, "verify", ms_verify);
     const adj = Math.max(0.9, Math.min(1.1, adjRaw));
 
     // ✅ truth는 0~1로 고정 (0.97*1.1 같은 케이스 방지)
-    const engineTruth = Math.max(0, Math.min(1, truthscore * adj));
+    const engineTruth = Math.max(0, Math.min(1, hybrid * adj));
 
     // per-engine 응답시간이 있으면 사용, 없으면 전체 elapsed 사용
     const engineMs =
@@ -1969,7 +2165,7 @@ await supabase.from("verification_logs").insert([
     keywords: keywordsForLog,            // ✅ array(text[])
     elapsed: String(elapsed),            // ✅ text
 
-    model_main: "gemini-2.5-flash",
+    model_main: answerModelUsed,  // ✅ QV/FV 토글 반영 (또는 기본 flash)
     model_eval: verifyModel,
     sources: sourcesText,
 

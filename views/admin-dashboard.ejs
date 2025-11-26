@@ -327,7 +327,7 @@
           </tbody>
         </table>
         <p style="margin-top:8px; font-size:12px; color:#555;">
-          · <code>auto_ce</code>: 서버가 최근 샘플(TruthScore, 응답시간)로 자동 계산한 보정값 (0.9~1.1)<br/>
+          · <code>auto_ce</code>: 서버가 최근 샘플(TruthScore)로 자동 계산한 보정값 (0.9~1.1) (응답시간은 모니터링용)<br/>
           · <code>override_ce</code>: 관리자가 수동으로 지정한 값 (입력 시 <code>0.5~1.5</code>로 제한, 권장 <code>0.9~1.1</code>)<br/>
           · <code>effective_ce</code>: 실제 사용되는 최종 보정값 (override_ce가 있으면 그 값, 없으면 auto_ce)<br/>
           · <code>final_weight</code>: 각 엔진이 TruthScore 계산에 반영되는 최종 가중치 = base_weight × effective_ce
