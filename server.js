@@ -1031,6 +1031,121 @@ function ensureAuth(req, res, next) {
 }
 
 // ─────────────────────────────
+// ✅ DEV ONLY: seed secrets into user_secrets (encrypted via encryptSecret)
+//   보호: header "x-admin-token" must match process.env.DEV_ADMIN_TOKEN
+// ─────────────────────────────
+const DEV_ADMIN_TOKEN = process.env.DEV_ADMIN_TOKEN || null;
+
+app.post("/api/dev/seed-secrets", async (req, res) => {
+  try {
+    const admin = String(req.headers["x-admin-token"] || "");
+    if (!DEV_ADMIN_TOKEN || admin !== DEV_ADMIN_TOKEN) {
+      return res.status(401).json(buildError("UNAUTHORIZED", "Invalid admin token"));
+    }
+
+    const {
+      user_id,
+      // integrations
+      naver_id,
+      naver_secret,
+      klaw_key,
+      github_token,
+      deepl_key,
+      // (옵션) gemini keyring도 같이 넣고 싶으면
+      gemini_keys,
+      action,
+    } = req.body || {};
+
+    const uid = String(user_id || "").trim();
+    if (!uid) {
+      return res.status(400).json(buildError("VALIDATION_ERROR", "user_id is required"));
+    }
+
+    const row = await loadUserSecretsRow(uid);
+    let secrets = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
+
+    // ✅ integrations 암호화 저장(빈 문자열이면 삭제)
+    secrets = applyIntegrationsSecretPatch(secrets, {
+      naver_id,
+      naver_secret,
+      klaw_key,
+      github_token,
+      deepl_key,
+    });
+
+    // ✅ (옵션) gemini keyring도 seed
+    const hasGeminiPayload =
+      (Array.isArray(gemini_keys) && gemini_keys.length > 0) ||
+      (typeof gemini_keys === "string" && String(gemini_keys).trim());
+
+    if (hasGeminiPayload) {
+      let normalized = [];
+      let arr = [];
+      if (Array.isArray(gemini_keys)) arr = gemini_keys;
+      else arr = [String(gemini_keys).trim()];
+
+      normalized = arr
+        .map((x) => {
+          if (typeof x === "string") return { key: x.trim(), label: null };
+          if (x && typeof x === "object")
+            return { key: String(x.key || x.k || "").trim(), label: x.label ? String(x.label).trim() : null };
+          return { key: "", label: null };
+        })
+        .filter((x) => x.key);
+
+      if (!normalized.length) {
+        return res.status(400).json(buildError("VALIDATION_ERROR", "gemini_keys is empty"));
+      }
+
+      const mode = String(action || "replace").toLowerCase(); // replace | append
+      let keys = Array.isArray(secrets.gemini.keyring.keys) ? secrets.gemini.keyring.keys : [];
+
+      if (mode === "append") {
+        const newOnes = normalized.map((x) => ({
+          id: crypto.randomUUID(),
+          label: x.label,
+          enc: encryptSecret(x.key),
+          created_at: new Date().toISOString(),
+        }));
+        keys = [...keys, ...newOnes].slice(0, GEMINI_KEYRING_MAX);
+      } else {
+        keys = normalized.map((x) => ({
+          id: crypto.randomUUID(),
+          label: x.label,
+          enc: encryptSecret(x.key),
+          created_at: new Date().toISOString(),
+        }));
+      }
+
+      const pac = await getPacificResetInfoCached();
+      secrets.gemini.keyring.keys = keys;
+      secrets.gemini.keyring.state = secrets.gemini.keyring.state || {};
+      secrets.gemini.keyring.state.active_id = keys[0]?.id || null;
+      secrets.gemini.keyring.state.exhausted_ids = {};
+      secrets.gemini.keyring.state.last_reset_pt_date = pac.pt_date;
+    }
+
+    await upsertUserSecretsRow(uid, secrets);
+
+    const it = secrets.integrations || {};
+    return res.json(
+      buildSuccess({
+        seeded: true,
+        user_id: uid,
+        has_naver: !!(it.naver?.id_enc && it.naver?.secret_enc),
+        has_klaw: !!it.klaw?.key_enc,
+        has_github: !!it.github?.token_enc,
+        has_deepl: !!it.deepl?.key_enc,
+        gemini_key_count: (secrets?.gemini?.keyring?.keys || []).length,
+      })
+    );
+  } catch (e) {
+    console.error("❌ /api/dev/seed-secrets Error:", e.message);
+    return res.status(500).json(buildError("SEED_ERROR", "seed failed", e.message));
+  }
+});
+
+// ─────────────────────────────
 // ✅ ADD: Settings Save (Gemini Keyring encrypted in DB)
 //   - 앱 설정창에서 호출
 //   - Authorization: Bearer <supabase jwt> 권장
