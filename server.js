@@ -48,14 +48,62 @@ const REGION =
   process.env.REGION ||
   "unknown";
 
+function pickDatabaseUrl() {
+  const url =
+    process.env.DATABASE_URL_INTERNAL ||
+    process.env.DATABASE_URL ||
+    process.env.SUPABASE_DATABASE_URL ||
+    "";
+
+  const u = String(url).trim();
+
+  // ✅ 흔한 실수 차단: postgresql://https://... 같은 케이스
+  if (!/^postgres(ql)?:\/\//i.test(u)) {
+    throw new Error(
+      "DATABASE_URL must start with postgres:// or postgresql:// (not an https URL)"
+    );
+  }
+  if (/^postgres(ql)?:\/\/https?:\/\//i.test(u)) {
+    throw new Error("DATABASE_URL is malformed (contains https:// after protocol)");
+  }
+  if (u.includes("onrender.com")) {
+    throw new Error("DATABASE_URL must be a Postgres URL (Supabase), not a Render app URL");
+  }
+  return u;
+}
+
+const DB_URL = pickDatabaseUrl();
 
 // ✅ 여기서 먼저 풀/스토어 준비
+const useSsl =
+  process.env.PGSSL === "false"
+    ? false
+    : { rejectUnauthorized: false }; // Supabase/Pooler면 로컬도 SSL 필요한 경우 많음
+
 const pgPool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: isProd ? { rejectUnauthorized: false } : false, // 로컬이면 false 권장
+  connectionString: DB_URL,
+  ssl: useSsl,
+  max: parseInt(process.env.PGPOOL_MAX || "5", 10),
+  idleTimeoutMillis: parseInt(process.env.PGPOOL_IDLE_MS || "10000", 10),
+  connectionTimeoutMillis: parseInt(process.env.PGPOOL_CONN_MS || "10000", 10),
+  keepAlive: true,
+});
+
+// ✅ 중요: Pool 'error' 이벤트 핸들러 없으면 프로세스가 죽을 수 있음
+pgPool.on("error", (err) => {
+  console.error("⚠️ PG POOL ERROR (idle client):", err.code || "", err.message);
 });
 
 const PgStore = connectPgSimple(session);
+
+const sessionStore = new PgStore({
+  pool: pgPool,
+  schemaName: "public",
+  tableName: "session_store",
+  createTableIfMissing: false,              // ✅ 운영/로컬 모두 false 권장(이미 테이블 있음)
+  pruneSessionInterval: 60 * 10,            // ✅ (선택) 10분마다 만료 세션 정리
+});
+
 
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "cva.sid";
 const SESSION_SAMESITE_RAW = (process.env.SESSION_SAMESITE || "lax").toLowerCase();
@@ -75,11 +123,7 @@ app.use(
     name: SESSION_COOKIE_NAME,
 
     // ✅ Postgres 세션 스토어 연결
-    store: new PgStore({
-  pool: pgPool,
-  tableName: "session_store",
-  createTableIfMissing: !isProd, // ✅ 운영은 false 권장
-}),
+    store: sessionStore,
 
     secret: process.env.SESSION_SECRET || "dev-secret",
     resave: false,
@@ -1925,10 +1969,10 @@ naverQueries = naverQueries
 // if (!naverQueries.length) naverQueries = [];
 
 
-  if (!naverQueries.length) {
-    const fallbackNq = buildNaverAndQuery(qvfvPre.korean_core || query);
-    if (fallbackNq) naverQueries = [fallbackNq];
-  }
+  // ✅ naver 쿼리는 전처리(Gemini)가 만들어준 것만 사용
+  //    비면 호출 스킵 → engines_used에서 제외됨
+  if (!naverQueries.length) naverQueries = [];
+
 
   // ✅ 네이버 쿼리 기록(빈 값 제외)
   for (const nq of naverQueries) {
@@ -2064,7 +2108,10 @@ partial_scores.engine_queries = {
 
     external.github = (external.github || []).slice(0, 12);
 
-    partial_scores.validity = calcValidityScore(external.github);
+        partial_scores.validity =
+      (Array.isArray(external.github) && external.github.length > 0)
+        ? calcValidityScore(external.github)
+        : null;
     partial_scores.github_queries = ghQueries;
 partial_scores.engine_queries = {
   github: uniqStrings(Array.isArray(ghQueries) ? ghQueries : [], 12),
@@ -2142,7 +2189,7 @@ partial_scores.engine_results = {
   gdelt: Array.isArray(external.gdelt) ? external.gdelt.length : 0,
   naver: Array.isArray(external.naver) ? external.naver.length : 0,
   github: Array.isArray(external.github) ? external.github.length : 0,
-  klaw: external.klaw ? 1 : 0,
+    klaw: Array.isArray(external.klaw) ? external.klaw.length : (external.klaw ? 1 : 0),
 };
 
 partial_scores.engine_times = engineTimes;
@@ -2531,8 +2578,11 @@ const N =
     : 1.0;
 
     // DV/CV: GitHub 유효성 Vᵣ, 없으면 0.7 중립값
+        const useGithub = enginesUsedSet.has("github");
+
     const V_r =
       (safeMode === "dv" || safeMode === "cv") &&
+      useGithub &&
       typeof partial_scores.validity === "number"
         ? Math.max(0, Math.min(1, partial_scores.validity))
         : 0.7;
@@ -3384,12 +3434,17 @@ const gt = lastRequest?.partial_scores_obj?.gemini_times || {};
 app.get("/api/test-db", async (_, res) => {
   try {
     const c = await pgPool.connect();
-    const r = await c.query("SELECT NOW()");
+
+    const r1 = await c.query("SELECT NOW() as now");
+    const r2 = await c.query("select to_regclass('public.session_store') as session_store");
+
     c.release();
+
     return res.json(
       buildSuccess({
         message: "✅ DB 연결 성공",
-        time: r.rows[0].now,
+        time: r1.rows[0].now,
+        session_store: r2.rows[0].session_store, // ✅ 'session_store'면 정상, null이면 없음/스키마 다름
       })
     );
   } catch (e) {
@@ -3404,6 +3459,7 @@ app.get("/api/test-db", async (_, res) => {
       );
   }
 });
+
 
 app.get("/health", (_, res) =>
   res.status(200).json({
