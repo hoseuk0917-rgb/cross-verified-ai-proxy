@@ -3461,6 +3461,7 @@ app.get("/api/test-db", async (_, res) => {
 });
 
 
+
 app.get("/health", (_, res) =>
   res.status(200).json({
     status: "ok",
@@ -3484,6 +3485,58 @@ app.get("/", (_, res) => {
 app.head("/", (_, res) => {
   res.status(200).end();
 });
+
+// ✅ 세션이 "진짜로 DB에 써지는지" 테스트 (cookie + DB row 확인)
+app.get("/api/test-session", async (req, res) => {
+  try {
+    if (!req.session) {
+      return res.status(500).json(
+        buildError("SESSION_NOT_INITIALIZED", "세션 미들웨어가 초기화되지 않았습니다.")
+      );
+    }
+
+    // saveUninitialized:false 이므로 "값을 변경"해야 DB에 저장됨
+    req.session.__test_counter = (req.session.__test_counter || 0) + 1;
+    req.session.__test_last = new Date().toISOString();
+
+    // 저장 완료까지 기다려야 DB 조회가 의미 있음
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => (err ? reject(err) : resolve()));
+    });
+
+    const sid = req.sessionID;
+
+    // DB에 row가 생겼는지 확인 (테이블/컬럼이 다르면 에러 메시지로 내려줌)
+    let dbRow = null;
+    let storedInDb = false;
+    try {
+      const r = await pgPool.query(
+        "SELECT sid, expire FROM public.session_store WHERE sid=$1 LIMIT 1",
+        [sid]
+      );
+      dbRow = r.rows?.[0] || null;
+      storedInDb = !!dbRow?.sid;
+    } catch (e) {
+      dbRow = { db_check_error: e.message };
+    }
+
+    return res.json(
+      buildSuccess({
+        message: "✅ session write test ok",
+        sid,
+        counter: req.session.__test_counter,
+        last: req.session.__test_last,
+        stored_in_db: storedInDb,
+        db_row: dbRow,
+      })
+    );
+  } catch (e) {
+    return res.status(500).json(
+      buildError("TEST_SESSION_ERROR", "세션 테스트 실패", e.message)
+    );
+  }
+});
+
 
 // ─────────────────────────────
 // ✅ (선택 권장) API 404도 JSON으로 통일
