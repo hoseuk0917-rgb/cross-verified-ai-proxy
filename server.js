@@ -62,9 +62,9 @@ const REGION =
 
 function pickDatabaseUrl() {
   const url =
-    process.env.DATABASE_URL_INTERNAL ||
     process.env.SUPABASE_DATABASE_URL ||
     process.env.DATABASE_URL ||
+    process.env.DATABASE_URL_INTERNAL ||
     "";
 
   const u = String(url).trim();
