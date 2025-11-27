@@ -24,6 +24,7 @@ import { fileURLToPath } from "url";
 import ejs from "ejs";
 import nodemailer from "nodemailer";
 import { google } from "googleapis";
+import crypto from "crypto";              // ✅ ADD: 암호화/키ID/UUID
 import "express-async-errors";
 
 // ✅ LV (법령검증) 모듈 외부화
@@ -37,7 +38,15 @@ dotenv.config();
 const isProd = process.env.NODE_ENV === "production";
 const DEBUG = process.env.DEBUG === "true";
 
+// ✅ ADD: Secrets 암호화(서버 마스터키) + Pacific 리셋 TZ
+const SETTINGS_ENC_KEY_B64 = (process.env.SETTINGS_ENC_KEY_B64 || "").trim(); // base64(32bytes)
+const GEMINI_RESET_TZ = process.env.GEMINI_RESET_TZ || "America/Los_Angeles"; // 태평양 시간(PT)
+const PACIFIC_INFO_TTL_MS = parseInt(process.env.PACIFIC_INFO_TTL_MS || "300000", 10); // 5분 캐시
+const GEMINI_KEYRING_MAX = parseInt(process.env.GEMINI_KEYRING_MAX || "10", 10);
+
 const app = express();
+
+
 
 // trust proxy는 세션보다 위에서, 운영일 때만
 if (isProd) app.set("trust proxy", 1);
@@ -109,10 +118,9 @@ const sessionStore = new PgStore({
   pool: pgPool,
   schemaName: "public",
   tableName: "session_store",
-  createTableIfMissing: false,              // ✅ 운영/로컬 모두 false 권장(이미 테이블 있음)
-  pruneSessionInterval: 60 * 10,            // ✅ (선택) 10분마다 만료 세션 정리
+  createTableIfMissing: !isProd,     // ✅ DEV에서는 자동생성 허용, PROD는 고정
+  pruneSessionInterval: 60 * 10,
 });
-
 
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "cva.sid";
 const SESSION_SAMESITE_RAW = (process.env.SESSION_SAMESITE || "lax").toLowerCase();
@@ -455,6 +463,332 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
+// ✅ ADD: Pacific(PT) 날짜/다음 자정(리셋) UTC 시각 — DB로 정확 계산 + 캐시
+let _pacificCache = { fetchedAt: 0, pt_date: null, next_reset_utc: null };
+
+async function getPacificResetInfoCached() {
+  const now = Date.now();
+  if (_pacificCache.pt_date && (now - _pacificCache.fetchedAt) < PACIFIC_INFO_TTL_MS) {
+    return { pt_date: _pacificCache.pt_date, next_reset_utc: _pacificCache.next_reset_utc };
+  }
+
+  // PT 자정은 DST 때문에 JS만으로 정확히 만들기 빡세서 Postgres tz로 계산
+  const sql = `
+    select
+      (now() at time zone $1)::date::text as pt_date,
+      (
+        (date_trunc('day', now() at time zone $1) + interval '1 day')
+        at time zone $1
+      ) as next_reset_utc
+  `;
+  const r = await pgPool.query(sql, [GEMINI_RESET_TZ]);
+
+  const pt_date = r.rows?.[0]?.pt_date || null;
+  const next_reset_utc = r.rows?.[0]?.next_reset_utc
+    ? new Date(r.rows[0].next_reset_utc).toISOString()
+    : null;
+
+  _pacificCache = { fetchedAt: now, pt_date, next_reset_utc };
+  return { pt_date, next_reset_utc };
+}
+
+// ─────────────────────────────
+// ✅ ADD: Secret Encrypt/Decrypt (AES-256-GCM)
+// ─────────────────────────────
+function _getEncKey() {
+  if (!SETTINGS_ENC_KEY_B64) {
+    const err = new Error("SETTINGS_ENC_KEY_B64 is required");
+    err.code = "SETTINGS_ENC_KEY_MISSING";
+    err.httpStatus = 500;
+    err.publicMessage = "서버 암호화 키(SETTINGS_ENC_KEY_B64)가 설정되지 않았습니다.";
+    err._fatal = true;
+    throw err;
+  }
+
+  const key = Buffer.from(SETTINGS_ENC_KEY_B64, "base64");
+  if (key.length !== 32) {
+    const err = new Error("SETTINGS_ENC_KEY_B64 must be 32 bytes base64");
+    err.code = "SETTINGS_ENC_KEY_INVALID";
+    err.httpStatus = 500;
+    err.publicMessage = "서버 암호화 키(SETTINGS_ENC_KEY_B64) 형식이 올바르지 않습니다. (base64 32bytes)";
+    err._fatal = true;
+    throw err;
+  }
+  return key;
+}
+
+function encryptSecret(plaintext) {
+  const key = _getEncKey();
+  const iv = crypto.randomBytes(12); // GCM 권장 12 bytes
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ct = Buffer.concat([cipher.update(String(plaintext), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return {
+    v: 1,
+    alg: "A256GCM",
+    iv: iv.toString("base64"),
+    tag: tag.toString("base64"),
+    ct: ct.toString("base64"),
+  };
+}
+
+function decryptSecret(enc) {
+  if (!enc || typeof enc !== "object") return null;
+  const key = _getEncKey();
+
+  const iv = Buffer.from(enc.iv || "", "base64");
+  const tag = Buffer.from(enc.tag || "", "base64");
+  const ct = Buffer.from(enc.ct || "", "base64");
+
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+  return pt.toString("utf8");
+}
+
+// ─────────────────────────────
+// ✅ ADD: user_secrets CRUD
+// ─────────────────────────────
+async function loadUserSecretsRow(userId) {
+  const { data, error } = await supabase
+    .from("user_secrets")
+    .select("user_id, secrets")
+    .eq("user_id", userId)
+    .single();
+
+  if (error) {
+    // row 없음(PGRST116)이면 빈 객체로 처리
+    if (error.code === "PGRST116") return { user_id: userId, secrets: {} };
+    throw error;
+  }
+  return { user_id: data.user_id, secrets: data.secrets || {} };
+}
+
+async function upsertUserSecretsRow(userId, secrets) {
+  const { error } = await supabase
+    .from("user_secrets")
+    .upsert([{ user_id: userId, secrets, updated_at: new Date() }], { onConflict: "user_id" });
+  if (error) throw error;
+}
+
+// ─────────────────────────────
+// ✅ ADD: Gemini Keyring + Rotation State (PT 자정 리셋)
+//   secrets.gemini = { keyring:{keys:[{id,label,enc}], state:{active_id, exhausted_ids:{[id]:pt_date}, last_reset_pt_date}}, updated_at }
+// ─────────────────────────────
+function _ensureGeminiSecretsShape(secrets) {
+  if (!secrets || typeof secrets !== "object") secrets = {};
+  if (!secrets.gemini || typeof secrets.gemini !== "object") secrets.gemini = {};
+  if (!secrets.gemini.keyring || typeof secrets.gemini.keyring !== "object") {
+    secrets.gemini.keyring = { keys: [], state: { active_id: null, exhausted_ids: {}, last_reset_pt_date: null } };
+  }
+  if (!Array.isArray(secrets.gemini.keyring.keys)) secrets.gemini.keyring.keys = [];
+  if (!secrets.gemini.keyring.state || typeof secrets.gemini.keyring.state !== "object") {
+    secrets.gemini.keyring.state = { active_id: null, exhausted_ids: {}, last_reset_pt_date: null };
+  }
+  if (!secrets.gemini.keyring.state.exhausted_ids || typeof secrets.gemini.keyring.state.exhausted_ids !== "object") {
+    secrets.gemini.keyring.state.exhausted_ids = {};
+  }
+  return secrets;
+}
+
+// ─────────────────────────────
+// Per-user Integration Secrets (Naver / K-Law / GitHub / DeepL)
+// secrets.integrations = {
+//   naver:  { id_enc, secret_enc },
+//   klaw:   { key_enc },
+//   github: { token_enc },
+//   deepl:  { key_enc },
+// }
+// ─────────────────────────────
+function _ensureIntegrationsSecretsShape(secrets) {
+  if (!secrets || typeof secrets !== "object") secrets = {};
+  if (!secrets.integrations || typeof secrets.integrations !== "object") secrets.integrations = {};
+  const it = secrets.integrations;
+
+  if (!it.naver || typeof it.naver !== "object") it.naver = {};
+  if (!it.klaw || typeof it.klaw !== "object") it.klaw = {};
+  if (!it.github || typeof it.github !== "object") it.github = {};
+  if (!it.deepl || typeof it.deepl !== "object") it.deepl = {};
+
+  return secrets;
+}
+
+function _setEncOrClear(obj, field, value) {
+  if (value === undefined) return; // 요청에 없으면 변경하지 않음
+  const t = String(value ?? "").trim();
+  if (!t) {
+    delete obj[field]; // 빈 문자열/NULL => 삭제(초기화)
+    return;
+  }
+  obj[field] = encryptSecret(t);
+}
+
+function _getDec(obj, field) {
+  const v = decryptSecret(obj?.[field]);
+  const t = String(v ?? "").trim();
+  return t || null;
+}
+
+function applyIntegrationsSecretPatch(secrets, patch = {}) {
+  secrets = _ensureIntegrationsSecretsShape(secrets);
+  const it = secrets.integrations;
+
+  _setEncOrClear(it.naver, "id_enc", patch.naver_id);
+  _setEncOrClear(it.naver, "secret_enc", patch.naver_secret);
+
+  _setEncOrClear(it.klaw, "key_enc", patch.klaw_key);
+
+  _setEncOrClear(it.github, "token_enc", patch.github_token);
+
+  _setEncOrClear(it.deepl, "key_enc", patch.deepl_key);
+
+  return secrets;
+}
+
+function decryptIntegrationsSecrets(secrets) {
+  secrets = _ensureIntegrationsSecretsShape(secrets);
+  const it = secrets.integrations;
+
+  return {
+    naver_id: _getDec(it.naver, "id_enc"),
+    naver_secret: _getDec(it.naver, "secret_enc"),
+    klaw_key: _getDec(it.klaw, "key_enc"),
+    github_token: _getDec(it.github, "token_enc"),
+    deepl_key: _getDec(it.deepl, "key_enc"),
+  };
+}
+
+function _rotateKeyId(keys, currentId) {
+  if (!keys.length) return null;
+  const idx = keys.findIndex(k => k.id === currentId);
+  const next = (idx >= 0) ? (idx + 1) % keys.length : 0;
+  return keys[next]?.id || keys[0]?.id || null;
+}
+
+async function ensureGeminiResetIfNeeded(userId, secrets) {
+  const pac = await getPacificResetInfoCached();
+  const pt_date_now = pac.pt_date;
+
+  const state = secrets?.gemini?.keyring?.state || {};
+  const last = state.last_reset_pt_date;
+
+  // PT 날짜가 바뀌면 "소진표시(exhausted)" 전부 해제
+  if (pt_date_now && last && last !== pt_date_now) {
+    state.exhausted_ids = {};
+    state.last_reset_pt_date = pt_date_now;
+    secrets.gemini.keyring.state = state;
+    await upsertUserSecretsRow(userId, secrets);
+  }
+
+  // 최초면 last_reset_pt_date 세팅
+  if (pt_date_now && !state.last_reset_pt_date) {
+    state.last_reset_pt_date = pt_date_now;
+    secrets.gemini.keyring.state = state;
+    await upsertUserSecretsRow(userId, secrets);
+  }
+
+  return pac;
+}
+
+function pickGeminiKeyCandidate(secrets) {
+  const kr = secrets?.gemini?.keyring;
+  const keys = Array.isArray(kr?.keys) ? kr.keys : [];
+  const state = kr?.state || {};
+  const exhausted = state.exhausted_ids || {};
+
+  if (!keys.length) return { keyId: null, enc: null, keysCount: 0 };
+
+  const activeId = state.active_id || keys[0]?.id || null;
+  const idxRaw = keys.findIndex((k) => k.id === activeId);
+  const startIdx = idxRaw >= 0 ? idxRaw : 0;
+
+  for (let offset = 0; offset < keys.length; offset++) {
+    const k = keys[(startIdx + offset) % keys.length];
+    if (k && k.id && k.enc && !exhausted[k.id]) {
+      return { keyId: k.id, enc: k.enc, keysCount: keys.length };
+    }
+  }
+
+  return { keyId: null, enc: null, keysCount: keys.length };
+}
+
+async function setGeminiActiveId(userId, secrets, keyId) {
+  if (!keyId) return;
+  secrets.gemini.keyring.state.active_id = keyId;
+  await upsertUserSecretsRow(userId, secrets);
+}
+
+async function markGeminiKeyExhausted(userId, secrets, keyId, pt_date_now) {
+  if (!keyId) return;
+  secrets.gemini.keyring.state.exhausted_ids[keyId] = pt_date_now || "unknown";
+  // 다음 후보를 active로 밀어둠(다음 호출이 바로 다른 키로 가게)
+  const keys = secrets.gemini.keyring.keys || [];
+  secrets.gemini.keyring.state.active_id = _rotateKeyId(keys, keyId);
+  await upsertUserSecretsRow(userId, secrets);
+}
+
+async function getGeminiKeyFromDB(userId) {
+  const row = await loadUserSecretsRow(userId);
+  let secrets = _ensureGeminiSecretsShape(row.secrets);
+
+  const pac = await ensureGeminiResetIfNeeded(userId, secrets);
+  const pt_date_now = pac.pt_date;
+
+  const keys = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
+  const keysCount = keys.length;
+
+  // 키가 아예 없으면 즉시 종료
+  if (!keysCount) {
+    const err = new Error("GEMINI_KEYRING_EMPTY_OR_EXHAUSTED");
+    err.code = "GEMINI_KEY_EXHAUSTED";
+    err.httpStatus = 200;
+    err.detail = { keysCount: 0, pt_date: pt_date_now, next_reset_utc: pac.next_reset_utc };
+    throw err;
+  }
+
+  // ✅ 핵심: “현재 후보 키 복호화 실패”는 ‘전체 소진’이 아니라 ‘해당 키만 탈락’ → 다음 키로 계속
+  const tried = new Set();
+
+  for (let i = 0; i < keysCount; i++) {
+    const cand = pickGeminiKeyCandidate(secrets);
+    if (!cand.keyId || !cand.enc) break;
+
+    // 무한루프 방지
+    if (tried.has(cand.keyId)) break;
+    tried.add(cand.keyId);
+
+        let keyPlain = null;
+    try {
+      keyPlain = decryptSecret(cand.enc);
+    } catch (err) {
+      // ✅ 서버 마스터키 누락/불량 같은 "치명 오류"는 exhausted 처리하지 말고 즉시 중단
+      if (err?._fatal) throw err;
+      keyPlain = null;
+    }
+
+    if (keyPlain && keyPlain.trim()) {
+      await setGeminiActiveId(userId, secrets, cand.keyId);
+      return {
+        gemini_key: keyPlain.trim(),
+        key_id: cand.keyId,
+        pt_date: pt_date_now,
+        next_reset_utc: pac.next_reset_utc,
+      };
+    }
+
+    // 복호화 실패/빈키 → 해당 키만 exhausted 처리 후 다음 키로 진행
+    await markGeminiKeyExhausted(userId, secrets, cand.keyId, pt_date_now);
+  }
+
+  // 여기까지 왔으면 “진짜로” 쓸 키가 없음
+  const err = new Error("GEMINI_KEYRING_EMPTY_OR_EXHAUSTED");
+  err.code = "GEMINI_KEY_EXHAUSTED";
+  err.httpStatus = 200;
+  err.detail = { keysCount, pt_date: pt_date_now, next_reset_utc: pac.next_reset_utc };
+  throw err;
+}
+
 function getBearerToken(req) {
   const h = req.headers?.authorization || req.headers?.Authorization;
   if (!h) return null;
@@ -522,8 +856,11 @@ async function resolveLogUserId({ user_id, user_email, user_name, auth_user, bea
   const email = (user_email || "").toString().trim().toLowerCase();
   if (email) {
     await supabase
-      .from("users")
-      .upsert([{ email, name: user_name || null }], { onConflict: "email" });
+  .from("users")
+  .upsert(
+    [{ email, name: user_name || null, updated_at: new Date().toISOString() }],
+    { onConflict: "email" }
+  );
 
     const { data, error } = await supabase
       .from("users")
@@ -693,6 +1030,189 @@ function ensureAuth(req, res, next) {
   return res.redirect("/auth/admin");
 }
 
+// ─────────────────────────────
+// ✅ ADD: Settings Save (Gemini Keyring encrypted in DB)
+//   - 앱 설정창에서 호출
+//   - Authorization: Bearer <supabase jwt> 권장
+// ─────────────────────────────
+app.post("/api/settings/save", async (req, res) => {
+  try {
+    const authUser = await getSupabaseAuthUser(req);
+
+    // 설정 저장은 보안상 “무조건 인증” 권장
+    if (!authUser) {
+      return res.status(401).json(buildError("UNAUTHORIZED", "설정 저장은 로그인 토큰이 필요합니다."));
+    }
+
+    const userId = await resolveLogUserId({
+      user_id: null,
+      user_email: authUser.email,
+      user_name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || null,
+      auth_user: authUser,
+      bearer_token: getBearerToken(req),
+    });
+
+    if (!userId) {
+      return res.status(400).json(buildError("VALIDATION_ERROR", "user_id 확정 실패"));
+    }
+
+    const {
+      gemini_keys,
+      action,
+
+      // ✅ NEW: 다른 엔진 키도 같이 저장
+      naver_id,
+      naver_secret,
+      klaw_key,
+      github_token,
+      deepl_key,
+    } = req.body;
+
+    const hasOtherPayload =
+      naver_id !== undefined ||
+      naver_secret !== undefined ||
+      klaw_key !== undefined ||
+      github_token !== undefined ||
+      deepl_key !== undefined;
+
+    const hasGeminiPayload =
+      (Array.isArray(gemini_keys) && gemini_keys.length > 0) ||
+      (typeof gemini_keys === "string" && gemini_keys.trim());
+
+    // Gemini 입력 정규화 (있을 때만)
+    let normalized = [];
+    if (hasGeminiPayload) {
+      let arr = [];
+      if (Array.isArray(gemini_keys)) arr = gemini_keys;
+      else if (typeof gemini_keys === "string" && gemini_keys.trim()) arr = [gemini_keys.trim()];
+
+      normalized = arr
+        .map((x) => {
+          if (typeof x === "string") return { key: x.trim(), label: null };
+          if (x && typeof x === "object")
+            return {
+              key: String(x.key || x.k || "").trim(),
+              label: x.label ? String(x.label).trim() : null,
+            };
+          return { key: "", label: null };
+        })
+        .filter((x) => x.key);
+    }
+
+    if (!hasGeminiPayload && !hasOtherPayload) {
+      return res.status(400).json(buildError("VALIDATION_ERROR", "저장할 설정이 없습니다."));
+    }
+    if (hasGeminiPayload && !normalized.length) {
+      return res.status(400).json(buildError("VALIDATION_ERROR", "gemini_keys가 비어 있습니다."));
+    }
+
+    const row = await loadUserSecretsRow(userId);
+    let secrets = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
+
+    // ✅ NEW: 기타 키 저장(암호화). 빈 문자열이면 삭제
+    secrets = applyIntegrationsSecretPatch(secrets, {
+      naver_id,
+      naver_secret,
+      klaw_key,
+      github_token,
+      deepl_key,
+    });
+
+    // ✅ Gemini keyring 저장은 gemini_keys가 들어왔을 때만
+    let keys = Array.isArray(secrets.gemini.keyring.keys) ? secrets.gemini.keyring.keys : [];
+    let pac = null;
+
+    if (hasGeminiPayload) {
+      const mode = String(action || "replace").toLowerCase(); // replace | append
+
+      if (mode === "append") {
+        const newOnes = normalized.map((x) => ({
+          id: crypto.randomUUID(),
+          label: x.label,
+          enc: encryptSecret(x.key),
+          created_at: new Date().toISOString(),
+        }));
+        keys = [...keys, ...newOnes].slice(0, GEMINI_KEYRING_MAX);
+      } else {
+        keys = normalized.map((x) => ({
+          id: crypto.randomUUID(),
+          label: x.label,
+          enc: encryptSecret(x.key),
+          created_at: new Date().toISOString(),
+        }));
+      }
+
+      pac = await getPacificResetInfoCached();
+      secrets.gemini.keyring.keys = keys;
+      secrets.gemini.keyring.state = secrets.gemini.keyring.state || {};
+      secrets.gemini.keyring.state.active_id = keys[0]?.id || null;
+      secrets.gemini.keyring.state.exhausted_ids = {};
+      secrets.gemini.keyring.state.last_reset_pt_date = pac.pt_date;
+    }
+
+    await upsertUserSecretsRow(userId, secrets);
+
+    const it = secrets.integrations || {};
+
+    return res.json(
+      buildSuccess({
+        saved: true,
+        key_count: (secrets?.gemini?.keyring?.keys || []).length,
+        pt_date: pac?.pt_date || null,
+        next_reset_utc: pac?.next_reset_utc || null,
+
+        has_naver: !!(it.naver?.id_enc && it.naver?.secret_enc),
+        has_klaw: !!it.klaw?.key_enc,
+        has_github: !!it.github?.token_enc,
+        has_deepl: !!it.deepl?.key_enc,
+      })
+    );
+  } catch (e) {
+    console.error("❌ /api/settings/save Error:", e.message);
+    return res.status(500).json(buildError("SETTINGS_SAVE_ERROR", "설정 저장 실패", e.message));
+  }
+});
+
+// ✅ ADD: Gemini reset/keyring status (앱 ping용)
+app.get("/api/settings/gemini/status", async (req, res) => {
+  try {
+    const authUser = await getSupabaseAuthUser(req);
+    if (!authUser) {
+      return res.status(401).json(buildError("UNAUTHORIZED", "로그인이 필요합니다."));
+    }
+
+    const userId = await resolveLogUserId({
+      user_id: null,
+      user_email: authUser.email,
+      user_name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || null,
+      auth_user: authUser,
+      bearer_token: getBearerToken(req),
+    });
+
+    const pac = await getPacificResetInfoCached();
+    const row = await loadUserSecretsRow(userId);
+    const secrets = _ensureGeminiSecretsShape(row.secrets);
+
+    await ensureGeminiResetIfNeeded(userId, secrets);
+
+    const keys = secrets.gemini.keyring.keys || [];
+    const state = secrets.gemini.keyring.state || {};
+    const exhaustedIds = state.exhausted_ids || {};
+
+    return res.json(buildSuccess({
+      pt_date: pac.pt_date,
+      next_reset_utc: pac.next_reset_utc,
+      key_count: keys.length,
+      active_id: state.active_id || null,
+      exhausted_count: Object.keys(exhaustedIds).length,
+      exhausted_ids: exhaustedIds,
+    }));
+  } catch (e) {
+    console.error("❌ /api/settings/gemini/status Error:", e.message);
+    return res.status(500).json(buildError("GEMINI_STATUS_ERROR", "상태 조회 실패", e.message));
+  }
+});
+
 app.get(
   "/auth/admin",
   passport.authenticate("google", { scope: ["email", "profile"] })
@@ -783,18 +1303,58 @@ function uniqStrings(arr, max = 50) {
 function dedupeByLink(items = []) {
   const out = [];
   const seen = new Set();
-
   for (const it of (items || [])) {
     const link = String(it?.link || "").trim();
-    const key = link || JSON.stringify(it).slice(0, 200);
-
-    if (!key) continue;
-    if (seen.has(key)) continue;
-
-    seen.add(key);
+    if (!link) continue;
+    if (seen.has(link)) continue;
+    seen.add(link);
     out.push(it);
   }
   return out;
+}
+
+// ✅ “쿼리 없으면 제외” + “calls 없으면 제외” + “results 0이면 제외”
+function computeEnginesUsed({ enginesRequested, partial_scores, engineMetrics }) {
+  const q = partial_scores?.engine_queries || {};
+  const r = partial_scores?.engine_results || {};
+
+  const used = [];
+  const excluded = {};
+
+  const hasQuery = (eng) => {
+    const v = q?.[eng];
+    if (Array.isArray(v)) return v.some((s) => String(s || "").trim().length > 0);
+    if (typeof v === "string") return v.trim().length > 0;
+    return false;
+  };
+
+  const callsOf = (eng) => {
+    const c = engineMetrics?.[eng]?.calls;
+    return (typeof c === "number" && Number.isFinite(c)) ? c : 0;
+  };
+
+  const resultsOf = (eng) => {
+    const n = r?.[eng];
+    return (typeof n === "number" && Number.isFinite(n)) ? n : 0;
+  };
+
+  for (const eng of (enginesRequested || [])) {
+    if (!hasQuery(eng)) {
+      excluded[eng] = { reason: "no_query" };
+      continue;
+    }
+    if (callsOf(eng) <= 0) {
+      excluded[eng] = { reason: "no_calls" };
+      continue;
+    }
+    if (resultsOf(eng) <= 0) {
+      excluded[eng] = { reason: "no_results" };
+      continue;
+    }
+    used.push(eng);
+  }
+
+  return { used, excluded };
 }
 
 function engineQueriesPresent(q) {
@@ -805,44 +1365,6 @@ function engineQueriesPresent(q) {
     return q.trim().length > 0;
   }
   return false;
-}
-
-// ✅ “쿼리(검색어) 없으면 제외”, “실제 호출(calls) 없으면 제외”
-function computeEnginesUsed({ enginesRequested = [], partial_scores = {}, engineMetrics = {} }) {
-  const used = [];
-  const excluded = [];
-
-  const eq = partial_scores?.engine_queries || {};
-  const er = partial_scores?.engine_results || {};
-
-  for (const e of enginesRequested) {
-    if (e === "klaw") {
-      used.push(e);
-      continue;
-    }
-
-    const calls = Number(engineMetrics?.[e]?.calls ?? 0);
-    if (!(calls > 0)) {
-      excluded.push({ engine: e, reason: "no_calls" });
-      continue;
-    }
-
-    const q = eq?.[e];
-    if (!engineQueriesPresent(q)) {
-      excluded.push({ engine: e, reason: "empty_query" });
-      continue;
-    }
-
-    const results = Number(er?.[e] ?? 0);
-    if (!(results > 0)) {
-      excluded.push({ engine: e, reason: "no_results" });
-      continue;
-    }
-
-    used.push(e);
-  }
-
-  return { used, excluded };
 }
 
 // ─────────────────────────────
@@ -1143,37 +1665,123 @@ function geminiErrMessage(e) {
   return `[status=${status ?? "?"}] ${apiMsg || e?.message || "Unknown Gemini error"}`;
 }
 
-// ✅ url: generateContent endpoint
-// ✅ payload: { contents:[{parts:[{text:"..."}]}] }
-// ✅ opts: { label?:string, minChars?:number }
-async function fetchGemini(url, payload, opts = {}) {
-  const label = opts.label || "gemini";
+// ✅ ADD: "model + key"로 직접 호출하는 raw
+async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
+  const label = opts.label || `gemini:${model}`;
   const minChars = Number.isFinite(opts.minChars) ? opts.minChars : 1;
 
-  try {
-    const { data } = await axios.post(url, payload, { timeout: HTTP_TIMEOUT_MS });
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${gemini_key}`;
 
-    const text = extractGeminiText(data);
+  const { data } = await axios.post(url, payload, { timeout: HTTP_TIMEOUT_MS });
 
-    // ✅ 후보가 없거나 텍스트가 비면 "실패"로 처리 (fallback이 작동하도록 throw)
-    if ((text || "").trim().length < minChars) {
-      const finishReason = data?.candidates?.[0]?.finishReason;
-      const blockReason = data?.promptFeedback?.blockReason;
-      const err = new Error(
-        `${label}: GEMINI_EMPTY_TEXT (finish=${finishReason || "?"}, block=${blockReason || "?"})`
-      );
-      err._gemini_empty = true;
-      throw err;
-    }
-
-    return text;
-  } catch (e) {
-    // ✅ DEBUG가 꺼져 있어도 원인 파악 가능하게 항상 로그
-    console.error("❌ Gemini call failed:", label, geminiErrMessage(e));
-    throw e;
+  const text = extractGeminiText(data);
+  if ((text || "").trim().length < minChars) {
+    const finishReason = data?.candidates?.[0]?.finishReason;
+    const blockReason = data?.promptFeedback?.blockReason;
+    const err = new Error(
+      `${label}: GEMINI_EMPTY_TEXT (finish=${finishReason || "?"}, block=${blockReason || "?"})`
+    );
+    err._gemini_empty = true;
+    throw err;
   }
+
+  return text;
 }
 
+// ✅ ADD: Rotation wrapper
+// - 우선순위: (1) 요청에서 gemini_key(keyHint) 왔으면 1회 시도 → (401/403/429)면 DB 키링으로
+// - DB 키링은 (429/401/403)면 해당 key_id를 exhausted로 기록하고 다음 키로 자동교체
+async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} }) {
+  const hint = String(keyHint || "").trim();
+
+  // 0) hint key 1회 시도(옵션)
+  if (hint) {
+    try {
+      return await fetchGeminiRaw({
+        model,
+        gemini_key: hint,
+        payload,
+        opts,
+      });
+    } catch (e) {
+      const status = e?.response?.status;
+
+      // ✅ hint 키가 불량(401/403) OR quota(429)면 DB 키링으로 넘어간다
+      if (status === 429 || status === 401 || status === 403) {
+        // 계속 진행(키링 시도)
+      } else {
+        console.error(
+          "❌ Gemini call failed:",
+          opts.label || `gemini:${model}`,
+          geminiErrMessage(e)
+        );
+        throw e;
+      }
+    }
+  }
+
+  // hint가 없거나, hint가 quota/auth로 실패했는데 userId도 없으면 로테이션 불가
+  if (!userId) {
+    const err = new Error("GEMINI_USERID_REQUIRED_FOR_ROTATION");
+    err.code = "GEMINI_KEY_EXHAUSTED";
+    err.httpStatus = 200;
+    err.detail = { reason: "userId_missing_or_unauthed" };
+    throw err;
+  }
+
+  // 1) DB 키링에서 키를 뽑아가며 시도
+  let lastErr = null;
+
+  for (let attempt = 0; attempt < GEMINI_KEYRING_MAX; attempt++) {
+    const kctx = await getGeminiKeyFromDB(userId); // {gemini_key, key_id, pt_date, next_reset_utc}
+
+    try {
+      const out = await fetchGeminiRaw({
+        model,
+        gemini_key: kctx.gemini_key,
+        payload,
+        opts: {
+          ...opts,
+          label: (opts.label || `gemini:${model}`) + `#${kctx.key_id}`,
+        },
+      });
+      return out;
+    } catch (e) {
+      lastErr = e;
+      const status = e?.response?.status;
+
+      // ✅ 429(쿼터) 뿐 아니라 401/403(키 무효)도 해당 키를 탈락 처리하고 다음 키로
+      if (status === 429 || status === 401 || status === 403) {
+        try {
+          const row = await loadUserSecretsRow(userId);
+          const secrets = _ensureGeminiSecretsShape(row.secrets);
+          await markGeminiKeyExhausted(userId, secrets, kctx.key_id, kctx.pt_date);
+        } catch {}
+        continue;
+      }
+
+      console.error(
+        "❌ Gemini call failed:",
+        opts.label || `gemini:${model}`,
+        geminiErrMessage(e)
+      );
+      throw e;
+    }
+  }
+
+  // 2) 여기까지 오면 키를 다 써버림
+  const pac = await getPacificResetInfoCached();
+  const err = new Error("GEMINI_ALL_KEYS_EXHAUSTED");
+  err.code = "GEMINI_KEY_EXHAUSTED";
+  err.httpStatus = 200;
+  err.detail = {
+    pt_date: pac.pt_date,
+    next_reset_utc: pac.next_reset_utc,
+    last_error: lastErr ? geminiErrMessage(lastErr) : null,
+  };
+  err._gemini_all_exhausted = true;
+  throw err;
+}
 
 // ─────────────────────────────
 // ✅ 유효성 (Vᵣ) 계산식 — GitHub 기반
@@ -1204,7 +1812,8 @@ async function calcConsistencyFromGemini(
   query,
   user_answer,
   githubData,
-  gemini_key
+  gemini_key,
+  userId // ✅ ADD
 ) {
   try {
     const baseText =
@@ -1232,10 +1841,12 @@ ${JSON.stringify(githubData).slice(0, 2500)}
 {"consistency":0.0}
 `;
 
-    const text = await fetchGemini(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${gemini_key}`,
-      { contents: [{ parts: [{ text: prompt }] }] }
-    );
+    const text = await fetchGeminiRotating({
+  userId,                 // ✅ 아래에서 함수 시그니처를 userId 받게 바꿀 거라 여기선 임시
+  keyHint: gemini_key,
+  model: "gemini-2.5-pro",
+  payload: { contents: [{ parts: [{ text: prompt }] }] },
+});
 
     const trimmed = (text || "").trim();
     const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
@@ -1269,7 +1880,8 @@ async function buildGithubQueriesFromGemini(
   mode,
   query,
   user_answer,
-  gemini_key
+  gemini_key,
+  userId
 ) {
   try {
     const baseText =
@@ -1286,16 +1898,16 @@ ${baseText}
 출력 형식은 반드시 다음 JSON 형식만 사용하세요 (설명 금지):
 
 {"queries":["검색어1","검색어2","검색어3"]}
-`;
+`.trim();
 
-    const text = await fetchGemini(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
-      { contents: [{ parts: [{ text: prompt }] }] }
-    );
+    const text = await fetchGeminiRotating({
+      userId,
+      keyHint: gemini_key,
+      model: "gemini-2.5-flash",
+      payload: { contents: [{ parts: [{ text: prompt }] }] },
+    });
 
     const trimmed = (text || "").trim();
-
-    // 코드블록 안에 JSON이 들어오는 경우도 대비
     const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
     const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
 
@@ -1303,7 +1915,6 @@ ${baseText}
     try {
       parsed = JSON.parse(jsonText);
     } catch {
-      // 파싱 실패하면 그냥 원래 query 하나만 사용
       return [query];
     }
 
@@ -1314,13 +1925,11 @@ ${baseText}
 
     return cleaned.length > 0 ? cleaned : [query];
   } catch (e) {
-    if (DEBUG) {
-      console.warn("⚠️ buildGithubQueriesFromGemini fail:", e.message);
-    }
-    // 실패 시 fallback: 기존처럼 query 하나만 사용
+    if (DEBUG) console.warn("⚠️ buildGithubQueriesFromGemini fail:", e.message);
     return [query];
   }
 }
+
 
 // ✅ engine_correction_samples: 엔진별 최근 N개만 남기기 (ID 기반 트림)
 const TRIM_BATCH = 200; // 한 번에 지울 최대 개수(안전용)
@@ -1508,11 +2117,27 @@ function buildNaverAndQuery(baseKo) {
     .trim();
 }
 
+function normSpace(s) {
+  return String(s || "").replace(/\s+/g, " ").trim();
+}
+
+function limitChars(s, n) {
+  const t = normSpace(s);
+  if (!t) return "";
+  return t.length > n ? t.slice(0, n).trim() : t;
+}
+
+function fallbackNaverQueryFromText(seed) {
+  // '+' 금지 규칙도 반영
+  const q = limitChars(buildNaverAndQuery(seed), 30);
+  return q ? [q] : [];
+}
+
 const QVFV_MAX_BLOCKS = parseInt(process.env.QVFV_MAX_BLOCKS || "5", 10);
 const BLOCK_NAVER_MAX_QUERIES = parseInt(process.env.BLOCK_NAVER_MAX_QUERIES || "2", 10);
 const BLOCK_NAVER_MAX_ITEMS = parseInt(process.env.BLOCK_NAVER_MAX_ITEMS || "6", 10);
 
-async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, modelName }) {
+async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, modelName, userId }) {
   // mode: "qv" | "fv"
   // QV: 답변 생성 + 답변 기준 블록/쿼리 생성
   // FV: core_text(사실문장) 기준 블록/쿼리 생성 (답변 생성 X)
@@ -1576,11 +2201,12 @@ async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, model
 }
 `.trim();
 
-
-  const text = await fetchGemini(
-    `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${gemini_key}`,
-    { contents: [{ parts: [{ text: prompt }] }] }
-  );
+  const text = await fetchGeminiRotating({
+    userId,
+    keyHint: gemini_key,
+    model: modelName || "gemini-2.5-flash",
+    payload: { contents: [{ parts: [{ text: prompt }] }] },
+  });
 
   const trimmed = (text || "").trim();
   const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
@@ -1595,21 +2221,49 @@ async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, model
 
    let blocksRaw = Array.isArray(parsed?.blocks) ? parsed.blocks : [];
 
-  let blocks = blocksRaw.slice(0, QVFV_MAX_BLOCKS).map((b, idx) => {
+let blocks = blocksRaw
+  .slice(0, QVFV_MAX_BLOCKS)
+  .map((b, idx) => {
     const eq = b?.engine_queries || {};
-    const naverArr = Array.isArray(eq.naver) ? eq.naver : (typeof eq.naver === "string" ? [eq.naver] : []);
+
+    // ✅ engine query 기본값/길이제한 강제
+    const crossrefQ = limitChars(eq.crossref || english_core, 90);
+    const openalexQ = limitChars(eq.openalex || english_core, 90);
+    const wikidataQ = limitChars(eq.wikidata || korean_core, 50);
+    const gdeltQ    = limitChars(eq.gdelt   || english_core, 120);
+
+    // ✅ naver는 배열/문자열 모두 수용 + '+' 제거 + 30자 제한
+    let naverArr = Array.isArray(eq.naver)
+      ? eq.naver
+      : (typeof eq.naver === "string" ? [eq.naver] : []);
+
+    naverArr = naverArr
+      .map((s) => limitChars(buildNaverAndQuery(s), 30))
+      .filter(Boolean)
+      .slice(0, BLOCK_NAVER_MAX_QUERIES);
+
+    // ✅ 핵심: 전처리 결과가 비어도 naver 쿼리 1개는 보장
+    // (block.text → korean_core 순으로 seed)
+    if (naverArr.length === 0) {
+      const seed = String(b?.text || "").trim() || korean_core;
+      naverArr = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
+    }
+
+    const text = clipBlockText(String(b?.text || "").trim(), 260);
+
     return {
       id: Number.isFinite(Number(b?.id)) ? Number(b.id) : (idx + 1),
-      text: clipBlockText(String(b?.text || "").trim(), 260),
-    engine_queries: {
-  crossref: String(eq.crossref || "").trim(),
-  openalex: String(eq.openalex || "").trim(),
-  wikidata: String(eq.wikidata || "").trim(),
-  gdelt: String(eq.gdelt || "").trim(),
-  naver: naverArr.map(s => String(s).trim()).filter(Boolean).slice(0, BLOCK_NAVER_MAX_QUERIES),
-},
+      text,
+      engine_queries: {
+        crossref: crossrefQ,
+        openalex: openalexQ,
+        wikidata: wikidataQ,
+        gdelt: gdeltQ,
+        naver: naverArr,
+      },
     };
-  }).filter(b => b.text);
+  })
+  .filter((b) => b.text);
 
  // ✅ 최종 안전망: 0개면 base 텍스트로 1개 생성
 if (blocks.length === 0) {
@@ -1711,33 +2365,33 @@ function computeEngineCorrectionFactor(engines = [], statsMap = {}) {
 //   - DV/CV: GitHub 기반 TruthScore 직접 계산 (Gemini→GitHub)
 //   - LV: TruthScore 없이 K-Law 결과만 제공 (Ⅸ 명세 반영)
 // ─────────────────────────────
-
 app.post("/api/verify", async (req, res) => {
-let logUserId = null;   // ✅ 요청마다 독립
+  let logUserId = null;   // ✅ 요청마다 독립
   let authUser = null;    // ✅ 요청마다 독립
- const {
-  query,
-  mode,
-  gemini_key,
-  naver_id,
-  naver_secret,
-  klaw_key,
-  user_answer,
-  github_token,
-  gemini_model,
 
-  // ✅ FV에서 "사실 문장"을 query와 분리해서 보내고 싶을 때 사용
-  core_text,
+  const {
+    query,
+    mode,
+    gemini_key,
+    naver_id,
+    naver_secret,
+    klaw_key,
+    user_answer,
+    github_token,
+    gemini_model,
 
-  user_id,
-  user_email,
-  user_name,
-} = req.body;
+    // ✅ FV에서 "사실 문장"을 query와 분리해서 보내고 싶을 때 사용
+    core_text,
 
-const safeMode = (mode || "").trim().toLowerCase();
+    user_id,
+    user_email,
+    user_name,
+  } = req.body;
 
-// ✅ FV 검증 대상(사실 문장) 우선 입력값
-const userCoreText = (core_text || "").toString().trim();
+  const safeMode = (mode || "").trim().toLowerCase();
+
+  // ✅ FV 검증 대상(사실 문장) 우선 입력값
+  const userCoreText = (core_text || "").toString().trim();
 
   // 기본 검증
   if (!query) {
@@ -1751,38 +2405,6 @@ if (!allowedModes.includes(safeMode)) {
   return res
     .status(400)
     .json(buildError("INVALID_MODE", `지원하지 않는 모드입니다: ${mode}`));
-}
-
-// ✅ 모드가 확정된 다음에 키 검증
-if (safeMode !== "lv" && !gemini_key) {
-  return res
-    .status(400)
-    .json(buildError("VALIDATION_ERROR", "Gemini 키가 누락되었습니다."));
-}
-
-  // QV/FV 모드는 네이버 옵션 해제 → 항상 Naver 엔진 사용
-  // ✅ QV/FV: 네이버 필수
-if ((safeMode === "qv" || safeMode === "fv") && (!naver_id || !naver_secret)) {
-  return res.status(400).json(
-    buildError(
-      "VALIDATION_ERROR",
-      "QV/FV 모드에서는 Naver client id / secret이 필요합니다."
-    )
-  );
-}
-
-// ✅ LV: klaw_key 필수
-if (safeMode === "lv" && !klaw_key) {
-  return res.status(400).json(
-    buildError("VALIDATION_ERROR", "LV 모드에서는 klaw_key가 필요합니다.")
-  );
-}
-
-// ✅ DV/CV는 github_token 필수
-if ((safeMode === "dv" || safeMode === "cv") && !github_token) {
-  return res.status(400).json(
-    buildError("VALIDATION_ERROR", "DV/CV 모드에서는 github_token이 필요합니다.")
-  );
 }
 
   // 🔹 QV/FV용 Gemini 모델 토글 (Flash / Pro)
@@ -1830,7 +2452,9 @@ verifyModelUsed = verifyModel;
 
 // ✅ 운영모드: 로그인 토큰 없으면 차단
 if (REQUIRE_USER_AUTH && !authUser) {
-  return res.status(401).json(buildError("UNAUTHORIZED", "로그인이 필요합니다. (Authorization: Bearer <token>)"));
+  return res
+    .status(401)
+    .json(buildError("UNAUTHORIZED", "로그인이 필요합니다. (Authorization: Bearer <token>)"));
 }
 
 logUserId = await resolveLogUserId({
@@ -1838,7 +2462,7 @@ logUserId = await resolveLogUserId({
   user_email,
   user_name,
   auth_user: authUser,
-  bearer_token: getBearerToken(req), // ✅ 추가: Bearer localtest 같은 값도 로그 식별에 사용
+  bearer_token: getBearerToken(req), // ✅ Bearer localtest 같은 값도 로그 식별에 사용
 });
 
 if (!logUserId) {
@@ -1848,6 +2472,66 @@ if (!logUserId) {
       "로그 식별자(user) 확정 실패: Authorization Bearer 토큰 또는 DEFAULT_USER_ID가 필요합니다."
     )
   );
+}
+
+// ✅ per-user vault에서 Naver / K-Law / GitHub / DeepL 키 복호화
+const secretsRow = await loadUserSecretsRow(logUserId);
+let userSecrets = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(secretsRow.secrets));
+const vault = decryptIntegrationsSecrets(userSecrets);
+
+const naverIdFinal = (naver_id && String(naver_id).trim()) || vault.naver_id;
+const naverSecretFinal = (naver_secret && String(naver_secret).trim()) || vault.naver_secret;
+const klawKeyFinal = (klaw_key && String(klaw_key).trim()) || vault.klaw_key;
+const githubTokenFinal = (github_token && String(github_token).trim()) || vault.github_token;
+
+const geminiKeysCount = (userSecrets?.gemini?.keyring?.keys || []).length;
+
+// ✅ 모드별 필수키 검증(body → vault 순서)
+if ((safeMode === "qv" || safeMode === "fv") && (!naverIdFinal || !naverSecretFinal)) {
+  return res.status(400).json(
+    buildError(
+      "VALIDATION_ERROR",
+      "QV/FV 모드에서는 Naver client id / secret이 필요합니다. (설정 저장 또는 body 포함)"
+    )
+  );
+}
+
+if (safeMode === "lv" && !klawKeyFinal) {
+  return res
+    .status(400)
+    .json(buildError("VALIDATION_ERROR", "LV 모드에서는 klaw_key가 필요합니다. (설정 저장 또는 body 포함)"));
+}
+
+if ((safeMode === "dv" || safeMode === "cv") && !githubTokenFinal) {
+  return res.status(400).json(
+    buildError("VALIDATION_ERROR", "DV/CV 모드에서는 github_token이 필요합니다. (설정 저장 또는 body 포함)")
+  );
+}
+
+if (!logUserId) {
+  return res.status(400).json(
+    buildError(
+      "VALIDATION_ERROR",
+      "로그 식별자(user) 확정 실패: Authorization Bearer 토큰 또는 DEFAULT_USER_ID가 필요합니다."
+    )
+  );
+}
+
+// ✅ ADD: Gemini 키는 (1) body로 오거나 (2) DB keyring에 있어야 함
+if (safeMode !== "lv") {
+  const hasHint = !!(gemini_key && String(gemini_key).trim());
+  if (!hasHint) {
+    const keysCount = geminiKeysCount;
+
+    if (!keysCount) {
+      return res.status(400).json(
+        buildError(
+          "VALIDATION_ERROR",
+          "Gemini 키가 없습니다. 앱 설정에서 Gemini 키를 저장하거나, 요청 바디에 gemini_key를 포함하세요."
+        )
+      );
+    }
+  }
 }
 
 // ─────────────────────────────
@@ -1867,12 +2551,13 @@ switch (safeMode) {
     try {
       const t_pre = Date.now();
       const pre = await preprocessQVFVOneShot({
-        mode: safeMode,
-        query,
-        core_text: qvfvBaseText,
-        gemini_key,
-        modelName: preprocessModel,
-      });
+  mode: safeMode,
+  query,
+  core_text: qvfvBaseText,
+  gemini_key,
+  modelName: preprocessModel,
+  userId: logUserId, // ✅ ADD
+});
       const ms_pre = Date.now() - t_pre;
       recordTime(geminiTimes, "qvfv_preprocess_ms", ms_pre);
       recordMetric(geminiMetrics, "qvfv_preprocess", ms_pre);
@@ -1897,37 +2582,36 @@ if (!qvfvPre) {
   const baseCore = qvfvBaseText || query || "";
   const [t1, t2] = splitIntoTwoParts(baseCore);
 
+  const ko = normalizeKoreanQuestion(baseCore);
+  const en = String(baseCore).trim();
+
+  const makeBlock = (id, txt) => {
+    const text = clipBlockText(txt, 260);
+    // ✅ 전처리 실패여도 naver 쿼리는 1개 보장 (짧으면 1블록만 남아도 naver가 살아있게)
+    const naverQ = fallbackNaverQueryFromText(text || ko);
+    return {
+      id,
+      text,
+      engine_queries: {
+        crossref: limitChars(en, 90),
+        openalex: limitChars(en, 90),
+        wikidata: limitChars(ko, 50),
+        gdelt: limitChars(en, 120),
+        naver: naverQ.slice(0, BLOCK_NAVER_MAX_QUERIES),
+      },
+    };
+  };
+
   qvfvPre = {
     answer_ko: "",
-    korean_core: normalizeKoreanQuestion(baseCore),
-    english_core: String(baseCore).trim(),
+    korean_core: ko,
+    english_core: en,
     blocks: [
-      {
-        id: 1,
-        text: clipBlockText(t1, 260),
-        engine_queries: {
-          crossref: String(baseCore).trim(),
-          openalex: String(baseCore).trim(),
-          wikidata: normalizeKoreanQuestion(baseCore),
-          gdelt: String(baseCore).trim(),
-          naver: [normalizeKoreanQuestion(baseCore)],
-        },
-      },
-      {
-        id: 2,
-        text: clipBlockText(t2, 260),
-        engine_queries: {
-          crossref: String(baseCore).trim(),
-          openalex: String(baseCore).trim(),
-          wikidata: normalizeKoreanQuestion(baseCore),
-          gdelt: String(baseCore).trim(),
-          naver: [normalizeKoreanQuestion(baseCore)],
-        },
-      },
+      makeBlock(1, t1),
+      makeBlock(2, t2),
     ].filter((b) => b.text),
   };
 }
-
 
     // ✅ 블록별 엔진 호출 → verify에 넣을 “블록+증거” 패키지 구성
     external.crossref = [];
@@ -1936,9 +2620,6 @@ if (!qvfvPre) {
     external.gdelt = [];
     external.naver = [];
 
-const blocksForVerify = [];
-
-// ✅ 엔진별 "실제로 사용한 검색어(쿼리)" 모음
 const engineQueriesUsed = {
   crossref: [],
   openalex: [],
@@ -1946,6 +2627,8 @@ const engineQueriesUsed = {
   gdelt: [],
   naver: [],
 };
+
+const blocksForVerify = [];
 
 // ✅ 쿼리가 비면 아예 호출하지 않고 result=[]로 처리 (calls 안 늘어남)
 const runOrEmpty = async (name, fn, q) => {
@@ -1970,18 +2653,15 @@ const qGdelt   = String(eq.gdelt   || "").trim();
 
 let naverQueries = Array.isArray(eq.naver) ? eq.naver : [];
 naverQueries = naverQueries
-  .map((q) => buildNaverAndQuery(q))
+  .map((q) => limitChars(buildNaverAndQuery(q), 30))
   .filter(Boolean)
   .slice(0, BLOCK_NAVER_MAX_QUERIES);
 
-// ✅ (엄격 버전) fallback 없이 비면 스킵
-// if (!naverQueries.length) naverQueries = [];
-
-
-  // ✅ naver 쿼리는 전처리(Gemini)가 만들어준 것만 사용
-  //    비면 호출 스킵 → engines_used에서 제외됨
-  if (!naverQueries.length) naverQueries = [];
-
+// ✅ 핵심: 혹시 여기까지 왔는데도 비면, 최소 1개는 생성해서 Naver 호출이 끊기지 않게
+if (!naverQueries.length) {
+  const seed = String(b?.text || "").trim() || qvfvPre?.korean_core || qvfvBaseText || query;
+  naverQueries = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
+}
 
   // ✅ 네이버 쿼리 기록(빈 값 제외)
   for (const nq of naverQueries) {
@@ -2003,7 +2683,7 @@ naverQueries = naverQueries
 
     const { result } = await safeFetchTimed(
       "naver",
-      (qq) => callNaver(qq, naver_id, naver_secret),
+       (qq) => callNaver(qq, naverIdFinal, naverSecretFinal),
       nq,
       engineTimes,
       engineMetrics
@@ -2049,6 +2729,31 @@ partial_scores.engine_queries = {
   gdelt: uniqStrings(engineQueriesUsed.gdelt, 12),
   naver: uniqStrings(engineQueriesUsed.naver, 12),
 };
+
+// ✅ (이 위치로 이동!) 엔진별 "결과 개수" 기록 + engines_used/excluded 계산
+partial_scores.engine_results = {
+  crossref: Array.isArray(external.crossref) ? external.crossref.length : 0,
+  openalex: Array.isArray(external.openalex) ? external.openalex.length : 0,
+  wikidata: Array.isArray(external.wikidata) ? external.wikidata.length : 0,
+  gdelt: Array.isArray(external.gdelt) ? external.gdelt.length : 0,
+  naver: Array.isArray(external.naver) ? external.naver.length : 0,
+};
+
+// ✅ 메트릭/타임 누적도 여기서 확정 저장(호출 끝난 뒤 값이 들어있음)
+partial_scores.engine_times = engineTimes;
+partial_scores.engine_metrics = engineMetrics;
+
+// ✅ “쿼리 없으면 제외” + “calls 없으면 제외” + “results 0이면 제외”
+const enginesRequested = [...engines];
+const { used: enginesUsed, excluded: enginesExcluded } = computeEnginesUsed({
+  enginesRequested,
+  partial_scores,
+  engineMetrics,
+});
+
+partial_scores.engines_requested = enginesRequested;
+partial_scores.engines_used = enginesUsed;
+partial_scores.engines_excluded = enginesExcluded;
 
     partial_scores.blocks_for_verify = blocksForVerify.map((x) => ({
       id: x.id,
@@ -2096,9 +2801,9 @@ partial_scores.engine_queries = {
 
     // ✅ GitHub 쿼리 생성 (Gemini)
     const t_q = Date.now();
-    const ghQueries = await buildGithubQueriesFromGemini(
-      safeMode, query, answerText, gemini_key
-    );
+   const ghQueries = await buildGithubQueriesFromGemini(
+  safeMode, query, answerText, gemini_key, logUserId
+);
     const ms_q = Date.now() - t_q;
     recordTime(geminiTimes, "github_query_builder_ms", ms_q);
     recordMetric(geminiMetrics, "github_query_builder", ms_q);
@@ -2107,7 +2812,7 @@ partial_scores.engine_queries = {
     for (const q of (ghQueries || []).slice(0, 3)) {
       const { result } = await safeFetchTimed(
         "github",
-        (qq) => fetchGitHub(qq, github_token),
+          (qq) => fetchGitHub(qq, githubTokenFinal),
         q,
         engineTimes,
         engineMetrics
@@ -2126,16 +2831,36 @@ partial_scores.engine_queries = {
   github: uniqStrings(Array.isArray(ghQueries) ? ghQueries : [], 12),
 };
 
+// ✅ DV/CV도 engines_used 계산(쿼리/calls/results 기준)
+partial_scores.engine_results = {
+  github: Array.isArray(external.github) ? external.github.length : 0,
+};
+
+// QV/FV처럼 로그용으로 얘네도 남겨두면 Admin UI에서 보기 편함
+partial_scores.engine_times = engineTimes;
+partial_scores.engine_metrics = engineMetrics;
+
+const enginesRequested = [...engines];
+const { used: enginesUsed, excluded: enginesExcluded } = computeEnginesUsed({
+  enginesRequested,
+  partial_scores,
+  engineMetrics,
+});
+
+partial_scores.engines_requested = enginesRequested;
+partial_scores.engines_used = enginesUsed;
+partial_scores.engines_excluded = enginesExcluded;
 
     // ✅ consistency (Gemini Pro)
     const t_cons = Date.now();
     partial_scores.consistency = await calcConsistencyFromGemini(
-      safeMode,
-      query,
-      answerText,
-      external.github,
-      gemini_key
-    );
+  safeMode,
+  query,
+  answerText,
+  external.github,
+  gemini_key,
+  logUserId
+);
     const ms_cons = Date.now() - t_cons;
     recordTime(geminiTimes, "consistency_ms", ms_cons);
     recordMetric(geminiMetrics, "consistency", ms_cons);
@@ -2145,10 +2870,10 @@ partial_scores.engine_queries = {
 
   case "lv": {
     engines.push("klaw");
-    external.klaw = await fetchKLawAll(klaw_key, query);
+     external.klaw = await fetchKLawAll(klawKeyFinal, query);
 
     let lvSummary = null;
-    if (gemini_key) {
+        if (gemini_key || geminiKeysCount > 0) {
       const prompt = `
 너는 대한민국 항공·교통 법령 및 판례를 요약해주는 엔진이다.
 [사용자 질의]
@@ -2167,10 +2892,12 @@ ${JSON.stringify(external.klaw).slice(0, 6000)}
 
       try {
         const t_lv = Date.now();
-        lvSummary = await fetchGemini(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${gemini_key}`,
-          { contents: [{ parts: [{ text: prompt }] }] }
-        );
+        lvSummary = await fetchGeminiRotating({
+  userId: logUserId,
+  keyHint: gemini_key,
+  model: "gemini-2.5-flash-lite",
+  payload: { contents: [{ parts: [{ text: prompt }] }] },
+});
         const ms_lv = Date.now() - t_lv;
         recordTime(geminiTimes, "lv_flash_lite_summary_ms", ms_lv);
         recordMetric(geminiMetrics, "lv_flash_lite_summary", ms_lv);
@@ -2190,34 +2917,6 @@ ${JSON.stringify(external.klaw).slice(0, 6000)}
   }
 }
 
-// ✅ 엔진별 "결과 개수" 기록 (no_results 제외 로직용)
-partial_scores.engine_results = {
-  crossref: Array.isArray(external.crossref) ? external.crossref.length : 0,
-  openalex: Array.isArray(external.openalex) ? external.openalex.length : 0,
-  wikidata: Array.isArray(external.wikidata) ? external.wikidata.length : 0,
-  gdelt: Array.isArray(external.gdelt) ? external.gdelt.length : 0,
-  naver: Array.isArray(external.naver) ? external.naver.length : 0,
-  github: Array.isArray(external.github) ? external.github.length : 0,
-    klaw: Array.isArray(external.klaw) ? external.klaw.length : (external.klaw ? 1 : 0),
-};
-
-partial_scores.engine_times = engineTimes;
-partial_scores.engine_metrics = engineMetrics;
-partial_scores.gemini_times = geminiTimes;
-partial_scores.gemini_metrics = geminiMetrics;
-
-// ✅ “검색어(쿼리) 없는 엔진은 제외” + “실제 호출(calls) 없는 엔진은 제외”
-const enginesRequested = [...engines];
-const { used: enginesUsed, excluded: enginesExcluded } = computeEnginesUsed({
-  enginesRequested,
-  partial_scores,
-  engineMetrics,
-});
-
-partial_scores.engines_requested = enginesRequested;
-partial_scores.engines_used = enginesUsed;
-partial_scores.engines_excluded = enginesExcluded;
-
 // ✅ 이후 로직(보정계수/로그/응답)은 enginesUsed를 기준으로 사용
 
 
@@ -2231,6 +2930,9 @@ partial_scores.engines_excluded = enginesExcluded;
 partial_scores.gemini_total_ms = Object.values(geminiTimes)
   .filter((v) => typeof v === "number" && Number.isFinite(v))
   .reduce((s, v) => s + v, 0);
+
+partial_scores.gemini_times = geminiTimes;
+partial_scores.gemini_metrics = geminiMetrics;
 
 // sources(text)에 서버 메타/부분점수 등을 JSON으로 저장(필요한 만큼만)
 const sourcesText = safeSourcesForDB(
@@ -2326,10 +3028,12 @@ let answerModelUsed = "gemini-2.5-flash";
   if (!flash.trim()) {
     const flashPrompt = `[QV] ${query}\n한국어로 6~10문장으로 답변만 작성하세요.`;
     const t_flash = Date.now();
-    flash = await fetchGemini(
-      `https://generativelanguage.googleapis.com/v1beta/models/${answerModelUsed}:generateContent?key=${gemini_key}`,
-      { contents: [{ parts: [{ text: flashPrompt }] }] }
-    );
+    flash = await fetchGeminiRotating({
+  userId: logUserId,
+  keyHint: gemini_key,
+  model: answerModelUsed,
+  payload: { contents: [{ parts: [{ text: flashPrompt }] }] },
+});
     const ms_flash = Date.now() - t_flash;
     recordTime(geminiTimes, "flash_ms", ms_flash);
     recordMetric(geminiMetrics, "flash", ms_flash);
@@ -2345,10 +3049,12 @@ let answerModelUsed = "gemini-2.5-flash";
           `참조자료:\n${JSON.stringify(external).slice(0, FLASH_REF_CHARS)}`;
 
         const t_flash = Date.now();
-        flash = await fetchGemini(
-          `https://generativelanguage.googleapis.com/v1beta/models/${answerModelUsed}:generateContent?key=${gemini_key}`,
-          { contents: [{ parts: [{ text: flashPrompt }] }] }
-        );
+        flash = await fetchGeminiRotating({
+  userId: logUserId,
+  keyHint: gemini_key,
+  model: answerModelUsed,
+  payload: { contents: [{ parts: [{ text: flashPrompt }] }] },
+});
         const ms_flash = Date.now() - t_flash;
         recordTime(geminiTimes, "flash_ms", ms_flash);
         recordMetric(geminiMetrics, "flash", ms_flash);
@@ -2499,11 +3205,14 @@ const t_verify = Date.now();
 try {
   for (const m of verifyModelCandidates) {
     try {
-      verify = await fetchGemini(
-        `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${gemini_key}`,
-        verifyPayload,
-        { label: `verify:${m}`, minChars: 20 } // ✅ 너무 짧은 텍스트(빈문자)도 실패로 처리
-      );
+      verify = await fetchGeminiRotating({
+  userId: logUserId,
+  keyHint: gemini_key,
+  model: m,
+  payload: verifyPayload,
+  opts: { label: `verify:${m}`, minChars: 20 },
+});
+verifyModelUsed = m;
       verifyModelUsed = m; // ✅ 실제 성공 모델 기록
       break;
     } catch (e) {
@@ -2668,6 +3377,10 @@ await Promise.all(
 partial_scores.gemini_total_ms = Object.values(geminiTimes)
   .filter((v) => typeof v === "number" && Number.isFinite(v))
   .reduce((s, v) => s + v, 0);
+
+// ✅ gemini 단계별 타임/메트릭도 로그로 남김 (Admin UI에서 사용)
+partial_scores.gemini_times = geminiTimes;
+partial_scores.gemini_metrics = geminiMetrics;
 
 const STORE_GEMINI_TEXT = process.env.STORE_GEMINI_TEXT === "true";
 
@@ -2836,18 +3549,17 @@ if (e?.code === "NAVER_AUTH_ERROR") {
   );
 }
    
- // Gemini 429 → GEMINI_KEY_EXHAUSTED (ⅩⅤ 3.2)
-    if (status === 429) {
-      return res
-        .status(200)
-        .json(
-          buildError(
-            "GEMINI_KEY_EXHAUSTED",
-            "현재 사용 중인 Gemini 키의 일일 할당량이 소진되었습니다.",
-            e.message
-          )
-        );
-    }
+// ✅ ADD: 로테이션 후 “전부 소진”도 동일 코드로 반환
+if (e?.code === "GEMINI_KEY_EXHAUSTED" || status === 429) {
+  return res.status(200).json(
+    buildError(
+      "GEMINI_KEY_EXHAUSTED",
+      "Gemini 키의 일일 할당량이 소진되었습니다. (키 로테이션/리셋 확인 필요)",
+      e.detail || e.message
+    )
+  );
+}
+
 
     return res
       .status(500)
@@ -2860,7 +3572,6 @@ if (e?.code === "NAVER_AUTH_ERROR") {
       );
   }
 });
-
 
 // ✅ 번역 테스트 라우트 (간단형, 백호환용)
 app.post("/api/translate", async (req, res) => {
@@ -2878,15 +3589,59 @@ app.post("/api/translate", async (req, res) => {
       );
     }
 
-    // 2) 간단형 번역 (기존 동작 유지)
+  // ✅ 2) DeepL / Gemini 키 확보: (1) body, (2) 없으면 로그인+vault/keyring
+    const authUser = await getSupabaseAuthUser(req);
+    let userId = null;
+
+    if (authUser?.email) {
+      userId = await resolveLogUserId({
+        user_id: null,
+        user_email: authUser.email,
+        user_name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || null,
+        auth_user: authUser,
+        bearer_token: getBearerToken(req),
+      });
+    }
+
+    let deeplKeyFinal = (deepl_key || "").toString().trim() || null;
+    let geminiKeyFinal = (gemini_key || "").toString().trim() || null;
+
+    // DeepL 키가 body에 없으면 vault에서
+    if (!deeplKeyFinal && userId) {
+      const row = await loadUserSecretsRow(userId);
+      const s = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
+      const v = decryptIntegrationsSecrets(s);
+      deeplKeyFinal = (v.deepl_key || "").toString().trim() || null;
+    }
+
+    // Gemini 키가 body에 없으면 keyring에서
+    if (!geminiKeyFinal && userId) {
+      const kctx = await getGeminiKeyFromDB(userId); // { gemini_key, key_id, pt_date, next_reset_utc }
+      geminiKeyFinal = (kctx.gemini_key || "").toString().trim() || null;
+    }
+
+    // ✅ 3) 최소 하나는 필요(DeepL 또는 Gemini)
+    // - deeplKeyFinal이 있으면 DeepL 우선으로 돌아가고, 실패 시 Gemini fallback에만 geminiKeyFinal이 쓰임
+    if (!deeplKeyFinal && !geminiKeyFinal) {
+      return sendError(
+        res,
+        400,
+        "VALIDATION_ERROR",
+        "deepl_key 또는 gemini_key(또는 로그인 후 DB keyring 저장된 Gemini 키)가 필요합니다.",
+        "Need deepl_key or gemini key (body or keyring)"
+      );
+    }
+
+    // 4) 간단형 번역 (기존 동작 유지)
     const result = await translateText(
       text,
       targetLang ?? null,
-      deepl_key ?? null,
-      gemini_key ?? null
+      deeplKeyFinal ?? null,
+      geminiKeyFinal ?? null
     );
 
-    // 3) 성공 응답 (ⅩⅤ 규약: buildSuccess 사용)
+
+    // 5) 성공 응답 (ⅩⅤ 규약: buildSuccess 사용)
     return res.json(
       buildSuccess({
         translated: result.text,
@@ -2897,6 +3652,28 @@ app.post("/api/translate", async (req, res) => {
   } catch (e) {
     console.error("❌ /api/translate Error:", e.message);
 
+    // ✅ 키링 소진은 /api/verify와 동일하게 200 + 코드로 내려주기
+    if (e?.code === "GEMINI_KEY_EXHAUSTED") {
+      return res.status(200).json(
+        buildError(
+          "GEMINI_KEY_EXHAUSTED",
+          "Gemini 키의 일일 할당량이 소진되었습니다. (키 로테이션/리셋 확인 필요)",
+          e.detail || e.message
+        )
+      );
+    }
+
+    // ✅ 서버 암호화키 누락/불량 같은 치명 오류는 즉시 반환
+    if (e?._fatal && e?.httpStatus) {
+      return res.status(e.httpStatus).json(
+        buildError(
+          e.code || "FATAL_ERROR",
+          e.publicMessage || "요청을 처리할 수 없습니다.",
+          e.detail || e.message
+        )
+      );
+    }
+
     return sendError(
       res,
       500,
@@ -2906,7 +3683,6 @@ app.post("/api/translate", async (req, res) => {
     );
   }
 });
-
 
 // ─────────────────────────────
 // ✅ 문서 요약·분석 / Job 엔드포인트 (v18.4.0-pre)
@@ -3081,10 +3857,12 @@ app.post("/api/docs/analyze", async (req, res) => {
 ${safeText}
       `.trim();
 
-      const summaryText = await fetchGemini(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_key}`,
-        { contents: [{ parts: [{ text: prompt }] }] }
-      );
+      const summaryText = await fetchGeminiRotating({
+  userId: null,            // ✅ docs는 지금 auth/userId 흐름이 없어서: (아래 9번에서 userId 연결 추천)
+  keyHint: gemini_key,
+  model: "gemini-2.5-flash",
+  payload: { contents: [{ parts: [{ text: prompt }] }] },
+});
 
       summaryResult = (summaryText || "").trim();
     }
@@ -3469,17 +4247,19 @@ app.get("/api/test-db", async (_, res) => {
   }
 });
 
-
-
-app.get("/health", (_, res) =>
-  res.status(200).json({
+app.get("/health", async (_, res) => {
+  let pac = { pt_date: null, next_reset_utc: null };
+  try { pac = await getPacificResetInfoCached(); } catch {}
+  return res.status(200).json({
     status: "ok",
     version: "v18.4.0-pre",
     uptime: process.uptime().toFixed(2) + "s",
     region: REGION,
+    pacific_pt_date: pac.pt_date,
+    pacific_next_reset_utc: pac.next_reset_utc,
     timestamp: new Date().toISOString(),
-  })
-);
+  });
+});
 
 // ─────────────────────────────
 // ✅ Root Endpoint for Render Health Check
@@ -3610,5 +4390,4 @@ app.listen(PORT, () => {
   );
     console.log("🔹 Naver 서버 직접 호출 (Region 제한 해제)");
   console.log("🔹 Supabase + Gemini 2.5 (Flash / Pro / Lite) 정상 동작");
-  console.log("🔹 공통 에러 코드/응답 규약(ⅩⅤ) 1차 적용 완료");
 });
