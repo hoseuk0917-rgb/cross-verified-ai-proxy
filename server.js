@@ -38,7 +38,10 @@ const isProd = process.env.NODE_ENV === "production";
 const DEBUG = process.env.DEBUG === "true";
 
 const app = express();
-app.set("trust proxy", 1);
+
+// trust proxy는 세션보다 위에서, 운영일 때만
+if (isProd) app.set("trust proxy", 1);
+
 
 const PORT = parseInt(process.env.PORT || "10000", 10);
 const REGION =
@@ -51,17 +54,14 @@ const REGION =
 function pickDatabaseUrl() {
   const url =
     process.env.DATABASE_URL_INTERNAL ||
-    process.env.DATABASE_URL ||
     process.env.SUPABASE_DATABASE_URL ||
+    process.env.DATABASE_URL ||
     "";
 
   const u = String(url).trim();
 
-  // ✅ 흔한 실수 차단: postgresql://https://... 같은 케이스
   if (!/^postgres(ql)?:\/\//i.test(u)) {
-    throw new Error(
-      "DATABASE_URL must start with postgres:// or postgresql:// (not an https URL)"
-    );
+    throw new Error("DATABASE_URL must start with postgres:// or postgresql://");
   }
   if (/^postgres(ql)?:\/\/https?:\/\//i.test(u)) {
     throw new Error("DATABASE_URL is malformed (contains https:// after protocol)");
@@ -69,6 +69,15 @@ function pickDatabaseUrl() {
   if (u.includes("onrender.com")) {
     throw new Error("DATABASE_URL must be a Postgres URL (Supabase), not a Render app URL");
   }
+
+  // ✅ 추가: Render Postgres 호스트 차단 (dpg-xxx.oregon-postgres.render.com 등)
+  try {
+    const host = new URL(u).hostname || "";
+    if (host.includes("render.com") || host.includes("postgres.render.com")) {
+      throw new Error("DATABASE_URL points to Render Postgres. Use SUPABASE_DATABASE_URL instead.");
+    }
+  } catch {}
+
   return u;
 }
 
@@ -89,13 +98,13 @@ const pgPool = new pg.Pool({
   keepAlive: true,
 });
 
+
 // ✅ 중요: Pool 'error' 이벤트 핸들러 없으면 프로세스가 죽을 수 있음
 pgPool.on("error", (err) => {
   console.error("⚠️ PG POOL ERROR (idle client):", err.code || "", err.message);
 });
 
 const PgStore = connectPgSimple(session);
-
 const sessionStore = new PgStore({
   pool: pgPool,
   schemaName: "public",
@@ -128,7 +137,7 @@ app.use(
     secret: process.env.SESSION_SECRET || "dev-secret",
     resave: false,
     saveUninitialized: false,
-    proxy: true,
+    proxy: isProd,
 
     cookie: {
       httpOnly: true,
