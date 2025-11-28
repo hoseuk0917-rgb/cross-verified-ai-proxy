@@ -1245,7 +1245,7 @@ const userId = await resolveLogUserId({
   user_name: authUser?.user_metadata?.full_name || authUser?.user_metadata?.name || null,
   auth_user: authUser || null,
   bearer_token: getBearerToken(req), // ✅ Bearer localtest / DEFAULT_USER_ID fallback 가능
-});d
+});
 
     const {
       gemini_keys,
