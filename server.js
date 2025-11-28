@@ -568,18 +568,45 @@ async function loadUserSecretsRow(userId) {
 }
 
 async function upsertUserSecretsRow(userId, secrets) {
+  const now = new Date().toISOString();
+
+  const provider = process.env.USER_SECRETS_PROVIDER || "supabase";
+  const encVer = Number.parseInt(process.env.USER_SECRETS_ENC_VER || "1", 10);
+
+  // ✅ created_at NOT NULL일 수도 있어서: 없을 때만 created_at 넣기
+  let exists = false;
+  {
+    const { data, error } = await supabase
+      .from("user_secrets")
+      .select("user_id")
+      .eq("user_id", userId)
+      .single();
+
+    if (!error && data?.user_id) exists = true;
+    // 없을 때는 Supabase가 보통 PGRST116을 주는데, 그건 그냥 exists=false로 두면 됨
+    if (error && error.code !== "PGRST116") {
+      // DB 자체 에러면 throw
+      throw error;
+    }
+  }
+
   const payload = {
     user_id: userId,
-    provider: USER_SECRETS_PROVIDER, // ✅ NOT NULL 충족
+    provider,   // ✅ NOT NULL
+    enc_ver: encVer, // ✅ NOT NULL
     secrets,
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   };
 
-  const { error } = await supabase
+  if (!exists) {
+    payload.created_at = now; // ✅ (만약 created_at NOT NULL이면 여기서 해결)
+  }
+
+  const { error: upErr } = await supabase
     .from("user_secrets")
     .upsert([payload], { onConflict: "user_id" });
 
-  if (error) throw error;
+  if (upErr) throw upErr;
 }
 
 // ─────────────────────────────
