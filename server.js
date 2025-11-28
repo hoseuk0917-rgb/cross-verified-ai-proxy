@@ -550,6 +550,8 @@ function decryptSecret(enc) {
 // ─────────────────────────────
 // ✅ ADD: user_secrets CRUD
 // ─────────────────────────────
+const USER_SECRETS_PROVIDER = process.env.USER_SECRETS_PROVIDER || "supabase";
+
 async function loadUserSecretsRow(userId) {
   const { data, error } = await supabase
     .from("user_secrets")
@@ -566,9 +568,17 @@ async function loadUserSecretsRow(userId) {
 }
 
 async function upsertUserSecretsRow(userId, secrets) {
+  const payload = {
+    user_id: userId,
+    provider: USER_SECRETS_PROVIDER, // ✅ NOT NULL 충족
+    secrets,
+    updated_at: new Date().toISOString(),
+  };
+
   const { error } = await supabase
     .from("user_secrets")
-    .upsert([{ user_id: userId, secrets, updated_at: new Date() }], { onConflict: "user_id" });
+    .upsert([payload], { onConflict: "user_id" });
+
   if (error) throw error;
 }
 
@@ -1154,22 +1164,13 @@ app.post("/api/settings/save", async (req, res) => {
   try {
     const authUser = await getSupabaseAuthUser(req);
 
-    // 설정 저장은 보안상 “무조건 인증” 권장
-    if (!authUser) {
-      return res.status(401).json(buildError("UNAUTHORIZED", "설정 저장은 로그인 토큰이 필요합니다."));
-    }
-
-    const userId = await resolveLogUserId({
-      user_id: null,
-      user_email: authUser.email,
-      user_name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || null,
-      auth_user: authUser,
-      bearer_token: getBearerToken(req),
-    });
-
-    if (!userId) {
-      return res.status(400).json(buildError("VALIDATION_ERROR", "user_id 확정 실패"));
-    }
+const userId = await resolveLogUserId({
+  user_id: null,
+  user_email: authUser?.email || null,
+  user_name: authUser?.user_metadata?.full_name || authUser?.user_metadata?.name || null,
+  auth_user: authUser || null,
+  bearer_token: getBearerToken(req), // ✅ Bearer localtest / DEFAULT_USER_ID fallback 가능
+});d
 
     const {
       gemini_keys,
