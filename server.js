@@ -573,34 +573,42 @@ async function upsertUserSecretsRow(userId, secrets) {
   const provider = process.env.USER_SECRETS_PROVIDER || "supabase";
   const encVer = Number.parseInt(process.env.USER_SECRETS_ENC_VER || "1", 10);
 
-  // ✅ created_at NOT NULL일 수도 있어서: 없을 때만 created_at 넣기
+  // ✅ created_at / iv NOT NULL 대응: 기존 row 있으면 값 유지, 없으면 생성
   let exists = false;
+  let iv = null;
+  let createdAt = null;
+
   {
     const { data, error } = await supabase
       .from("user_secrets")
-      .select("user_id")
+      .select("user_id, iv, created_at")
       .eq("user_id", userId)
       .single();
 
-    if (!error && data?.user_id) exists = true;
-    // 없을 때는 Supabase가 보통 PGRST116을 주는데, 그건 그냥 exists=false로 두면 됨
-    if (error && error.code !== "PGRST116") {
-      // DB 자체 에러면 throw
-      throw error;
+    if (!error && data?.user_id) {
+      exists = true;
+      iv = data.iv ?? null;
+      createdAt = data.created_at ?? null;
     }
+
+    // row 없음이면 PGRST116 → 새로 만들면 됨
+    if (error && error.code !== "PGRST116") throw error;
   }
+
+  // ✅ iv 없으면 생성 (uuid/text 타입이면 OK)
+  if (!iv) iv = crypto.randomUUID();
 
   const payload = {
     user_id: userId,
-    provider,   // ✅ NOT NULL
+    provider,        // ✅ NOT NULL
     enc_ver: encVer, // ✅ NOT NULL
+    iv,              // ✅ NOT NULL
     secrets,
     updated_at: now,
   };
 
-  if (!exists) {
-    payload.created_at = now; // ✅ (만약 created_at NOT NULL이면 여기서 해결)
-  }
+  // created_at NOT NULL 스키마 대비(없을 때만)
+  if (!exists || !createdAt) payload.created_at = now;
 
   const { error: upErr } = await supabase
     .from("user_secrets")
@@ -3719,7 +3727,7 @@ if (e?.code === "GEMINI_KEY_EXHAUSTED" || status === 429) {
 // ✅ 번역 테스트 라우트 (간단형, 백호환용)
 app.post("/api/translate", async (req, res) => {
   try {
-    const { text, targetLang, deepl_key, gemini_key } = req.body;
+    const { user_id, text, targetLang, deepl_key, gemini_key } = req.body;
 
     // 1) 필수값 검증
     if (!text || !text.trim()) {
@@ -3734,17 +3742,14 @@ app.post("/api/translate", async (req, res) => {
 
   // ✅ 2) DeepL / Gemini 키 확보: (1) body, (2) 없으면 로그인+vault/keyring
     const authUser = await getSupabaseAuthUser(req);
-    let userId = null;
+const userId = await resolveLogUserId({
+  user_id,
+  user_email: authUser?.email || null,
+  user_name: authUser?.user_metadata?.full_name || authUser?.user_metadata?.name || null,
+  auth_user: authUser,
+  bearer_token: getBearerToken(req),
+});
 
-    if (authUser?.email) {
-      userId = await resolveLogUserId({
-        user_id: null,
-        user_email: authUser.email,
-        user_name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || null,
-        auth_user: authUser,
-        bearer_token: getBearerToken(req),
-      });
-    }
 
     let deeplKeyFinal = (deepl_key || "").toString().trim() || null;
     let geminiKeyFinal = (gemini_key || "").toString().trim() || null;
