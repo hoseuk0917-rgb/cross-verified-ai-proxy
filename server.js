@@ -173,6 +173,39 @@ const HTTP_TIMEOUT_MS = parseInt(
   10
 );
 
+// 🔹 Gemini 전용 타임아웃 (ms) — 외부엔진(HTTP_TIMEOUT_MS)과 분리
+// - Pro는 오래 걸릴 수 있어 기본을 더 길게
+// - verify 단계는 입력이 커서 더 길게
+const GEMINI_TIMEOUT_PRO_MS = parseInt(
+  process.env.GEMINI_TIMEOUT_PRO_MS || process.env.GEMINI_TIMEOUT_MS || "70000",
+  10
+);
+
+const GEMINI_TIMEOUT_FLASH_MS = parseInt(
+  process.env.GEMINI_TIMEOUT_FLASH_MS || process.env.GEMINI_TIMEOUT_MS || "35000",
+  10
+);
+
+const GEMINI_TIMEOUT_FLASH_LITE_MS = parseInt(
+  process.env.GEMINI_TIMEOUT_FLASH_LITE_MS || process.env.GEMINI_TIMEOUT_MS || "30000",
+  10
+);
+
+const GEMINI_TIMEOUT_VERIFY_PRO_MS = parseInt(
+  process.env.GEMINI_TIMEOUT_VERIFY_PRO_MS || "90000",
+  10
+);
+
+const GEMINI_TIMEOUT_VERIFY_FLASH_MS = parseInt(
+  process.env.GEMINI_TIMEOUT_VERIFY_FLASH_MS || "45000",
+  10
+);
+
+const GEMINI_TIMEOUT_VERIFY_FLASH_LITE_MS = parseInt(
+  process.env.GEMINI_TIMEOUT_VERIFY_FLASH_LITE_MS || "35000",
+  10
+);
+
 // 🔹 (옵션) Flash 프롬프트에 붙일 external 길이 (기본 800 → 넉넉히 4000 권장)
 const FLASH_REF_CHARS = parseInt(process.env.FLASH_REF_CHARS || "4000", 10);
 
@@ -1889,6 +1922,25 @@ function geminiErrMessage(e) {
   return `[status=${status ?? "?"}] ${apiMsg || e?.message || "Unknown Gemini error"}`;
 }
 
+function getGeminiTimeoutMs(model, opts = {}) {
+  const forced = opts?.timeoutMs;
+  if (typeof forced === "number" && Number.isFinite(forced) && forced > 0) return forced;
+
+  const m = String(model || "");
+  const label = String(opts?.label || "");
+  const isVerify = label.startsWith("verify:") || label.includes("verify:");
+
+  if (isVerify) {
+    if (m.includes("pro")) return GEMINI_TIMEOUT_VERIFY_PRO_MS;
+    if (m.includes("flash-lite")) return GEMINI_TIMEOUT_VERIFY_FLASH_LITE_MS;
+    return GEMINI_TIMEOUT_VERIFY_FLASH_MS;
+  }
+
+  if (m.includes("pro")) return GEMINI_TIMEOUT_PRO_MS;
+  if (m.includes("flash-lite")) return GEMINI_TIMEOUT_FLASH_LITE_MS;
+  return GEMINI_TIMEOUT_FLASH_MS;
+}
+
 // ✅ ADD: "model + key"로 직접 호출하는 raw
 async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
   const label = opts.label || `gemini:${model}`;
@@ -1896,7 +1948,8 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${gemini_key}`;
 
-  const { data } = await axios.post(url, payload, { timeout: HTTP_TIMEOUT_MS });
+    const timeoutMs = getGeminiTimeoutMs(model, opts);
+     const { data } = await axios.post(url, payload, { timeout: timeoutMs });
 
   const text = extractGeminiText(data);
   if ((text || "").trim().length < minChars) {
