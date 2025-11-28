@@ -1081,6 +1081,12 @@ function ensureAuth(req, res, next) {
 // ─────────────────────────────
 const DEV_ADMIN_TOKEN = process.env.DEV_ADMIN_TOKEN || null;
 
+// ✅ PROD에서는 dev seed endpoint 차단
+if (process.env.NODE_ENV === "production") {
+  app.post("/api/dev/seed-secrets", (req, res) =>
+    res.status(404).json(buildError("NOT_FOUND", "Not available"))
+  );
+} else {
 app.post("/api/dev/seed-secrets", async (req, res) => {
   try {
     const admin = String(req.headers["x-admin-token"] || "");
@@ -1189,6 +1195,7 @@ app.post("/api/dev/seed-secrets", async (req, res) => {
     return res.status(500).json(buildError("SEED_ERROR", "seed failed", e.message));
   }
 });
+}
 
 // ─────────────────────────────
 // ✅ ADD: Settings Save (Gemini Keyring encrypted in DB)
@@ -1381,23 +1388,81 @@ app.get("/auth/failure", (_, res) =>
 );
 
 // ─────────────────────────────
-// ✅ Naver Whitelist Tier System
+// ✅ Naver Whitelist Tier System (v11.5.0 + bias_penalty)
 // ─────────────────────────────
 const whitelistPath = path.join(__dirname, "config", "naver_whitelist.json");
-let whitelistData = {};
-try {
-  whitelistData = JSON.parse(fs.readFileSync(whitelistPath, "utf-8"));
-} catch {
-  whitelistData = { tiers: {} };
-  if (DEBUG) console.warn("⚠️ whitelist not found, using empty");
+let _NAVER_WL_CACHE = { mtimeMs: 0, json: null };
+
+function _stripWww(host) {
+  return String(host || "").trim().toLowerCase().replace(/^www\./, "");
 }
-const tierWeights = Object.entries(whitelistData.tiers || {}).map(
-  ([k, v]) => ({
-    tier: k,
-    weight: v.weight || 1,
-    domains: v.domains || [],
-  })
-);
+
+function _hostFromUrlish(urlish) {
+  try {
+    if (!urlish) return "";
+    const s = String(urlish).trim();
+    if (!s) return "";
+    if (!s.includes("://")) return _stripWww(s);
+    const u = new URL(s);
+    return _stripWww(u.hostname);
+  } catch {
+    return _stripWww(urlish);
+  }
+}
+
+// ✅ exact match or subdomain match ONLY (evilchosun.com 같은 오탐 방지)
+function _hostMatchesDomain(host, domain) {
+  host = _stripWww(host);
+  domain = _stripWww(domain);
+  if (!host || !domain) return false;
+  if (host === domain) return true;
+  return host.endsWith("." + domain);
+}
+
+function loadNaverWhitelist() {
+  try {
+    const st = fs.statSync(whitelistPath);
+    if (_NAVER_WL_CACHE.json && _NAVER_WL_CACHE.mtimeMs === st.mtimeMs) return _NAVER_WL_CACHE.json;
+
+    const raw = fs.readFileSync(whitelistPath, "utf-8");
+    const json = JSON.parse(raw);
+
+    if (!json?.tiers || typeof json.tiers !== "object") {
+      throw new Error("naver_whitelist.json missing 'tiers'");
+    }
+
+    _NAVER_WL_CACHE = { mtimeMs: st.mtimeMs, json };
+    return json;
+  } catch (e) {
+    if (DEBUG) console.warn("⚠️ whitelist load failed:", e.message);
+    return null;
+  }
+}
+
+function _applyBiasPenalty(host, baseWeight, wl) {
+  try {
+    const bp = wl?.bias_penalty;
+    if (!bp?.criteria || !bp?.sources) return { weight: baseWeight, penalties: [] };
+
+    const penalties = [];
+    let delta = 0;
+
+    for (const [dom, flags] of Object.entries(bp.sources)) {
+      if (!_hostMatchesDomain(host, dom)) continue;
+      for (const f of (flags || [])) {
+        const p = Number(bp.criteria[f] ?? 0);
+        if (p) {
+          delta += p; // 보통 음수
+          penalties.push({ domain: dom, flag: f, delta: p });
+        }
+      }
+    }
+
+    return { weight: Math.max(0.1, baseWeight + delta), penalties };
+  } catch {
+    return { weight: baseWeight, penalties: [] };
+  }
+}
 
 // ✅ Naver 타입별 가중치(필요시 조정)
 const NAVER_TYPE_WEIGHTS = {
@@ -1406,30 +1471,36 @@ const NAVER_TYPE_WEIGHTS = {
   encyc: 1.05,
 };
 
-// 🔹 Naver 링크의 도메인을 기준으로 티어/가중치 찾기
-function resolveNaverTier(link) {
-  try {
-    const url = new URL(link);
-    let host = url.hostname || "";
-    host = host.replace(/^www\./, "");
+// 🔹 (originallink/URL/host) 기준 티어/가중치(+bias_penalty) 찾기
+function resolveNaverTier(urlOrHost) {
+  const wl = loadNaverWhitelist();
+  const host = _hostFromUrlish(urlOrHost);
 
-    for (const t of tierWeights) {
-      const domains = t.domains || [];
-      const matched = domains.some((d) => {
-        const dd = String(d || "").replace(/^www\./, "");
-        // exact match 또는 서브도메인 매칭
-        return host === dd || host.endsWith(`.${dd}`);
-      });
-      if (matched) {
-        return { tier: t.tier, weight: t.weight ?? 1 };
+  if (!wl || !host) return { tier: null, weight: 1, host, match_domain: null, bias_penalties: [] };
+
+  const order = ["tier1", "tier2", "tier3", "tier4", "tier5"];
+  for (const t of order) {
+    const tierObj = wl.tiers?.[t];
+    const domains = Array.isArray(tierObj?.domains) ? tierObj.domains : [];
+    for (const d of domains) {
+      if (_hostMatchesDomain(host, d)) {
+        const base = Number(tierObj?.weight ?? 1);
+        const bp = _applyBiasPenalty(host, base, wl);
+        return {
+          tier: t,
+          weight: bp.weight,
+          base_weight: base,
+          host,
+          match_domain: d,
+          bias_penalties: bp.penalties,
+        };
       }
     }
-  } catch (e) {
-    if (DEBUG) console.warn("⚠️ resolveNaverTier fail:", e.message);
   }
 
-  // 매칭 안 되면 기본값
-  return { tier: null, weight: 1 };
+  // tier 매칭은 없지만 bias source로 걸려있을 수도 있으니 penalty만 반영
+  const bp = _applyBiasPenalty(host, 1, wl);
+  return { tier: null, weight: bp.weight, base_weight: 1, host, match_domain: null, bias_penalties: bp.penalties };
 }
 
 // 🔹 (옵션) Naver 다중 쿼리 호출 제한
@@ -1587,7 +1658,7 @@ async function safeFetchTimed(name, fn, q, engineTimes, engineMetrics) {
 
 // ─────────────────────────────
 // ✅ Naver API (서버 직접 호출, 리전 제한 없음)
-//   - clientId / clientSecret 은 요청 바디에서 받은 값을 그대로 사용
+//   - clientId / clientSecret은 (override 허용 시 body 우선) 없으면 vault(DB)에서 복호화해 사용
 // ─────────────────────────────
 function sanitizeNaverQuery(q) {
   return String(q || "")
@@ -1652,13 +1723,15 @@ async function callNaver(query, clientId, clientSecret) {
           const cleanDesc = i.description?.replace(/<[^>]+>/g, "") || "";
           const link = i.link;
 
-          const tierInfo = resolveNaverTier(link);
+          const source_url = i.originallink || i.link; // ✅ news는 originallink가 진짜 출처
+          const tierInfo = resolveNaverTier(source_url);
           const typeWeight = NAVER_TYPE_WEIGHTS[ep.type] ?? 1;
 
           return {
             title: cleanTitle,
             desc: cleanDesc,
             link,
+            source_url,
             origin: "naver",
             naver_type: ep.type,
             tier: tierInfo.tier,
