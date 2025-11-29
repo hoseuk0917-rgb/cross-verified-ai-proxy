@@ -1055,7 +1055,6 @@ function calcNewsRecencyScore(gdeltArticles = [], naverItems = []) {
     ? scores.reduce((a, b) => a + b, 0) / scores.length
     : 0.95;
 }
-  }
 
 function extractPaperYear(x) {
   // 문자열에서 연도 추출: "2023 - title" 형태 포함
