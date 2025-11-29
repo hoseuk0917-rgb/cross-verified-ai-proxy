@@ -1005,6 +1005,147 @@ function calcRecencyScore(gdeltArticles = []) {
   return scores.reduce((s, v) => s + v, 0) / scores.length;
 }
 
+function clamp01(x) {
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(1, x));
+}
+
+function expDecayDays(days, tauDays = 90) {
+  return Math.exp(-days / tauDays);
+}
+
+function parseNaverPubDate(pubDate) {
+  if (!pubDate) return null;
+  const t = new Date(pubDate).getTime();
+  return Number.isNaN(t) ? null : t;
+}
+
+function scoreFromDateMs(tMs, tauDays = 90) {
+  if (!tMs) return null;
+  const now = Date.now();
+  const days = (now - tMs) / (1000 * 60 * 60 * 24);
+  const decay = expDecayDays(Math.max(0, days), tauDays);
+  // 0.5~0.95 범위
+  return 0.5 + 0.45 * clamp01(decay);
+}
+
+function calcNewsRecencyScore(gdeltArticles = [], naverItems = []) {
+  const scores = [];
+
+  // GDELT(기존 계산식 유지) - 단, “없으면 0.7로 깎지 말고 제외”
+  if (Array.isArray(gdeltArticles) && gdeltArticles.length > 0) {
+    const g = calcRecencyScore(gdeltArticles);
+    if (Number.isFinite(g)) scores.push(g);
+  }
+
+  // NAVER news pubDate 기반
+  if (Array.isArray(naverItems) && naverItems.length > 0) {
+    const nScores = naverItems
+      .filter((it) => it?.naver_type === "news" && it?.pubDate)
+      .map((it) => scoreFromDateMs(parseNaverPubDate(it.pubDate), 90))
+      .filter(Number.isFinite);
+
+    if (nScores.length > 0) {
+      scores.push(nScores.reduce((a, b) => a + b, 0) / nScores.length);
+    }
+  }
+
+  // 뉴스 신호가 아예 없으면 “중립(약하게만)”로
+  return scores.length > 0 ? (scores.reduce((a, b) => a + b, 0) / scores.length) : 0.95;
+}
+
+function extractPaperYear(x) {
+  // 문자열에서 연도 추출: "2023 - title" 형태 포함
+  if (typeof x === "string") {
+    const m = x.match(/\b(19|20)\d{2}\b/);
+    return m ? Number(m[0]) : null;
+  }
+  // 혹시 객체로 바꾼 경우 대비
+  if (x && typeof x === "object") {
+    const y = x.year || x.publication_year || null;
+    return Number.isFinite(Number(y)) ? Number(y) : null;
+  }
+  return null;
+}
+
+// 논문은 “연도”만으로 약하게(0.85~1.0) 반영
+function calcPaperRecencyScore(papers = []) {
+  const nowY = new Date().getFullYear();
+
+  const years = (Array.isArray(papers) ? papers : [])
+    .map(extractPaperYear)
+    .filter((y) => Number.isFinite(y) && y >= 1900 && y <= nowY + 1);
+
+  if (!years.length) return 0.95;
+
+  // 최근 논문 쪽을 더 반영(최신값 기준)
+  const bestY = Math.max(...years);
+  const age = Math.max(0, nowY - bestY);
+
+  // 0y=1.0, 8y≈0.905, 16y≈0.87 (약하게만)
+  const decay = Math.exp(-age / 8);
+  return 0.85 + 0.15 * clamp01(decay);
+}
+
+// DV/CV용 GitHub updated 기반(0.8~1.0 정도로)
+function calcGithubRecencyScore(repos = []) {
+  const ts = (Array.isArray(repos) ? repos : [])
+    .map((r) => (r?.updated ? new Date(r.updated).getTime() : null))
+    .filter((t) => t && !Number.isNaN(t));
+
+  if (!ts.length) return 0.95;
+
+  const newest = Math.max(...ts);
+  const days = Math.max(0, (Date.now() - newest) / (1000 * 60 * 60 * 24));
+
+  // 코드 생태계는 180일 정도를 기준으로 완만하게 감쇠
+  const decay = expDecayDays(days, 180);
+  return 0.8 + 0.2 * clamp01(decay);
+}
+
+function calcCompositeRecency({ mode, gdelt = [], naver = [], crossref = [], openalex = [], github = [] }) {
+  const news = calcNewsRecencyScore(gdelt, naver);
+  const paper = calcPaperRecencyScore([...(crossref || []), ...(openalex || [])]);
+  const code = calcGithubRecencyScore(github);
+
+  // ✅ “약하게” 반영 기본값(ENV로 조절 가능)
+  const qvfvNewsW = Number(process.env.RECENCY_QVFV_NEWS_W ?? "0.12");
+  const qvfvPaperW = Number(process.env.RECENCY_QVFV_PAPER_W ?? "0.08");
+  const qvfvFloor = Number(process.env.RECENCY_QVFV_FLOOR ?? "0.90");
+
+  const dvcvCodeW = Number(process.env.RECENCY_DVCV_CODE_W ?? "0.25");
+  const dvcvPaperW = Number(process.env.RECENCY_DVCV_PAPER_W ?? "0.05");
+  const dvcvNewsW = Number(process.env.RECENCY_DVCV_NEWS_W ?? "0.05");
+  const dvcvFloor = Number(process.env.RECENCY_DVCV_FLOOR ?? "0.85");
+
+  let wNews = 0, wPaper = 0, wCode = 0, floor = 0.9;
+
+  if (mode === "dv" || mode === "cv") {
+    wNews = dvcvNewsW; wPaper = dvcvPaperW; wCode = dvcvCodeW; floor = dvcvFloor;
+  } else {
+    wNews = qvfvNewsW; wPaper = qvfvPaperW; wCode = 0; floor = qvfvFloor;
+  }
+
+  // 1 - 가중치*(1-점수) 형태(“약하게” 깎임)
+  const overall =
+    1
+    - wNews * (1 - news)
+    - wPaper * (1 - paper)
+    - wCode * (1 - code);
+
+  const clamped = Math.max(floor, clamp01(overall));
+
+  return {
+    overall: clamped,
+    detail: {
+      news_recency: news,
+      paper_recency: paper,
+      code_recency: code,
+      weights: { wNews, wPaper, wCode, floor },
+    },
+  };
+}
+
 // ─────────────────────────────
 // ✅ 공통 에러 응답 헬퍼 (ⅩⅤ 규약)
 // ─────────────────────────────
@@ -1797,6 +1938,11 @@ async function callNaver(query, clientId, clientSecret) {
             origin: "naver",
             naver_type: ep.type,
 
+            naver_type: ep.type,
+
+            // ✅ news만 pubDate가 옴
+            pubDate: ep.type === "news" ? (i.pubDate || null) : null,
+
             // ✅ domain 판정은 항상 source_url(=originallink) 기준
             source_host: tierInfo.host || null,
             match_domain: tierInfo.match_domain || null,
@@ -1859,17 +2005,41 @@ async function callNaver(query, clientId, clientSecret) {
 async function fetchCrossref(q) {
   const { data } = await axios.get(
     `https://api.crossref.org/works?query=${encodeURIComponent(q)}&rows=3`,
-    { timeout: HTTP_TIMEOUT_MS }                    // ✅ 추가
+    { timeout: HTTP_TIMEOUT_MS }
   );
-  return data?.message?.items?.map((i) => i.title?.[0]) || [];
+
+  const items = data?.message?.items || [];
+  return items
+    .map((i) => {
+      const title = i.title?.[0] || "";
+      const year =
+        i.issued?.["date-parts"]?.[0]?.[0] ||
+        i["published-online"]?.["date-parts"]?.[0]?.[0] ||
+        i["published-print"]?.["date-parts"]?.[0]?.[0] ||
+        i.created?.["date-parts"]?.[0]?.[0] ||
+        null;
+
+      if (!title) return null;
+      return year ? `${year} - ${title}` : title; // ✅ 문자열 포맷으로 연도 포함
+    })
+    .filter(Boolean);
 }
 
 async function fetchOpenAlex(q) {
   const { data } = await axios.get(
     `https://api.openalex.org/works?search=${encodeURIComponent(q)}&per_page=3`,
-    { timeout: HTTP_TIMEOUT_MS }                    // ✅ 추가
+    { timeout: HTTP_TIMEOUT_MS }
   );
-  return data?.results?.map((i) => i.display_name) || [];
+
+  const results = data?.results || [];
+  return results
+    .map((i) => {
+      const title = i.display_name || "";
+      const year = i.publication_year || null;
+      if (!title) return null;
+      return year ? `${year} - ${title}` : title; // ✅ 문자열 포맷으로 연도 포함
+    })
+    .filter(Boolean);
 }
 
 async function fetchWikidata(q) {
@@ -3326,7 +3496,15 @@ partial_scores.engines_excluded = enginesExcluded;
       },
     }));
 
-    partial_scores.recency = calcRecencyScore(external.gdelt);
+    const rec = calcCompositeRecency({
+  mode: safeMode,
+  gdelt: external.gdelt,
+  naver: external.naver,
+  crossref: external.crossref,
+  openalex: external.openalex,
+});
+partial_scores.recency = rec.overall;
+partial_scores.recency_detail = rec.detail;
 
     // naver tier × type factor
     if (Array.isArray(external.naver) && external.naver.length > 0) {
@@ -3379,6 +3557,13 @@ partial_scores.engines_excluded = enginesExcluded;
     }
 
     external.github = (external.github || []).slice(0, 12);
+
+const rec = calcCompositeRecency({
+  mode: safeMode,
+  github: external.github,
+});
+partial_scores.recency = rec.overall;
+partial_scores.recency_detail = rec.detail;
 
         partial_scores.validity =
       (Array.isArray(external.github) && external.github.length > 0)
@@ -3871,8 +4056,7 @@ const useGdelt = enginesUsedSet.has("gdelt");
 const useNaver = enginesUsedSet.has("naver");
 
 const R_t =
-  (safeMode === "qv" || safeMode === "fv") &&
-  useGdelt &&
+  (safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "cv") &&
   typeof partial_scores.recency === "number"
     ? Math.max(0, Math.min(1, partial_scores.recency))
     : 1.0;
@@ -3907,7 +4091,7 @@ const N =
       // - G (Gemini 종합 스코어)가 주 신뢰도
       // - Vᵣ(GitHub 유효성)는 보조 신뢰도
       const combined = 0.7 * G + 0.3 * V_r; // 0~1 범위
-      const rawHybrid = combined * C;
+      const rawHybrid = R_t * combined * C;
       hybrid = Math.max(0, Math.min(1, rawHybrid));
     } else {
       // QV/FV:
