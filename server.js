@@ -3905,6 +3905,25 @@ engines_requested: partial_scores.engines_requested || engines,
   engine_metrics: engineMetrics,
 };
 
+// ✅ debug: effective config & whitelist meta (Render env: DEBUG_EFFECTIVE_CONFIG=1)
+if (process.env.DEBUG_EFFECTIVE_CONFIG === "1") {
+  const wl = loadNaverWhitelist();
+  const wlHasKosis =
+    !!wl &&
+    Object.values(wl.tiers || {}).some(
+      (t) => Array.isArray(t?.domains) && t.domains.includes("kosis.kr")
+    );
+
+  payload.effective_config = {
+    NAVER_RELEVANCE_MIN,
+    BLOCK_EVIDENCE_TOPK,
+    BLOCK_NAVER_EVIDENCE_TOPK,
+    whitelist_version: wl?.version || null,
+    whitelist_lastUpdate: wl?.lastUpdate || null,
+    whitelist_has_kosis: wlHasKosis,
+  };
+}
+
 // 🔹 DV/CV 모드에서는 GitHub 검색 결과도 같이 내려줌
 if (safeMode === "dv" || safeMode === "cv") {
   payload.github_repos = external.github ?? [];
