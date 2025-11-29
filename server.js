@@ -1446,6 +1446,19 @@ function _hostFromUrlish(urlish) {
   }
 }
 
+function hostLooksOfficial(host) {
+  if (!host) return false;
+  const h = host.toLowerCase();
+  return (
+    h.endsWith(".go.kr") ||
+    h.endsWith(".ac.kr") ||
+    h.endsWith(".re.kr") ||
+    h.endsWith(".or.kr") ||
+    h.endsWith(".gov") ||
+    h.endsWith(".edu")
+  );
+}
+
 // ✅ exact match or subdomain match ONLY (evilchosun.com 같은 오탐 방지)
 function _hostMatchesDomain(host, domain) {
   host = _stripWww(host);
@@ -1763,6 +1776,19 @@ async function callNaver(query, clientId, clientSecret) {
           const tierInfo = resolveNaverTier(source_url);
           const typeWeight = NAVER_TYPE_WEIGHTS[ep.type] ?? 1;
 
+          // ✅ (패치) 화이트리스트에 없더라도 "공식 성격" 도메인이면 소프트 폴백으로 티어 부여
+          let tier = tierInfo.tier;
+          let tier_weight = tierInfo.weight;
+          let whitelisted = !!tier;
+          let inferred = false;
+
+          if (!tier && hostLooksOfficial(tierInfo.host)) {
+            tier = "tier2";
+            tier_weight = 0.9;
+            whitelisted = true;
+            inferred = true;
+          }
+
           return {
             title: cleanTitle,
             desc: cleanDesc,
@@ -1774,12 +1800,15 @@ async function callNaver(query, clientId, clientSecret) {
             // ✅ domain 판정은 항상 source_url(=originallink) 기준
             source_host: tierInfo.host || null,
             match_domain: tierInfo.match_domain || null,
-            whitelisted: !!tierInfo.tier,
+            whitelisted,
 
-            tier: tierInfo.tier,
-            tier_weight: tierInfo.weight,
+            tier,
+            tier_weight,
             type_weight: typeWeight,
+
+            ...(inferred ? { _whitelist_inferred: true } : {}),
           };
+
         }) || [];
 
       // 🔹 제목/요약 토큰 필터(완화된 requiredHits 사용)
@@ -2431,17 +2460,110 @@ const BLOCK_NAVER_EVIDENCE_TOPK = parseInt(
   process.env.BLOCK_NAVER_EVIDENCE_TOPK || String(BLOCK_EVIDENCE_TOPK),
   10
 ); // 블록당 naver evidence 상위 K
-const NAVER_RELEVANCE_MIN = parseFloat(process.env.NAVER_RELEVANCE_MIN || "0.15"); // 0~1
+const NAVER_RELEVANCE_MIN = parseFloat(process.env.NAVER_RELEVANCE_MIN || "0.1"); // 0~1
 
 function topArr(arr, k) {
   const n = Number.isFinite(k) && k > 0 ? k : 3;
   return Array.isArray(arr) ? arr.slice(0, n) : [];
 }
 
-function hasNumberLike(text) {
-  const s = String(text || "");
-  // 숫자/퍼센트/단위 등 (LLM 없이 간단히)
-  return /\d/.test(s) || /(퍼센트|%|원|달러|km|m\/s|명|대|만|억|조)/.test(s);
+// ─────────────────────────────
+// ✅ (패치) 숫자 블록이면: 선택된 근거 URL을 열어 "숫자 포함 발췌(evidence_text)" 생성
+//   - 특정 사이트 하드코딩 없이 동작
+//   - 선택된 TOPK URL만, 숫자 블록일 때만 fetch
+// ─────────────────────────────
+const NAVER_NUMERIC_FETCH = (process.env.NAVER_NUMERIC_FETCH ?? "true").toLowerCase() !== "false";
+const NAVER_FETCH_TIMEOUT_MS = parseInt(process.env.NAVER_FETCH_TIMEOUT_MS || "5000", 10);
+const EVIDENCE_EXCERPT_CHARS = parseInt(process.env.EVIDENCE_EXCERPT_CHARS || "700", 10);
+const NAVER_NUMERIC_FETCH_MAX = parseInt(process.env.NAVER_NUMERIC_FETCH_MAX || "8", 10);
+
+function isSafeExternalHttpUrl(u) {
+  try {
+    const url = new URL(u);
+    const protoOk = url.protocol === "http:" || url.protocol === "https:";
+    if (!protoOk) return false;
+
+    const h = (url.hostname || "").toLowerCase();
+    if (!h) return false;
+    if (h === "localhost" || h.endsWith(".localhost")) return false;
+
+    // basic private-range guards (SSRF 최소 방지)
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) {
+      if (/^(10\.|127\.|169\.254\.|192\.168\.)/.test(h)) return false;
+      if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(h)) return false;
+    }
+    if (h.startsWith("::1") || h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return false;
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stripHtmlToText(html) {
+  return (html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;?/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function makeNumberTokens(blockText) {
+  const raw = (String(blockText || "").match(/[\d][\d,\.]*/g) || []).filter(Boolean);
+  const cleaned = raw.map((s) => s.replace(/,/g, "")).filter(Boolean);
+  // 원문(콤마 포함) + 콤마 제거 버전 둘 다
+  return Array.from(new Set([...raw, ...cleaned]));
+}
+
+function extractExcerptContainingNumbers(pageText, blockText, maxChars = 700) {
+  const t = String(pageText || "");
+  if (!t) return null;
+
+  const tokens = makeNumberTokens(blockText);
+  for (const num of tokens) {
+    const idx = t.indexOf(num);
+    if (idx >= 0) {
+      const start = Math.max(0, idx - Math.floor(maxChars * 0.4));
+      const end = Math.min(t.length, idx + Math.floor(maxChars * 0.6));
+      return t.slice(start, end).trim();
+    }
+  }
+
+  // 숫자가 그대로 안 맞으면 키워드(최대 6개)로라도 발췌
+  const kw = String(blockText || "")
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 2)
+    .slice(0, 6);
+
+  for (const k of kw) {
+    const idx = t.indexOf(k);
+    if (idx >= 0) {
+      const start = Math.max(0, idx - Math.floor(maxChars * 0.4));
+      const end = Math.min(t.length, idx + Math.floor(maxChars * 0.6));
+      return t.slice(start, end).trim();
+    }
+  }
+
+  return null;
+}
+
+async function fetchReadableText(url, timeoutMs = 5000) {
+  try {
+    const r = await axios.get(url, {
+      timeout: timeoutMs,
+      maxContentLength: 1024 * 1024,
+      maxBodyLength: 1024 * 1024,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; CrossVerifiedAI/1.0)"
+      }
+    });
+    return stripHtmlToText(r.data);
+  } catch {
+    return null;
+  }
 }
 
 function isTimeSensitiveText(text) {
@@ -3493,6 +3615,36 @@ let answerModelUsed = "gemini-2.5-flash";
         Array.isArray(qvfvBlocksForVerifyFull)
           ? qvfvBlocksForVerifyFull
           : [];
+      // ✅ (패치) 숫자 블록이면: 선택된 Naver evidence URL을 열어 "숫자 포함 발췌(evidence_text)"를 채움
+      // - 특정 사이트 고정 없이 동작
+      // - 숫자 블록일 때만, TOPK URL만, 총 fetch 수 제한
+      if (NAVER_NUMERIC_FETCH && (safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
+        let budget = NAVER_NUMERIC_FETCH_MAX;
+
+        for (const b of blocksForVerify) {
+          if (budget <= 0) break;
+          if (!hasNumberLike(b?.text) && !hasNumberLike(query)) continue;
+
+          const naverEvs = Array.isArray(b?.evidence?.naver) ? b.evidence.naver.slice(0, 3) : [];
+          for (const ev of naverEvs) {
+            if (budget <= 0) break;
+            if (ev?.evidence_text) continue;
+
+            const url = ev?.source_url || ev?.link;
+            if (!url) continue;
+            if (!isSafeExternalHttpUrl(url)) continue;
+
+            const pageText = await fetchReadableText(url, NAVER_FETCH_TIMEOUT_MS);
+            const excerpt = extractExcerptContainingNumbers(pageText, b?.text || "", EVIDENCE_EXCERPT_CHARS);
+
+            if (excerpt) {
+              ev.evidence_text = excerpt;
+              budget -= 1;
+            }
+          }
+        }
+      }
+
 
       const coreText =
         safeMode === "qv"
@@ -3549,7 +3701,8 @@ ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
    - blocks 배열이 "비어있지 않은 경우"(QV/FV):
      - blocks[i]를 그대로 사용하고, 절대 재분해/병합/삭제하지 마세요.
      - 각 blocks[i].text가 이미 의미 단위로 분리된 상태입니다.
-     - 각 blocks[i].evidence 안의 엔진별 결과를 근거로 block_truthscore를 계산하세요.
+      - 각 blocks[i].evidence 안의 엔진별 결과를 근거로 block_truthscore를 계산하세요.
+         - (중요) evidence 항목에 evidence_text가 있으면, 해당 URL에서 추출한 짧은 본문 발췌입니다. 수치/팩트 검증에 우선 사용하세요.
    - blocks 배열이 "비어있는 경우"(주로 DV/CV):
      - core_text를 의미적으로 자연스러운 2~8개 블록으로 직접 분할해도 좋습니다.
      - 이때 evidence는 external 전체를 참고하여 간접적으로 판단합니다.
@@ -3914,10 +4067,17 @@ if (process.env.DEBUG_EFFECTIVE_CONFIG === "1") {
       (t) => Array.isArray(t?.domains) && t.domains.includes("kosis.kr")
     );
 
-  payload.effective_config = {
+    payload.effective_config = {
     NAVER_RELEVANCE_MIN,
     BLOCK_EVIDENCE_TOPK,
     BLOCK_NAVER_EVIDENCE_TOPK,
+
+    // (패치) 숫자 블록 발췌
+    NAVER_NUMERIC_FETCH,
+    NAVER_FETCH_TIMEOUT_MS,
+    EVIDENCE_EXCERPT_CHARS,
+    NAVER_NUMERIC_FETCH_MAX,
+
     whitelist_version: wl?.version || null,
     whitelist_lastUpdate: wl?.lastUpdate || null,
     whitelist_has_kosis: wlHasKosis,
