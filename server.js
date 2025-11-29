@@ -991,7 +991,7 @@ function parseGdeltSeenDate(seen) {
 
 // GDELT 기반 시의성(recency) 점수 계산
 function calcRecencyScore(gdeltArticles = []) {
-  if (!gdeltArticles || !gdeltArticles.length) return 0.7; // 정보 없을 때 중립값
+  if (!Array.isArray(gdeltArticles) || gdeltArticles.length === 0) return null;
   const now = Date.now();
   const scores = gdeltArticles.map((a) => {
     if (!a?.date) return 0.7;
@@ -1032,7 +1032,7 @@ function scoreFromDateMs(tMs, tauDays = 90) {
 function calcNewsRecencyScore(gdeltArticles = [], naverItems = []) {
   const scores = [];
 
-  // GDELT(기존 계산식 유지) - 단, “없으면 0.7로 깎지 말고 제외”
+  // GDELT: 아예 없으면 제외(중립 유지)
   if (Array.isArray(gdeltArticles) && gdeltArticles.length > 0) {
     const g = calcRecencyScore(gdeltArticles);
     if (Number.isFinite(g)) scores.push(g);
@@ -1048,6 +1048,13 @@ function calcNewsRecencyScore(gdeltArticles = [], naverItems = []) {
     if (nScores.length > 0) {
       scores.push(nScores.reduce((a, b) => a + b, 0) / nScores.length);
     }
+  }
+
+  // 뉴스 신호가 아예 없으면 “중립(약하게만)”로
+  return scores.length > 0
+    ? scores.reduce((a, b) => a + b, 0) / scores.length
+    : 0.95;
+}
   }
 
   // 뉴스 신호가 아예 없으면 “중립(약하게만)”로
@@ -1383,13 +1390,22 @@ app.post("/api/settings/save", async (req, res) => {
   try {
     const authUser = await getSupabaseAuthUser(req);
 
-const userId = await resolveLogUserId({
-  user_id: null,
-  user_email: authUser?.email || null,
-  user_name: authUser?.user_metadata?.full_name || authUser?.user_metadata?.name || null,
-  auth_user: authUser || null,
-  bearer_token: getBearerToken(req), // ✅ Bearer localtest / DEFAULT_USER_ID fallback 가능
-});
+    // ✅ 운영(또는 REQUIRE_USER_AUTH=true)이면 settings 저장은 반드시 로그인 필요
+    if ((isProd || REQUIRE_USER_AUTH) && !authUser) {
+      return res.status(401).json(buildError("UNAUTHORIZED", "로그인이 필요합니다. (Authorization: Bearer <token>)"));
+    }
+
+    const userId = await resolveLogUserId({
+      user_id: null,
+      user_email: authUser?.email || null,
+      user_name: authUser?.user_metadata?.full_name || authUser?.user_metadata?.name || null,
+      auth_user: authUser || null,
+      bearer_token: getBearerToken(req),
+    });
+
+    if (!userId) {
+      return res.status(400).json(buildError("VALIDATION_ERROR", "userId 해결 실패"));
+    }
 
     const {
       gemini_keys,
@@ -1716,10 +1732,10 @@ function dedupeByLink(items = []) {
   const out = [];
   const seen = new Set();
   for (const it of (items || [])) {
-    const link = String(it?.link || "").trim();
-    if (!link) continue;
-    if (seen.has(link)) continue;
-    seen.add(link);
+    const key = String(it?.source_url || it?.link || "").trim();
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push(it);
   }
   return out;
@@ -1936,8 +1952,6 @@ async function callNaver(query, clientId, clientSecret) {
             link,
             source_url,
             origin: "naver",
-            naver_type: ep.type,
-
             naver_type: ep.type,
 
             // ✅ news만 pubDate가 옴
@@ -2747,9 +2761,15 @@ async function fetchReadableText(url, timeoutMs = 5000) {
 
 function isTimeSensitiveText(text) {
   const s = String(text || "");
-  // "2025년/2024/올해/최근/지금/최신/발표/가격/시세..." 등은 뉴스/시사성 비중이 올라갈 수 있음
-  if (/\b20\d{2}\b/.test(s)) return true;
-  return /(최근|요즘|오늘|어제|내일|현재|지금|최신|업데이트|발표|논란|속보|전망|추세|랭킹|순위|가격|시세|환율|주가|금리|실시간|뉴스|기준금리)/.test(s);
+
+  // ✅ 상대/실시간/속보성 키워드
+  if (/(최근|요즘|오늘|어제|내일|현재|지금|최신|업데이트|발표|논란|속보|실시간|뉴스)/.test(s)) return true;
+
+  // ✅ 명시적 “날짜/기간” (연도 단독은 제외)
+  if (/(\d{4}[.\-\/]\d{1,2}[.\-\/]\d{1,2}|\d{1,2}\s*월\s*\d{1,2}\s*일|\d{4}\s*년\s*\d{1,2}\s*월|지난\s*(주|달|해|년)|이번\s*(주|달|해)|작년|올해|내년)/.test(s)) return true;
+
+  // ✅ 시세/가격류 (연도 없어도 시의성 필요)
+  return /(가격|시세|환율|주가|금리|기준금리|랭킹|순위)/.test(s);
 }
 
 function extractKeywords(text, max = 12) {
@@ -4324,51 +4344,42 @@ if ((safeMode === "qv" || safeMode === "fv") && external.naver) {
     console.error("❌ verification_logs insert failed:", logErr.message);
   }
 
-  // ✅ 외부엔진 인증/설정 등 치명 오류는 즉시 반환
-  if (e?._fatal && e?.httpStatus) {
-    return res.status(e.httpStatus).json(
-      buildError(
-        e.code || "FATAL_ERROR",
-        e.publicMessage || "요청을 처리할 수 없습니다.",
-        e.detail || e.message
-      )
-    );
-  }
-
-    const status = e.response?.status;
-
-// ✅ NAVER 인증 오류는 401로 즉시 반환
+// ✅ NAVER id/secret 인증 오류는 401로 명확히 반환
 if (e?.code === "NAVER_AUTH_ERROR") {
-  return res.status(e.httpStatus || 401).json(
+  return res.status(401).json(
     buildError(
       "NAVER_AUTH_ERROR",
-      "Naver client id / secret 인증에 실패했습니다. (올바른 키인지 확인하세요)",
-      e.detail || e.message
+      "네이버 API 인증 실패 (ID/Secret 확인 필요)",
+      e?.detail || e?.message
     )
   );
 }
-   
-// ✅ ADD: 로테이션 후 “전부 소진”도 동일 코드로 반환
-if (e?.code === "GEMINI_KEY_EXHAUSTED" || status === 429) {
-  return res.status(200).json(
+
+// ✅ httpStatus/publicMessage/detail 있으면 그대로 반환 (최상위 catch)
+// - httpStatus는 number/string 모두 허용
+const passStatus =
+  typeof e?.httpStatus === "number"
+    ? e.httpStatus
+    : (typeof e?.httpStatus === "string" && /^\d+$/.test(e.httpStatus) ? Number(e.httpStatus) : null);
+
+if (Number.isFinite(passStatus) && (e?._fatal || e?.publicMessage || e?.detail)) {
+  return res.status(passStatus).json(
     buildError(
-      "GEMINI_KEY_EXHAUSTED",
-      "Gemini 키의 일일 할당량이 소진되었습니다. (키 로테이션/리셋 확인 필요)",
-      e.detail || e.message
+      e.code || "FATAL_ERROR",
+      e.publicMessage || "요청을 처리할 수 없습니다.",
+      e.detail ?? e.message
     )
   );
 }
 
+// 기본 처리: 가능한 status를 반영하되, 메시지는 과도하게 노출하지 않음
+const status =
+  (Number.isFinite(passStatus) && passStatus) ||
+  (typeof e?.status === "number" ? e.status : undefined) ||
+  (typeof e?.response?.status === "number" ? e.response.status : undefined) ||
+  500;
 
-    return res
-      .status(500)
-      .json(
-        buildError(
-          "INTERNAL_SERVER_ERROR",
-          "서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
-          e.message
-        )
-      );
+return res.status(status).json(buildError("INTERNAL_SERVER_ERROR", "서버 내부 오류 발생", e?.message));
   }
 });
 
