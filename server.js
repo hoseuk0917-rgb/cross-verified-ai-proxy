@@ -2473,6 +2473,15 @@ function topArr(arr, k) {
 //   - 선택된 TOPK URL만, 숫자 블록일 때만 fetch
 // ─────────────────────────────
 const NAVER_NUMERIC_FETCH = (process.env.NAVER_NUMERIC_FETCH ?? "true").toLowerCase() !== "false";
+// ✅ 숫자/단위 감지 (숫자 발췌 패치용)
+function hasNumberLike(text) {
+  const s = String(text || "");
+  return (
+    /\d/.test(s) ||
+    /%|퍼센트|만\s*명|명|대|원|달러|억원|조원|km|m\/s|GHz|MHz/.test(s)
+  );
+}
+
 const NAVER_FETCH_TIMEOUT_MS = parseInt(process.env.NAVER_FETCH_TIMEOUT_MS || "5000", 10);
 const EVIDENCE_EXCERPT_CHARS = parseInt(process.env.EVIDENCE_EXCERPT_CHARS || "700", 10);
 const NAVER_NUMERIC_FETCH_MAX = parseInt(process.env.NAVER_NUMERIC_FETCH_MAX || "8", 10);
