@@ -422,7 +422,10 @@ function safeVerifyInputForGemini(input, maxLen) {
     ? input.blocks.map((b) => {
         const ev = b?.evidence || {};
         const cutArr = (v, n) => (Array.isArray(v) ? v.slice(0, n) : []);
-        const slimNaver = cutArr(ev.naver, 4).map((x) => ({
+        const slimNaver = cutArr(
+  ev.naver,
+  Math.min(3, (Number.isFinite(BLOCK_NAVER_EVIDENCE_TOPK) ? BLOCK_NAVER_EVIDENCE_TOPK : 3))
+).map((x) => ({
           title: x?.title || null,
           link: x?.link || null,
           naver_type: x?.naver_type || null,
@@ -434,10 +437,10 @@ function safeVerifyInputForGemini(input, maxLen) {
           text: (String(b?.text || "")).slice(0, 320),
           queries: b?.queries || null,
           evidence: {
-            crossref: cutArr(ev.crossref, 3),
-            openalex: cutArr(ev.openalex, 3),
-            wikidata: cutArr(ev.wikidata, 5),
-            gdelt: cutArr(ev.gdelt, 3),
+          crossref: cutArr(ev.crossref, Math.min(3, (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3))),
+          openalex: cutArr(ev.openalex, Math.min(3, (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3))),
+           wikidata: cutArr(ev.wikidata, 5),
+           gdelt: cutArr(ev.gdelt, Math.min(3, (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3))),
             naver: slimNaver,
           },
         };
@@ -1767,6 +1770,12 @@ async function callNaver(query, clientId, clientSecret) {
             source_url,
             origin: "naver",
             naver_type: ep.type,
+
+            // ✅ domain 판정은 항상 source_url(=originallink) 기준
+            source_host: tierInfo.host || null,
+            match_domain: tierInfo.match_domain || null,
+            whitelisted: !!tierInfo.tier,
+
             tier: tierInfo.tier,
             tier_weight: tierInfo.weight,
             type_weight: typeWeight,
@@ -2414,6 +2423,123 @@ const QVFV_MAX_BLOCKS = parseInt(process.env.QVFV_MAX_BLOCKS || "5", 10);
 const BLOCK_NAVER_MAX_QUERIES = parseInt(process.env.BLOCK_NAVER_MAX_QUERIES || "2", 10);
 const BLOCK_NAVER_MAX_ITEMS = parseInt(process.env.BLOCK_NAVER_MAX_ITEMS || "6", 10);
 
+// ─────────────────────────────
+// ✅ (패치) evidence 채택 규칙 (화이트리스트 + 타입 필터 + 관련도 + 상위 K)
+// ─────────────────────────────
+const BLOCK_EVIDENCE_TOPK = parseInt(process.env.BLOCK_EVIDENCE_TOPK || "3", 10); // 블록당 엔진별 evidence 상위 K
+const BLOCK_NAVER_EVIDENCE_TOPK = parseInt(
+  process.env.BLOCK_NAVER_EVIDENCE_TOPK || String(BLOCK_EVIDENCE_TOPK),
+  10
+); // 블록당 naver evidence 상위 K
+const NAVER_RELEVANCE_MIN = parseFloat(process.env.NAVER_RELEVANCE_MIN || "0.15"); // 0~1
+
+function topArr(arr, k) {
+  const n = Number.isFinite(k) && k > 0 ? k : 3;
+  return Array.isArray(arr) ? arr.slice(0, n) : [];
+}
+
+function hasNumberLike(text) {
+  const s = String(text || "");
+  // 숫자/퍼센트/단위 등 (LLM 없이 간단히)
+  return /\d/.test(s) || /(퍼센트|%|원|달러|km|m\/s|명|대|만|억|조)/.test(s);
+}
+
+function isTimeSensitiveText(text) {
+  const s = String(text || "");
+  // "2025년/2024/올해/최근/지금/최신/발표/가격/시세..." 등은 뉴스/시사성 비중이 올라갈 수 있음
+  if (/\b20\d{2}\b/.test(s)) return true;
+  return /(최근|요즘|오늘|어제|내일|현재|지금|최신|업데이트|발표|논란|속보|전망|추세|랭킹|순위|가격|시세|환율|주가|금리|실시간|뉴스|기준금리)/.test(s);
+}
+
+function extractKeywords(text, max = 12) {
+  const s = String(text || "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/[+]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return [];
+
+  // 한글(2자+), 영문(3자+), 숫자(2자+) 토큰 추출
+  const raw = s.match(/[가-힣]{2,}|[A-Za-z]{3,}|\d{2,}/g) || [];
+  const stop = new Set([
+    "그리고","하지만","또한","대한","관련","대한민국","한국","사용자","질문","블록","내용",
+    "the","and","for","with","from","that","this","are","was","were","has","have"
+  ]);
+
+  const out = [];
+  const seen = new Set();
+  for (const t of raw) {
+    const w = t.trim();
+    if (!w) continue;
+    if (stop.has(w)) continue;
+    if (seen.has(w)) continue;
+    seen.add(w);
+    out.push(w);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function keywordHitRatio(haystack, keywords) {
+  const text = String(haystack || "").toLowerCase();
+  const ks = Array.isArray(keywords) ? keywords : [];
+  if (!ks.length) return 0;
+
+  let hit = 0;
+  for (const k of ks) {
+    const kk = String(k || "").toLowerCase();
+    if (!kk) continue;
+    if (text.includes(kk)) hit++;
+  }
+  return hit / ks.length; // 0~1
+}
+
+function pickTopNaverEvidenceForVerify({
+  items,
+  query,
+  blockText,
+  naverQueries,
+  allowNews,
+  topK,
+  minRelevance,
+}) {
+  const list = Array.isArray(items) ? items : [];
+  const K = Number.isFinite(topK) && topK > 0 ? topK : 3;
+  const minRel = Number.isFinite(minRelevance) ? minRelevance : 0.15;
+
+  const kw = extractKeywords([query, blockText, ...(naverQueries || [])].join(" "), 14);
+  const needNum = hasNumberLike(blockText) || hasNumberLike(query);
+
+  const scored = [];
+  for (const it of list) {
+    const isWhitelisted = !!it?.tier; // ✅ 화이트리스트 밖은 evidence 제외(표시는 OK)
+    if (!isWhitelisted) continue;
+
+    if (!allowNews && it?.naver_type === "news") continue; // ✅ 시사성 질문에서만 news 허용
+
+    const text = `${it?.title || ""} ${it?.desc || ""}`;
+    const rel = keywordHitRatio(text, kw);
+
+    if (rel < minRel) continue; // ✅ 무관한 결과(의대/비트코인 등) evidence에서 제외
+
+    const baseW =
+      (typeof it?.tier_weight === "number" && Number.isFinite(it.tier_weight) ? it.tier_weight : 1) *
+      (typeof it?.type_weight === "number" && Number.isFinite(it.type_weight) ? it.type_weight : 1);
+
+    const hasNum = hasNumberLike(text);
+    const numFactor = needNum ? (hasNum ? 1.15 : 0.8) : 1.0;
+
+    // 최종 점수: (도메인/타입 가중치) × 관련도 × (수치근거 우선)
+    const score = baseW * (0.6 + 0.4 * rel) * numFactor;
+
+    scored.push({ it, score });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+
+  return scored.slice(0, K).map((x) => x.it);
+}
+
 async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, modelName, userId }) {
   // mode: "qv" | "fv"
   // QV: 답변 생성 + 답변 기준 블록/쿼리 생성
@@ -2953,27 +3079,51 @@ if (!naverQueries.length) {
     runOrEmpty("gdelt", fetchGDELT, qGdelt),
   ]);
 
-  let naverItems = [];
+    // ─────────────────────────────
+  // ✅ Naver 결과: 표시용(all)과 verify용(topK + whitelist + relevance) 분리
+  // ─────────────────────────────
+  let naverItemsAll = [];
   for (const nq0 of naverQueries) {
     const nq = String(nq0 || "").trim();
     if (!nq) continue;
 
     const { result } = await safeFetchTimed(
       "naver",
-       (qq) => callNaver(qq, naverIdFinal, naverSecretFinal),
+      (qq) => callNaver(qq, naverIdFinal, naverSecretFinal),
       nq,
       engineTimes,
       engineMetrics
     );
-    if (Array.isArray(result) && result.length) naverItems.push(...result);
+    if (Array.isArray(result) && result.length) naverItemsAll.push(...result);
   }
-  naverItems = dedupeByLink(naverItems).slice(0, BLOCK_NAVER_MAX_ITEMS);
+  naverItemsAll = dedupeByLink(naverItemsAll).slice(0, BLOCK_NAVER_MAX_ITEMS);
+
+  // ✅ 시사성(최신/발표/연도/가격 등)일 때만 news evidence 허용
+  const allowNewsEvidence = isTimeSensitiveText(`${query} ${b?.text || ""}`);
+
+  // ✅ verify에 넣을 naver evidence는:
+  //  - 화이트리스트(tier 있음)만
+  //  - news는 시사성일 때만
+  //  - 관련도 최소치 이상만
+  //  - 상위 K개만
+  const naverItemsForVerify = pickTopNaverEvidenceForVerify({
+    items: naverItemsAll,
+    query,
+    blockText: b?.text || "",
+    naverQueries,
+    allowNews: allowNewsEvidence,
+    topK: BLOCK_NAVER_EVIDENCE_TOPK,
+    minRelevance: NAVER_RELEVANCE_MIN,
+  });
+
+  // ✅ 뉴스 엔진(gdelt)도 시사성일 때만 evidence로 사용(표시는 external에 유지)
+  const gdeltForVerify = allowNewsEvidence ? topArr(gdPack.result, BLOCK_EVIDENCE_TOPK) : [];
 
   external.crossref.push(...(crPack.result || []));
   external.openalex.push(...(oaPack.result || []));
   external.wikidata.push(...(wdPack.result || []));
   external.gdelt.push(...(gdPack.result || []));
-  external.naver.push(...(naverItems || []));
+  external.naver.push(...(naverItemsAll || []));
 
   blocksForVerify.push({
     id: b.id,
@@ -2986,11 +3136,11 @@ if (!naverQueries.length) {
       naver: naverQueries
     },
     evidence: {
-      crossref: crPack.result || [],
-      openalex: oaPack.result || [],
-      wikidata: wdPack.result || [],
-      gdelt: gdPack.result || [],
-      naver: naverItems || [],
+      crossref: topArr(crPack.result, BLOCK_EVIDENCE_TOPK),
+      openalex: topArr(oaPack.result, BLOCK_EVIDENCE_TOPK),
+      wikidata: topArr(wdPack.result, 5), // wikidata는 구조상 조금 더 허용
+      gdelt: gdeltForVerify,
+      naver: naverItemsForVerify,
     },
   });
 }
