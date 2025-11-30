@@ -3498,7 +3498,7 @@ partial_scores.engines_requested = enginesRequested;
 partial_scores.engines_used = enginesUsed;
 partial_scores.engines_excluded = enginesExcluded;
 
-    partial_scores.blocks_for_verify = blocksForVerify.map((x) => ({
+partial_scores.blocks_for_verify = blocksForVerify.map((x) => ({
       id: x.id,
       text: String(x.text || "").slice(0, 400),
       queries: x.queries,
@@ -3536,6 +3536,34 @@ partial_scores.recency_detail = rec.detail;
         partial_scores.naver_tier_factor = Math.max(0.9, Math.min(1.05, avg));
       }
     }
+
+    // ✅ 엔진별 유효 evidence 개수 집계 + E_eff 정의
+    const engineNamesForEff = ["crossref", "openalex", "wikidata", "gdelt", "naver", "github"];
+    const effectiveCounts = {};
+
+    for (const name of engineNamesForEff) {
+      effectiveCounts[name] = 0;
+    }
+
+    if (Array.isArray(partial_scores.blocks_for_verify)) {
+      for (const blk of partial_scores.blocks_for_verify) {
+        const ec = blk.evidence_counts || {};
+        for (const name of engineNamesForEff) {
+          const cnt = ec[name];
+          if (typeof cnt === "number" && cnt > 0) {
+            effectiveCounts[name] += cnt;
+          }
+        }
+      }
+    }
+
+    const effectiveEngines = Object.entries(effectiveCounts)
+      .filter(([_, cnt]) => typeof cnt === "number" && cnt > 0)
+      .map(([name]) => name);
+
+    // partial_scores에 E_eff 관련 정보 저장
+    partial_scores.effective_engine_counts = effectiveCounts;
+    partial_scores.effective_engines = effectiveEngines;
 
     break;
   }
@@ -4052,7 +4080,7 @@ if (!verify || !verify.trim()) {
       // 외부 엔진 기반 TruthScore만 사용
     }
 
-    // ⑤ TruthScore 계산용 보조 값 정리 ------------------------
+// ⑤ TruthScore 계산용 보조 값 정리 ------------------------
     // Gemini 메타 점수 G (0~1), 없으면 0.7 중립값
     const G = (() => {
       const v =
@@ -4083,6 +4111,48 @@ const N =
     ? Math.max(0.9, Math.min(1.05, partial_scores.naver_tier_factor))
     : 1.0;
 
+// Coverage Cₜ: E_eff 기반 포화 함수 + 권위출처 예외
+let C_t = 1.0;
+
+// E_eff가 있으면 그걸, 없으면 engines_used / engines를 사용
+const effEnginesArr = Array.isArray(partial_scores.effective_engines)
+  ? partial_scores.effective_engines
+  : Array.isArray(partial_scores.engines_used)
+    ? partial_scores.engines_used
+    : engines;
+
+let totalEffEvidence = 0;
+if (
+  Array.isArray(effEnginesArr) &&
+  effEnginesArr.length > 0 &&
+  partial_scores.effective_engine_counts
+) {
+  for (const name of effEnginesArr) {
+    const cnt = partial_scores.effective_engine_counts[name];
+    if (typeof cnt === "number" && cnt > 0) {
+      totalEffEvidence += cnt;
+    }
+  }
+}
+
+if (totalEffEvidence > 0) {
+  const N_SAT = 10; // 이 값 근처에서 포화되도록
+  const raw = Math.log(1 + totalEffEvidence) / Math.log(1 + N_SAT);
+  // 너무 낮게 떨어지지 않도록 하한 0.4, 상한 1.0
+  C_t = Math.max(0.4, Math.min(1.0, raw));
+}
+
+// 간단 Authority override: 네이버 tier_factor가 높은 경우 Cₜ 하한을 0.7로 보정
+if (
+  typeof partial_scores.naver_tier_factor === "number" &&
+  partial_scores.naver_tier_factor >= 1.02
+) {
+  C_t = Math.max(C_t, 0.7);
+}
+
+// 로그에서 볼 수 있도록 저장
+partial_scores.coverage = C_t;
+
     // DV/CV: GitHub 유효성 Vᵣ, 없으면 0.7 중립값
         const useGithub = enginesUsedSet.has("github");
 
@@ -4101,12 +4171,12 @@ const N =
 
         let hybrid;
 
-    if (safeMode === "dv" || safeMode === "cv") {
+  if (safeMode === "dv" || safeMode === "cv") {
       // DV/CV:
       // - G (Gemini 종합 스코어)가 주 신뢰도
       // - Vᵣ(GitHub 유효성)는 보조 신뢰도
       const combined = 0.7 * G + 0.3 * V_r; // 0~1 범위
-      const rawHybrid = R_t * combined * C;
+      const rawHybrid = R_t * combined * C * C_t;
       hybrid = Math.max(0, Math.min(1, rawHybrid));
     } else {
       // QV/FV:
@@ -4114,7 +4184,7 @@ const N =
       // - Naver 티어 팩터 N
       // - 엔진 보정 C
       // - Gemini 종합 스코어 G
-      const rawHybrid = R_t * N * G * C;
+      const rawHybrid = R_t * N * G * C * C_t;
       hybrid = Math.max(0, Math.min(1, rawHybrid));
     }
 
