@@ -209,8 +209,30 @@ const GEMINI_TIMEOUT_VERIFY_FLASH_LITE_MS = parseInt(
 // 🔹 (옵션) Flash 프롬프트에 붙일 external 길이 (기본 800 → 넉넉히 4000 권장)
 const FLASH_REF_CHARS = parseInt(process.env.FLASH_REF_CHARS || "4000", 10);
 
-// 🔹 (옵션) Pro(verify) 입력 JSON 길이 (기본 6000 → 넉넉히 12000 권장)
+// 🔹 (옵션) Pro(verify) 입력 JSON 길이
 const VERIFY_INPUT_CHARS = parseInt(process.env.VERIFY_INPUT_CHARS || "12000", 10);
+
+// 모드별 override (안 주면 VERIFY_INPUT_CHARS 사용)
+const VERIFY_INPUT_CHARS_QV = parseInt(process.env.VERIFY_INPUT_CHARS_QV || String(VERIFY_INPUT_CHARS), 10);
+const VERIFY_INPUT_CHARS_FV = parseInt(process.env.VERIFY_INPUT_CHARS_FV || String(VERIFY_INPUT_CHARS), 10);
+const VERIFY_INPUT_CHARS_DV = parseInt(process.env.VERIFY_INPUT_CHARS_DV || String(VERIFY_INPUT_CHARS), 10);
+const VERIFY_INPUT_CHARS_CV = parseInt(process.env.VERIFY_INPUT_CHARS_CV || String(VERIFY_INPUT_CHARS), 10);
+
+// 타임아웃/실패 시 “더 줄인” 2차 시도 상한
+const VERIFY_INPUT_CHARS_MIN = parseInt(process.env.VERIFY_INPUT_CHARS_MIN || "16000", 10);
+
+// verify에 보낼 블록 수 상한(1차/2차)
+const MAX_VERIFY_BLOCKS = parseInt(process.env.MAX_VERIFY_BLOCKS || "6", 10);
+const MAX_VERIFY_BLOCKS_MIN = parseInt(process.env.MAX_VERIFY_BLOCKS_MIN || "2", 10);
+
+function getVerifyInputCharsByMode(mode) {
+  const m = String(mode || "").toLowerCase();
+  if (m === "qv") return VERIFY_INPUT_CHARS_QV;
+  if (m === "fv") return VERIFY_INPUT_CHARS_FV;
+  if (m === "dv") return VERIFY_INPUT_CHARS_DV;
+  if (m === "cv") return VERIFY_INPUT_CHARS_CV;
+  return VERIFY_INPUT_CHARS;
+}
 
 // 🔹 (옵션) DB에 저장할 Gemini 원문 텍스트 제한 (미설정이면 “무제한”)
 const MAX_LOG_TEXT_CHARS = process.env.MAX_LOG_TEXT_CHARS
@@ -414,36 +436,300 @@ function safeVerifyInputForGemini(input, maxLen) {
   };
 
   // 0) 원본 그대로 시도
-  let s0 = tryStr(input);
+  const s0 = tryStr(input);
   if (s0) return s0;
 
-  // 1) blocks evidence를 가볍게 (naver는 title/link만)
+  const toMeta = (m) => {
+    if (!m || typeof m !== "object") return null;
+    return {
+      effective_engines: m.effective_engines ?? null,
+      engines_requested: m.engines_requested ?? null,
+      engines_used: m.engines_used ?? null,
+    };
+  };
+
+  const cutArr = (v, n) => (Array.isArray(v) ? v.slice(0, n) : []);
+
+  const pickTitle = (x) => {
+    if (!x || typeof x !== "object") return null;
+    const t = x.title ?? x.display_name ?? x.name ?? x.label ?? x.headline ?? null;
+    if (Array.isArray(t)) return t[0] ?? null;
+    return t ? String(t).slice(0, 160) : null;
+  };
+
+  const pickUrl = (x) => {
+    if (!x) return null;
+    if (typeof x === "string") {
+      return x.startsWith("http://") || x.startsWith("https://") ? x : null;
+    }
+    if (typeof x.source_url === "string" && x.source_url) return x.source_url;
+    if (typeof x.url === "string" && x.url) return x.url;
+    if (typeof x.link === "string" && x.link) return x.link;
+    if (typeof x.html_url === "string" && x.html_url) return x.html_url;
+    if (typeof x.id === "string" && x.id.startsWith("http")) return x.id;
+    const doi = x.DOI || x.doi;
+    if (typeof doi === "string" && doi) return `https://doi.org/${doi}`;
+    return null;
+  };
+
+  const pickPublishedAt = (x) => {
+    if (!x || typeof x !== "object") return null;
+    return (
+      x.published_at ||
+      x.publication_date ||
+      x.published_date ||
+      x.seendate ||
+      x.published ||
+      x.created_at ||
+      x.updated_at ||
+      null
+    );
+  };
+
+  const slimEvItem = (engine, it) => {
+    if (!it) return null;
+
+    if (typeof it !== "object") {
+      const url = pickUrl(it);
+      const host = url ? _hostFromUrlish(url) : null;
+      return {
+        evidence_id: null,
+        engine,
+        title: null,
+        source_url: url,
+        source_host: host,
+        published_at: null,
+        age_days: null,
+        tier: null,
+        naver_type: null,
+        evidence_text: null,
+        value: String(it).slice(0, 280),
+      };
+    }
+
+    const source_url = it.source_url || pickUrl(it);
+    const source_host = it.source_host || (source_url ? _hostFromUrlish(source_url) : null);
+
+    return {
+      evidence_id: it.evidence_id || null,
+      engine: it.engine || engine,
+      title: it.title ? String(it.title).slice(0, 160) : pickTitle(it),
+      source_url: source_url || null,
+      source_host: source_host || null,
+      published_at: it.published_at || pickPublishedAt(it),
+      age_days: typeof it.age_days === "number" ? it.age_days : null,
+      tier: typeof it.tier === "number" ? it.tier : null,
+      naver_type: it.naver_type || null,
+      evidence_text: it.evidence_text ? String(it.evidence_text).slice(0, 600) : null,
+    };
+  };
+
+  const slimEvs = (engine, arr, topK) =>
+    cutArr(arr, topK)
+      .map((x) => slimEvItem(engine, x))
+      .filter(Boolean);
+
+  // NOTE: BLOCK_EVIDENCE_TOPK / BLOCK_NAVER_EVIDENCE_TOPK 가 파일 어딘가에 const로 있어도,
+  // 함수 호출 시점에는 초기화가 끝나 있으니 안전.
+  const BLOCK_TOPK = typeof BLOCK_EVIDENCE_TOPK === "number" ? BLOCK_EVIDENCE_TOPK : 2;
+  const NAVER_TOPK = typeof BLOCK_NAVER_EVIDENCE_TOPK === "number" ? BLOCK_NAVER_EVIDENCE_TOPK : 2;
+
   const slimBlocks = Array.isArray(input?.blocks)
     ? input.blocks.map((b) => {
-        const ev = b?.evidence || {};
-        const cutArr = (v, n) => (Array.isArray(v) ? v.slice(0, n) : []);
-        const slimNaver = cutArr(
-  ev.naver,
-  Math.min(3, (Number.isFinite(BLOCK_NAVER_EVIDENCE_TOPK) ? BLOCK_NAVER_EVIDENCE_TOPK : 3))
-).map((x) => ({
-          title: x?.title || null,
-          link: x?.link || null,
-          naver_type: x?.naver_type || null,
-          tier: x?.tier || null,
-        }));
-
+        const ev = (b && typeof b === "object" ? b.evidence : null) || {};
         return {
           id: b?.id ?? null,
-          text: (String(b?.text || "")).slice(0, 320),
-          queries: b?.queries || null,
+          text: String(b?.text || "").slice(0, 280),
+
+          // queries는 “추적/설명”용 (토큰 아끼려면 더 줄여도 됨)
+          queries: b?.queries
+            ? {
+                crossref: b.queries.crossref ? String(b.queries.crossref).slice(0, 120) : null,
+                openalex: b.queries.openalex ? String(b.queries.openalex).slice(0, 120) : null,
+                wikidata: b.queries.wikidata ? String(b.queries.wikidata).slice(0, 120) : null,
+                gdelt: b.queries.gdelt ? String(b.queries.gdelt).slice(0, 120) : null,
+                naver: Array.isArray(b.queries.naver)
+                  ? b.queries.naver.slice(0, 3).map((q) => String(q).slice(0, 120))
+                  : b.queries.naver
+                    ? [String(b.queries.naver).slice(0, 120)]
+                    : null,
+              }
+            : null,
+
           evidence: {
-          crossref: cutArr(ev.crossref, Math.min(3, (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3))),
-          openalex: cutArr(ev.openalex, Math.min(3, (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3))),
-           wikidata: cutArr(ev.wikidata, 5),
-           gdelt: cutArr(ev.gdelt, Math.min(3, (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3))),
-            naver: slimNaver,
+            crossref: slimEvs("crossref", ev.crossref, BLOCK_TOPK),
+            openalex: slimEvs("openalex", ev.openalex, BLOCK_TOPK),
+            wikidata: slimEvs("wikidata", ev.wikidata, BLOCK_TOPK),
+            gdelt: slimEvs("gdelt", ev.gdelt, BLOCK_TOPK),
+            naver: slimEvs("naver", ev.naver, NAVER_TOPK),
+            github: slimEvs("github", ev.github, BLOCK_TOPK),
           },
         };
+      })
+    : [];
+
+const toMeta = (m) => {
+  if (!m || typeof m !== "object") return null;
+  return {
+    effective_engines: m.effective_engines ?? null,
+    engines_requested: m.engines_requested ?? null,
+    engines_used: m.engines_used ?? null,
+  };
+};
+
+  // 1) meta만 남기고(partial_scores는 절대 넣지 않음) + external은 truncate
+  const slim1 = {
+    mode: input?.mode,
+    query: input?.query,
+    core_text: input?.core_text ? String(input.core_text).slice(0, 2000) : "",
+    blocks: slimBlocks,
+    external: { truncated: true },
+    meta: toMeta(input?.meta),
+  };
+
+  const s1 = tryStr(slim1);
+  if (s1) return s1;
+
+  // 2) 더 줄이기
+  const slimmer = {
+    mode: slim1.mode,
+    query: slim1.query,
+    core_text: slim1.core_text,
+    blocks: slimBlocks.slice(0, 3),
+    external: { truncated: true, reason: "too_large" },
+    meta: slim1.meta,
+  };
+
+  const s2 = tryStr(slimmer);
+  if (s2) return s2;
+
+  // 3) 진짜 최종: 최소 JSON
+  return JSON.stringify({
+  mode: input?.mode || null,
+  query: input?.query || null,
+  core_text: input?.core_text ? String(input.core_text).slice(0, 1500) : "",
+  meta: toMeta(input?.meta),
+  truncated: true,
+});
+}
+
+const pickUrl = (x) => {
+  if (!x) return null;
+  if (typeof x === "string") return (x.startsWith("http://") || x.startsWith("https://")) ? x : null;
+
+  // 공통
+  if (typeof x.source_url === "string" && x.source_url) return x.source_url;
+  if (typeof x.url === "string" && x.url) return x.url;
+  if (typeof x.link === "string" && x.link) return x.link;
+  if (typeof x.html_url === "string" && x.html_url) return x.html_url;
+
+  // openalex/wikidata에서 id가 URL인 경우
+  if (typeof x.id === "string" && x.id.startsWith("http")) return x.id;
+
+  // crossref DOI
+  const doi = x.DOI || x.doi;
+  if (typeof doi === "string" && doi) return `https://doi.org/${doi}`;
+
+  return null;
+};
+
+const pickPublishedAt = (x) => {
+  if (!x || typeof x === "string") return null;
+  return (
+    x.published_at ||
+    x.publication_date ||
+    x.published_date ||
+    x.seendate ||
+    x.published ||
+    x.created_at ||
+    x.updated_at ||
+    null
+  );
+};
+
+const slimGeneric = (engine, arr, n) =>
+  cutArr(arr, n).map((x) => {
+    const source_url = x?.source_url || pickUrl(x);
+    const source_host = x?.source_host || (source_url ? _hostFromUrlish(source_url) : null);
+
+    return {
+      evidence_id: x?.evidence_id || null,
+      engine,
+      title: x?.title || pickTitle(x),
+      source_url,
+      source_host,
+      published_at: pickPublishedAt(x),
+      age_days: (typeof x?.age_days === "number" ? x.age_days : null),
+    };
+  });
+
+const evTopK = Math.min(3, (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3));
+const naverTopK = Math.min(3, (Number.isFinite(BLOCK_NAVER_EVIDENCE_TOPK) ? BLOCK_NAVER_EVIDENCE_TOPK : 3));
+
+const slimCrossref = slimGeneric("crossref", ev.crossref, evTopK).map((o, i) => ({
+  ...o,
+  doi: (ev.crossref?.[i]?.DOI || ev.crossref?.[i]?.doi || null),
+}));
+
+const slimOpenalex = slimGeneric("openalex", ev.openalex, evTopK).map((o, i) => ({
+  ...o,
+  openalex_id: (typeof ev.openalex?.[i]?.id === "string" ? ev.openalex[i].id : null),
+  year: (typeof ev.openalex?.[i]?.publication_year === "number" ? ev.openalex[i].publication_year : null),
+}));
+
+const slimWikidata = slimGeneric("wikidata", ev.wikidata, 5).map((o, i) => ({
+  ...o,
+  entity: (ev.wikidata?.[i]?.id || ev.wikidata?.[i]?.qid || ev.wikidata?.[i]?.entity || null),
+}));
+
+const slimGdelt = slimGeneric("gdelt", ev.gdelt, evTopK).map((o, i) => ({
+  ...o,
+  source: (ev.gdelt?.[i]?.source || ev.gdelt?.[i]?.domain || null),
+}));
+
+const slimNaver = cutArr(ev.naver, naverTopK).map((x) => {
+  const source_url = x?.source_url || x?.link || pickUrl(x);
+  return {
+    evidence_id: x?.evidence_id || null,
+    engine: "naver",
+    title: x?.title || pickTitle(x),
+    source_url,
+    source_host: x?.source_host || (source_url ? _hostFromUrlish(source_url) : null),
+    naver_type: x?.naver_type || null,
+    tier: x?.tier || null,
+    published_at: pickPublishedAt(x),
+    age_days: (typeof x?.age_days === "number" ? x.age_days : null),
+  };
+});
+
+return {
+  id: b?.id ?? null,
+  text: String(b?.text || "").slice(0, 280),
+
+  // ✅ 디버깅/설명용: queries 유지(크기 제한)
+  queries: b?.queries
+    ? {
+        crossref: b.queries.crossref ? String(b.queries.crossref).slice(0, 120) : null,
+        openalex: b.queries.openalex ? String(b.queries.openalex).slice(0, 120) : null,
+        wikidata: b.queries.wikidata ? String(b.queries.wikidata).slice(0, 120) : null,
+        gdelt: b.queries.gdelt ? String(b.queries.gdelt).slice(0, 120) : null,
+        naver: Array.isArray(b.queries.naver)
+          ? b.queries.naver.slice(0, 3).map((q) => String(q).slice(0, 120))
+          : b.queries.naver
+            ? [String(b.queries.naver).slice(0, 120)]
+            : null,
+      }
+    : null,
+
+  evidence: {
+    crossref: mapSlim(ev.crossref),
+    openalex: mapSlim(ev.openalex),
+    wikidata: mapSlim(ev.wikidata),
+    gdelt: mapSlim(ev.gdelt),
+    naver: mapSlim(ev.naver),
+    github: mapSlim(ev.github),
+  },
+};
       })
     : [];
 
@@ -471,13 +757,13 @@ function safeVerifyInputForGemini(input, maxLen) {
 
   // 2) 마지막 안전망
   const slimmer = {
-    mode: slim1.mode,
-    query: slim1.query,
-    core_text: slim1.core_text,
-    blocks: slimBlocks.slice(0, 3),
-    partial_scores: slim1.partial_scores,
-    external: { truncated: true, reason: "too_large" },
-  };
+  mode: slim1.mode,
+  query: slim1.query,
+  core_text: slim1.core_text,
+  blocks: slimBlocks.slice(0, 3),
+  external: { truncated: true, reason: "too_large" },
+  meta: slim1.meta,
+};
 
   let s2 = tryStr(slimmer);
   if (s2) return s2;
@@ -490,6 +776,165 @@ function safeVerifyInputForGemini(input, maxLen) {
     truncated: true,
   });
 }
+
+// ─────────────────────────────
+// ✅ S-11-1) Conflict pool 보존/요약용 헬퍼
+//  - “응답/verify 입력”은 슬림하게 유지하되,
+//  - conflictIndex 계산용 raw conflict 풀은 절대 유실되지 않게 별도로 뽑아둔다.
+// ─────────────────────────────
+
+function s11_pickUrlAny(x) {
+  if (!x) return null;
+  if (typeof x === "string") {
+    return (x.startsWith("http://") || x.startsWith("https://")) ? x : null;
+  }
+  if (typeof x.source_url === "string" && x.source_url) return x.source_url;
+  if (typeof x.url === "string" && x.url) return x.url;
+  if (typeof x.link === "string" && x.link) return x.link;
+  if (typeof x.html_url === "string" && x.html_url) return x.html_url;
+  if (typeof x.id === "string" && x.id.startsWith("http")) return x.id;
+
+  const doi = x.DOI || x.doi;
+  if (typeof doi === "string" && doi) return `https://doi.org/${doi}`;
+  return null;
+}
+
+function s11_hostFromUrlish(url) {
+  const u = String(url || "").trim();
+  if (!u) return null;
+
+  // 기존 헬퍼가 있으면 그걸 우선 사용
+  try {
+    if (typeof _hostFromUrlish === "function") return _hostFromUrlish(u);
+  } catch {}
+
+  try {
+    const h = new URL(u).hostname || "";
+    return h ? h.replace(/^www\./i, "") : null;
+  } catch {
+    return null;
+  }
+}
+
+function s11_pickTitleAny(x) {
+  if (!x || typeof x !== "object") return null;
+  const t = x.title ?? x.display_name ?? x.name ?? x.label ?? x.headline ?? null;
+  if (Array.isArray(t)) return t[0] ? String(t[0]).slice(0, 180) : null;
+  return t ? String(t).slice(0, 180) : null;
+}
+
+function s11_slimEvidenceItem(it) {
+  // conflict pool은 “크기/토큰” 때문에 슬림한 형태로만 보존
+  if (!it) return null;
+
+  if (typeof it !== "object") {
+    const url = s11_pickUrlAny(it);
+    const host = url ? s11_hostFromUrlish(url) : null;
+    return {
+      engine: null,
+      title: null,
+      source_url: url,
+      source_host: host,
+      published_at: null,
+      age_days: null,
+      tier: null,
+      naver_type: null,
+      value: String(it).slice(0, 280),
+    };
+  }
+
+  const url = it.source_url || s11_pickUrlAny(it);
+  const host = it.source_host || (url ? s11_hostFromUrlish(url) : null);
+
+  return {
+    engine: it.engine || null,
+    title: it.title ? String(it.title).slice(0, 180) : s11_pickTitleAny(it),
+    source_url: url || null,
+    source_host: host || null,
+    published_at: it.published_at || it.publication_date || it.published_date || it.seendate || it.published || it.created_at || it.updated_at || null,
+    age_days: (typeof it.age_days === "number" ? it.age_days : null),
+    tier: (typeof it.tier === "number" ? it.tier : null),
+    naver_type: it.naver_type || null,
+    evidence_id: it.evidence_id || null,
+  };
+}
+
+function s11_collectConflictItemsFromVerifyMeta(vm) {
+  // vm.blocks[].evidence_items.conflict + (있으면) vm.evidence_items.conflict 까지 긁어서 “raw conflict pool” 생성
+  const raw = [];
+  if (!vm || typeof vm !== "object") return raw;
+
+  const blocks = Array.isArray(vm.blocks) ? vm.blocks : [];
+  for (const b of blocks) {
+    const arr = b?.evidence_items?.conflict;
+    if (Array.isArray(arr)) raw.push(...arr);
+  }
+
+  const top = vm?.evidence_items?.conflict;
+  if (Array.isArray(top)) raw.push(...top);
+
+  // 슬림 + dedupe(가능한 범위에서)
+  const out = [];
+  const seen = new Set();
+
+  for (const it of raw) {
+    const slim = s11_slimEvidenceItem(it);
+    if (!slim) continue;
+
+    const key = [
+      slim.engine || "",
+      slim.source_host || "",
+      slim.source_url || "",
+      slim.title || "",
+    ].join("|");
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(slim);
+  }
+
+  return out;
+}
+
+function s11_countByHost(items) {
+  const m = {};
+  for (const it of (Array.isArray(items) ? items : [])) {
+    const h = String(it?.source_host || "").trim();
+    if (!h) continue;
+    m[h] = (m[h] || 0) + 1;
+  }
+  return m;
+}
+
+// ✅ S-11-1 메인: “응답/verifyMeta 슬림”과 별개로 raw conflict pool 요약을 만들어 둔다.
+// - 호출부에서: const conflictPool = s11_buildConflictPoolSummary(verifyMetaRaw);
+// - 그리고 S-9 cap 이후에도 conflictPool은 그대로 유지
+function s11_buildConflictPoolSummary(vmRaw) {
+  const items = s11_collectConflictItemsFromVerifyMeta(vmRaw);
+  const by_host = s11_countByHost(items);
+  const hostEntries = Object.entries(by_host).sort((a, b) => b[1] - a[1]);
+
+  const counts = { support: 0, conflict: 0, irrelevant: 0, blocks: 0 };
+  const blocksArr = Array.isArray(vmRaw?.blocks) ? vmRaw.blocks : [];
+  counts.blocks = blocksArr.length;
+
+  for (const b of blocksArr) {
+    const ei = b?.evidence_items && typeof b.evidence_items === 'object' ? b.evidence_items : null;
+    if (!ei) continue;
+
+    counts.support += Array.isArray(ei.support) ? ei.support.length : 0;
+    counts.conflict += Array.isArray(ei.conflict) ? ei.conflict.length : 0;
+    counts.irrelevant += Array.isArray(ei.irrelevant) ? ei.irrelevant.length : 0;
+  }
+
+  return {
+    counts,
+    conflict_by_host: Object.fromEntries(hostEntries),
+    conflict_hosts_top: hostEntries.map(([h]) => h),
+    items: DEBUG ? items : undefined, // ��� ��ุ, DEBUG�� items����
+  };
+}
+
 
 // ─────────────────────────────
 // ✅ Supabase + PostgreSQL 세션
@@ -1105,10 +1550,46 @@ function calcGithubRecencyScore(repos = []) {
   return 0.8 + 0.2 * clamp01(decay);
 }
 
-function calcCompositeRecency({ mode, gdelt = [], naver = [], crossref = [], openalex = [], github = [] }) {
-  const news = calcNewsRecencyScore(gdelt, naver);
-  const paper = calcPaperRecencyScore([...(crossref || []), ...(openalex || [])]);
-  const code = calcGithubRecencyScore(github);
+function calcCompositeRecency({
+  mode,
+  recency_need = null,
+  gdelt = [],
+  naver = [],
+  crossref = [],
+  openalex = [],
+  github = [],
+  wikidata = [],
+}) {
+  // ✅ 엔진별 기본 반감기(t½, days) — 서버 고정 기본값(ENV로 덮어쓰기 가능)
+  const BASE_T_HALF_DAYS = {
+    gdelt: Number(process.env.RECENCY_T_HALF_GDELT_DAYS ?? "21"),
+    naver: Number(process.env.RECENCY_T_HALF_NAVER_DAYS ?? "21"),
+    crossref: Number(process.env.RECENCY_T_HALF_CROSSREF_DAYS ?? String(365 * 5)),
+    openalex: Number(process.env.RECENCY_T_HALF_OPENALEX_DAYS ?? String(365 * 5)),
+    github: Number(process.env.RECENCY_T_HALF_GITHUB_DAYS ?? "180"),
+    wikidata: Number(process.env.RECENCY_T_HALF_WIKIDATA_DAYS ?? String(365 * 10)),
+  };
+
+  const halfLifeDecay = (days, halfLifeDays) => {
+    const d = Number.isFinite(days) ? Math.max(0, days) : 0;
+    const h = Number.isFinite(halfLifeDays) && halfLifeDays > 0 ? halfLifeDays : 365;
+    // decay = 0.5^(days / t½)
+    return Math.pow(0.5, d / h);
+  };
+
+  const scoreFromDates = (dateMsList, halfLifeDays, floor = 0.5, span = 0.45) => {
+    const ts = (Array.isArray(dateMsList) ? dateMsList : []).filter((t) => t && Number.isFinite(t));
+    if (!ts.length) return null;
+
+    const now = Date.now();
+    const scores = ts.map((t) => {
+      const days = (now - t) / (1000 * 60 * 60 * 24);
+      const decay = halfLifeDecay(days, halfLifeDays);
+      return floor + span * clamp01(decay);
+    });
+
+    return scores.reduce((s, v) => s + v, 0) / scores.length;
+  };
 
   // ✅ “약하게” 반영 기본값(ENV로 조절 가능)
   const qvfvNewsW = Number(process.env.RECENCY_QVFV_NEWS_W ?? "0.12");
@@ -1123,27 +1604,169 @@ function calcCompositeRecency({ mode, gdelt = [], naver = [], crossref = [], ope
   let wNews = 0, wPaper = 0, wCode = 0, floor = 0.9;
 
   if (mode === "dv" || mode === "cv") {
-    wNews = dvcvNewsW; wPaper = dvcvPaperW; wCode = dvcvCodeW; floor = dvcvFloor;
+    wCode = dvcvCodeW; wPaper = dvcvPaperW; wNews = dvcvNewsW; floor = dvcvFloor;
   } else {
     wNews = qvfvNewsW; wPaper = qvfvPaperW; wCode = 0; floor = qvfvFloor;
   }
 
-  // 1 - 가중치*(1-점수) 형태(“약하게” 깎임)
+  // ✅ recency_need 라벨은 “반감기 스케일(=감쇠 속도)”에만 반영
+  const rn = String(recency_need || "").trim().toLowerCase();
+  const rnLevel = ["high", "medium", "low"].includes(rn) ? rn : "medium";
+
+  let hlNewsMul = 1.0, hlPaperMul = 1.0, hlCodeMul = 1.0, floorDelta = 0.0;
+  if (rnLevel === "high") {
+    hlNewsMul = 0.60; hlPaperMul = 0.85; hlCodeMul = 0.85; floorDelta = -0.04;
+  } else if (rnLevel === "low") {
+    hlNewsMul = 1.60; hlPaperMul = 1.15; hlCodeMul = 1.15; floorDelta = +0.03;
+  }
+
+  floor = clamp01(floor + floorDelta);
+
+  const tHalf = {
+    gdelt: Math.max(1, BASE_T_HALF_DAYS.gdelt * hlNewsMul),
+    naver: Math.max(1, BASE_T_HALF_DAYS.naver * hlNewsMul),
+    crossref: Math.max(1, BASE_T_HALF_DAYS.crossref * hlPaperMul),
+    openalex: Math.max(1, BASE_T_HALF_DAYS.openalex * hlPaperMul),
+    github: Math.max(1, BASE_T_HALF_DAYS.github * hlCodeMul),
+    wikidata: Math.max(1, BASE_T_HALF_DAYS.wikidata * hlPaperMul),
+  };
+
+  // gdelt: a.date 기반
+  const gdeltTs = (Array.isArray(gdelt) ? gdelt : [])
+    .map((a) => (a?.date ? new Date(a.date).getTime() : null))
+    .filter((t) => t && Number.isFinite(t));
+
+  // naver: naver_type==="news" && pubDate 기반
+  const naverTs = (Array.isArray(naver) ? naver : [])
+    .filter((it) => it?.naver_type === "news" && it?.pubDate)
+    .map((it) => parseNaverPubDate(it.pubDate))
+    .filter((t) => t && Number.isFinite(t));
+
+  // papers: 연도 기반(엔진별 분리)
+  const nowY = new Date().getFullYear();
+  const crossYears = (Array.isArray(crossref) ? crossref : [])
+    .map(extractPaperYear)
+    .filter((y) => Number.isFinite(y) && y >= 1900 && y <= nowY + 1);
+
+  const openYears = (Array.isArray(openalex) ? openalex : [])
+    .map(extractPaperYear)
+    .filter((y) => Number.isFinite(y) && y >= 1900 && y <= nowY + 1);
+
+  const bestYearScore = (years, halfLifeDays) => {
+    if (!Array.isArray(years) || !years.length) return null;
+    const bestY = Math.max(...years);
+    const ageYears = Math.max(0, nowY - bestY);
+    const days = ageYears * 365.25;
+    const decay = halfLifeDecay(days, halfLifeDays);
+    return 0.85 + 0.15 * clamp01(decay);
+  };
+
+  const githubTs = (Array.isArray(github) ? github : [])
+    .map((r) => (r?.updated ? new Date(r.updated).getTime() : null))
+    .filter((t) => t && Number.isFinite(t));
+
+  const wikidataTs = (Array.isArray(wikidata) ? wikidata : [])
+    .map((x) => (
+      x?.modified ? new Date(x.modified).getTime()
+      : x?.updated ? new Date(x.updated).getTime()
+      : null
+    ))
+    .filter((t) => t && Number.isFinite(t));
+
+  const score_gdelt = gdeltTs.length ? scoreFromDates(gdeltTs, tHalf.gdelt, 0.5, 0.45) : null;
+  const score_naver = naverTs.length ? scoreFromDates(naverTs, tHalf.naver, 0.5, 0.45) : null;
+  const score_crossref = crossYears.length ? bestYearScore(crossYears, tHalf.crossref) : null;
+  const score_openalex = openYears.length ? bestYearScore(openYears, tHalf.openalex) : null;
+
+  const score_github = githubTs.length
+    ? (() => {
+        const now = Date.now();
+        const daysList = githubTs.map((t) => (now - t) / (1000 * 60 * 60 * 24));
+        const decays = daysList.map((d) => halfLifeDecay(d, tHalf.github));
+        const decay = decays.reduce((s, v) => s + v, 0) / decays.length;
+        return 0.8 + 0.2 * clamp01(decay);
+      })()
+    : null;
+
+  // wikidata: 존재하면 아주 약하게만(없으면 null)
+  const score_wikidata = wikidataTs.length
+    ? (() => {
+        const newest = Math.max(...wikidataTs);
+        const days = (Date.now() - newest) / (1000 * 60 * 60 * 24);
+        const decay = halfLifeDecay(days, tHalf.wikidata);
+        return 0.9 + 0.1 * clamp01(decay);
+      })()
+    : null;
+
+  // ✅ 가중치 분배(엔진별) — 존재하는 신호에만 분배
+  const hasGdelt = typeof score_gdelt === "number";
+  const hasNaver = typeof score_naver === "number";
+  const newsDen = (hasGdelt ? 1 : 0) + (hasNaver ? 1 : 0);
+
+  const hasCross = typeof score_crossref === "number";
+  const hasOpen = typeof score_openalex === "number";
+  const paperDen = (hasCross ? 1 : 0) + (hasOpen ? 1 : 0);
+
+  const hasGithub = typeof score_github === "number";
+
+  const wGdelt = newsDen > 0 ? (wNews * (hasGdelt ? 1 : 0) / newsDen) : 0;
+  const wNaver = newsDen > 0 ? (wNews * (hasNaver ? 1 : 0) / newsDen) : 0;
+
+  const wCrossref = paperDen > 0 ? (wPaper * (hasCross ? 1 : 0) / paperDen) : 0;
+  const wOpenalex = paperDen > 0 ? (wPaper * (hasOpen ? 1 : 0) / paperDen) : 0;
+
+  const wGithub = hasGithub ? wCode : 0;
+
+  // 신호가 없으면 “중립(약하게만)” 값
+  const neutralNews = 0.95;
+  const neutralPaper = 0.95;
+  const neutralCode = 0.90;
+
+  const sGdelt = hasGdelt ? score_gdelt : neutralNews;
+  const sNaver = hasNaver ? score_naver : neutralNews;
+
+  const sCross = hasCross ? score_crossref : neutralPaper;
+  const sOpen = hasOpen ? score_openalex : neutralPaper;
+
+  const sGithub = hasGithub ? score_github : neutralCode;
+
+  // ✅ overall = 1 - Σ w_e*(1-score_e)
   const overall =
     1
-    - wNews * (1 - news)
-    - wPaper * (1 - paper)
-    - wCode * (1 - code);
+    - wGdelt * (1 - sGdelt)
+    - wNaver * (1 - sNaver)
+    - wCrossref * (1 - sCross)
+    - wOpenalex * (1 - sOpen)
+    - wGithub * (1 - sGithub);
 
   const clamped = Math.max(floor, clamp01(overall));
 
   return {
     overall: clamped,
     detail: {
-      news_recency: news,
-      paper_recency: paper,
-      code_recency: code,
-      weights: { wNews, wPaper, wCode, floor },
+      engine_scores: {
+        gdelt: score_gdelt,
+        naver: score_naver,
+        crossref: score_crossref,
+        openalex: score_openalex,
+        github: score_github,
+        wikidata: score_wikidata,
+      },
+      weights_engine: {
+        gdelt: wGdelt,
+        naver: wNaver,
+        crossref: wCrossref,
+        openalex: wOpenalex,
+        github: wGithub,
+      },
+      weights_group: { wNews, wPaper, wCode, floor },
+      half_life_days: tHalf,
+      recency_need: {
+        raw: recency_need,
+        level: rnLevel,
+        half_life_multipliers: { hlNewsMul, hlPaperMul, hlCodeMul },
+        floorDelta,
+      },
     },
   };
 }
@@ -1598,6 +2221,586 @@ function _hostFromUrlish(urlish) {
   }
 }
 
+// ─────────────────────────────
+// ✅ Evidence ID 부여 + 역매핑(추적) 유틸
+// ─────────────────────────────
+function _inferSourceUrl(engine, item) {
+  if (!item) return null;
+  if (typeof item === "string") return item.startsWith("http") ? item : null;
+
+  if (engine === "naver") return item.source_url || item.link || item.url || null;
+  if (engine === "gdelt") return item.url || item.source_url || item.link || null;
+
+  // crossref/openalex/wikidata 등 공통 heuristics
+  const u =
+    item.source_url ||
+    item.url ||
+    item.link ||
+    item.URL ||
+    (Array.isArray(item.url) ? item.url[0] : null) ||
+    (Array.isArray(item.link) && item.link[0] && item.link[0].URL ? item.link[0].URL : null);
+
+  if (u) return u;
+
+  // DOI가 있으면 doi.org로 구성
+  const doi = item.DOI || item.doi || null;
+  if (doi && typeof doi === "string") return `https://doi.org/${doi}`;
+
+  // openalex id가 URL인 경우
+  const id = item.id || item.openalex_id || null;
+  if (id && typeof id === "string" && id.startsWith("http")) return id;
+
+  return null;
+}
+
+function _inferTitle(engine, item) {
+  if (!item) return null;
+  if (typeof item === "string") return null;
+  return (
+    item.title ||
+    item.display_name ||
+    item.name ||
+    item.label ||
+    item.headline ||
+    null
+  );
+}
+
+// block.evidence[engine][] 각 item에 evidence_id/engine/source_url/source_host/title을 붙임
+function attachEvidenceIdsToBlock(block) {
+  if (!block || typeof block !== "object") return block;
+  const bid = block.id ?? "x";
+  const ev = block.evidence && typeof block.evidence === "object" ? block.evidence : null;
+  if (!ev) return block;
+
+  for (const [engine, arr] of Object.entries(ev)) {
+    if (!Array.isArray(arr)) continue;
+
+    ev[engine] = arr.map((it, idx) => {
+      const evidence_id = `b${bid}:${engine}:${idx + 1}`;
+      const source_url = _inferSourceUrl(engine, it);
+      const source_host = source_url ? _hostFromUrlish(source_url) : null;
+      const title = _inferTitle(engine, it);
+
+      if (it && typeof it === "object") {
+        return {
+          ...it,
+          evidence_id,
+          engine,
+          source_url: it.source_url || source_url,
+          source_host: it.source_host || source_host,
+          title: it.title || title,
+        };
+      }
+
+      // 문자열/기타 타입도 안전하게 object로 감쌈
+      return {
+        evidence_id,
+        engine,
+        value: it,
+        source_url,
+        source_host,
+        title,
+      };
+    });
+  }
+
+  return block;
+}
+
+// ─────────────────────────────
+// ✅ verifyInput을 확 줄이기 위한 Slim 유틸 (필드 화이트리스트)
+//   - Gemini verify에는 “필요한 최소 필드”만 전달
+//   - 서버 내부 계산/로그(partial_scores, 원본 evidence)는 그대로 유지
+// ─────────────────────────────
+function slimEvidenceItemForVerify(it) {
+  if (!it || typeof it !== "object") return null;
+
+  return {
+    evidence_id: it.evidence_id || null,
+    engine: it.engine || null,
+
+    // verify 출력/설명에 필요한 최소 필드
+    title: it.title ? String(it.title).slice(0, 160) : null,
+    source_url: it.source_url || null,
+    source_host: it.source_host || null,
+
+    // 시의성/샘플링에 도움 되는 최소 메타
+    age_days: (typeof it.age_days === "number" ? it.age_days : null),
+    published_at: it.published_at || null,
+
+    // authority 관련 최소 필드
+    tier: (typeof it.tier === "number" ? it.tier : null),
+    naver_type: it.naver_type || null,
+  };
+evidence_text: it.evidence_text ? String(it.evidence_text).slice(0, 600) : null,
+}
+
+function slimBlockForVerifyLLM(b) {
+  const ev = (b && b.evidence && typeof b.evidence === "object") ? b.evidence : {};
+  const mapSlim = (arr) => (Array.isArray(arr) ? arr.map(slimEvidenceItemForVerify).filter(Boolean) : []);
+
+  return {
+    id: b?.id ?? null,
+    text: String(b?.text || "").slice(0, 280),
+    evidence: {
+      crossref: mapSlim(ev.crossref),
+      openalex: mapSlim(ev.openalex),
+      wikidata: mapSlim(ev.wikidata),
+      gdelt: mapSlim(ev.gdelt),
+      naver: mapSlim(ev.naver),
+      github: mapSlim(ev.github),
+    },
+  };
+}
+
+// ─────────────────────────────
+// ✅ verify evidence 샘플러: 권위/신선도/유사도 우선으로 줄이기
+// ─────────────────────────────
+function scoreEvidenceItemForVerify(engine, it) {
+  if (!it) return 0;
+
+  // 기본 점수
+  let s = 0;
+
+  // 1) authority tier (있으면 최우선)
+  const tier = (typeof it?.tier === "number" ? it.tier : null);
+  if (tier !== null) {
+    // tier가 낮을수록(1=최상) 점수 높게
+    if (tier <= 1) s += 30;
+    else if (tier === 2) s += 18;
+    else if (tier === 3) s += 10;
+    else s += 4;
+  }
+
+  // 2) naver_type: 뉴스/백과/공식 문서 우대(있을 때만)
+  const nt = String(it?.naver_type || "").toLowerCase();
+  if (engine === "naver" && nt) {
+    if (nt.includes("news")) s += 10;
+    else if (nt.includes("encyc") || nt.includes("dict")) s += 8;
+    else if (nt.includes("web")) s += 4;
+  }
+
+  // 3) recency: age_days 낮을수록 우대
+  const age = (typeof it?.age_days === "number" ? it.age_days : null);
+  if (age !== null) {
+    if (age <= 7) s += 10;
+    else if (age <= 30) s += 6;
+    else if (age <= 180) s += 3;
+    else s += 1;
+  }
+
+  // 4) evidence_id/URL/host가 있으면 reliability 가점(추적 가능성)
+  if (it?.evidence_id) s += 2;
+  if (it?.source_url) s += 2;
+  if (it?.source_host) s += 1;
+
+  // 5) 최소 타이틀 존재
+  if (it?.title) s += 1;
+
+  return s;
+}
+
+function sampleEvidenceForVerify(engine, arr, k) {
+  const items = Array.isArray(arr) ? arr : [];
+  if (items.length <= k) return items;
+
+  // 점수 기반 정렬
+  const ranked = items
+    .map((it, idx) => ({ it, idx, score: scoreEvidenceItemForVerify(engine, it) }))
+    .sort((a, b) => (b.score - a.score) || (a.idx - b.idx))
+    .map((x) => x.it);
+
+  // 1개는 “최고 권위/최고점”
+  const out = ranked.slice(0, k);
+
+  // 다양성: host 중복 최소화(가능하면)
+  const seenHost = new Set();
+  const uniqOut = [];
+  for (const it of out) {
+    const h = it?.source_host ? String(it.source_host).toLowerCase() : null;
+    if (h && seenHost.has(h)) continue;
+    if (h) seenHost.add(h);
+    uniqOut.push(it);
+    if (uniqOut.length >= k) break;
+  }
+  // uniq 부족하면 원본 out로 보충
+  if (uniqOut.length < k) {
+    for (const it of out) {
+      if (uniqOut.includes(it)) continue;
+      uniqOut.push(it);
+      if (uniqOut.length >= k) break;
+    }
+  }
+
+  return uniqOut;
+}
+
+// blocksForVerify 전체에서 evidence_id -> 최소 메타 lookup 생성
+function buildEvidenceLookupFromBlocks(blocks) {
+  const map = {};
+  const arr = Array.isArray(blocks) ? blocks : [];
+  for (const b of arr) {
+    const ev = b?.evidence || {};
+    for (const [engine, items] of Object.entries(ev)) {
+      if (!Array.isArray(items)) continue;
+      for (const it of items) {
+        const id = it?.evidence_id;
+        if (!id) continue;
+        if (!map[id]) {
+          map[id] = {
+            evidence_id: id,
+            engine: it?.engine || engine,
+            source_url: it?.source_url || it?.link || it?.url || null,
+            source_host: it?.source_host || (it?.source_url ? _hostFromUrlish(it.source_url) : null),
+            title: it?.title || null,
+          };
+        }
+      }
+    }
+  }
+  return map;
+}
+
+// ─────────────────────────────
+// ✅ verifyMeta 안전 보정: evidence_ids 누락/불완전 자동 복구
+// ─────────────────────────────
+function normalizeVerifyMetaWithEvidenceIds(verifyMeta, evidenceLookup) {
+    const report = {
+    applied: false,
+    blocks_total: 0,
+    blocks_fixed: 0,
+    ids_injected: 0,
+    ids_from_items: 0,
+    ids_from_lookup_by_url: 0,
+
+    // ✅ 새로 추가: lookup에 없는(환각/오타) evidence_id 제거 카운트
+    invalid_ids_dropped: 0,
+    invalid_ids_dropped_by_kind: { support: 0, conflict: 0, irrelevant: 0 },
+
+    warnings: [],
+  };
+
+  if (!verifyMeta || typeof verifyMeta !== "object" || !Array.isArray(verifyMeta.blocks)) {
+    report.warnings.push("verifyMeta.blocks not array");
+    return { meta: verifyMeta, report };
+  }
+
+  report.applied = true;
+  report.blocks_total = verifyMeta.blocks.length;
+
+  const normalizeUrlKey = (u) => {
+    if (!u || typeof u !== "string") return null;
+    const s = u.trim();
+    if (!s) return null;
+    try {
+      const x = new URL(s);
+      x.hash = ""; // fragment 제거
+
+      // 흔한 트래킹 파라미터 제거
+      const drop = new Set(["utm_source","utm_medium","utm_campaign","utm_term","utm_content","gclid","fbclid"]);
+      for (const k of Array.from(x.searchParams.keys())) {
+        if (drop.has(k)) x.searchParams.delete(k);
+      }
+
+      // trailing slash 통일
+      const normPath = x.pathname.replace(/\/+$/, "");
+      x.pathname = normPath || "/";
+
+      // key는 origin+path+sorted query(자동 정렬은 아니지만 URL이 보통 안정적)
+      return x.toString();
+    } catch {
+      // URL 파싱 실패면 원문으로라도 매칭
+      return s;
+    }
+  };
+
+  // url(norm) -> evidence_id reverse index (lookup 기반)
+  const urlToId = {};
+  if (evidenceLookup && typeof evidenceLookup === "object") {
+    for (const [id, v] of Object.entries(evidenceLookup)) {
+      const u = v?.source_url;
+      const key = normalizeUrlKey(u);
+      if (key && !urlToId[key]) urlToId[key] = id;
+    }
+  }
+
+  const ensureIdsObj = (blk) => {
+    if (!blk.evidence_ids || typeof blk.evidence_ids !== "object") {
+      blk.evidence_ids = { support: [], conflict: [], irrelevant: [] };
+      return;
+    }
+    if (!Array.isArray(blk.evidence_ids.support)) blk.evidence_ids.support = [];
+    if (!Array.isArray(blk.evidence_ids.conflict)) blk.evidence_ids.conflict = [];
+    if (!Array.isArray(blk.evidence_ids.irrelevant)) blk.evidence_ids.irrelevant = [];
+  };
+
+  const pickIdsFromItems = (items) => {
+    const out = [];
+    const arr = Array.isArray(items) ? items : [];
+    for (const it of arr) {
+      const id = it?.evidence_id;
+      if (id && typeof id === "string") out.push(id);
+    }
+    return out;
+  };
+
+    const pickIdsFromItemsByUrl = (items) => {
+    const out = [];
+    const arr = Array.isArray(items) ? items : [];
+    for (const it of arr) {
+      const u = it?.source_url || it?.url || it?.link || null;
+      const key = normalizeUrlKey(u);
+      if (key && urlToId[key]) out.push(urlToId[key]);
+    }
+    return out;
+  };
+
+  const uniq = (arr, limit = 16) => {
+    const set = new Set();
+    const out = [];
+    for (const x of (Array.isArray(arr) ? arr : [])) {
+      const s = String(x || "").trim();
+      if (!s) continue;
+      if (set.has(s)) continue;
+      set.add(s);
+      out.push(s);
+      if (out.length >= limit) break;
+    }
+    return out;
+  };
+
+  const hasLookup = evidenceLookup && typeof evidenceLookup === "object";
+
+  // (선택) lookup이 없을 때 warning 남기기
+  if (!hasLookup) report.warnings.push("evidenceLookup missing; invalid id filtering skipped");
+
+  const filterValidIds = (ids, kind) => {
+    const arr = Array.isArray(ids) ? ids : [];
+    if (!hasLookup) {
+      // lookup이 없으면 필터링 못함(기존 동작 유지)
+      return { kept: arr, dropped: [] };
+    }
+
+    const kept = [];
+    const dropped = [];
+
+    for (const x of arr) {
+      const id = String(x || "").trim();
+      if (!id) continue;
+      if (evidenceLookup[id]) kept.push(id);
+      else dropped.push(id);
+    }
+
+    return { kept: uniq(kept, 12), dropped: uniq(dropped, 12) };
+  };
+
+  for (const blk of verifyMeta.blocks) {
+    if (!blk || typeof blk !== "object") continue;
+
+    ensureIdsObj(blk);
+
+    const before = {
+      s: blk.evidence_ids.support.length,
+      c: blk.evidence_ids.conflict.length,
+      i: blk.evidence_ids.irrelevant.length,
+    };
+
+    const evItems = blk.evidence_items || null;
+
+    // 1) evidence_items에 evidence_id가 있으면 그걸 1순위로 채움
+    if (before.s === 0) {
+      const ids = pickIdsFromItems(evItems?.support);
+      if (ids.length) {
+        blk.evidence_ids.support = uniq(ids, 12);
+        report.ids_injected += blk.evidence_ids.support.length;
+        report.ids_from_items += blk.evidence_ids.support.length;
+      }
+    }
+    if (before.c === 0) {
+      const ids = pickIdsFromItems(evItems?.conflict);
+      if (ids.length) {
+        blk.evidence_ids.conflict = uniq(ids, 12);
+        report.ids_injected += blk.evidence_ids.conflict.length;
+        report.ids_from_items += blk.evidence_ids.conflict.length;
+      }
+    }
+    if (before.i === 0) {
+      const ids = pickIdsFromItems(evItems?.irrelevant);
+      if (ids.length) {
+        blk.evidence_ids.irrelevant = uniq(ids, 12);
+        report.ids_injected += blk.evidence_ids.irrelevant.length;
+        report.ids_from_items += blk.evidence_ids.irrelevant.length;
+      }
+    }
+
+    // 2) evidence_id가 없으면 source_url로 lookup 매칭(2순위)
+    if ((blk.evidence_ids.support?.length || 0) === 0) {
+      const ids = pickIdsFromItemsByUrl(evItems?.support);
+      if (ids.length) {
+        blk.evidence_ids.support = uniq(ids, 12);
+        report.ids_injected += blk.evidence_ids.support.length;
+        report.ids_from_lookup_by_url += blk.evidence_ids.support.length;
+      }
+    }
+    if ((blk.evidence_ids.conflict?.length || 0) === 0) {
+      const ids = pickIdsFromItemsByUrl(evItems?.conflict);
+      if (ids.length) {
+        blk.evidence_ids.conflict = uniq(ids, 12);
+        report.ids_injected += blk.evidence_ids.conflict.length;
+        report.ids_from_lookup_by_url += blk.evidence_ids.conflict.length;
+      }
+    }
+    if ((blk.evidence_ids.irrelevant?.length || 0) === 0) {
+      const ids = pickIdsFromItemsByUrl(evItems?.irrelevant);
+      if (ids.length) {
+        blk.evidence_ids.irrelevant = uniq(ids, 12);
+        report.ids_injected += blk.evidence_ids.irrelevant.length;
+        report.ids_from_lookup_by_url += blk.evidence_ids.irrelevant.length;
+      }
+    }
+
+       // ✅ 3) invalid evidence_ids drop (lookup에 없는 값 제거)
+    let droppedAny = false;
+
+    const fs = filterValidIds(blk.evidence_ids.support, "support");
+    const fc = filterValidIds(blk.evidence_ids.conflict, "conflict");
+    const fi = filterValidIds(blk.evidence_ids.irrelevant, "irrelevant");
+
+    if (fs.dropped.length || fc.dropped.length || fi.dropped.length) {
+      droppedAny = true;
+
+      // 블록에 "무엇이 드롭됐는지" 소량만 남김(너무 커지지 않게)
+      blk.invalid_evidence_ids_dropped = {
+        support: fs.dropped.slice(0, 8),
+        conflict: fc.dropped.slice(0, 8),
+        irrelevant: fi.dropped.slice(0, 8),
+      };
+
+      const ds = fs.dropped.length;
+      const dc = fc.dropped.length;
+      const di = fi.dropped.length;
+
+      report.invalid_ids_dropped += (ds + dc + di);
+      report.invalid_ids_dropped_by_kind.support += ds;
+      report.invalid_ids_dropped_by_kind.conflict += dc;
+      report.invalid_ids_dropped_by_kind.irrelevant += di;
+
+      // 실제 evidence_ids는 “유효한 것만” 유지
+      blk.evidence_ids.support = fs.kept;
+      blk.evidence_ids.conflict = fc.kept;
+      blk.evidence_ids.irrelevant = fi.kept;
+    }
+
+    const after = {
+      s: blk.evidence_ids.support.length,
+      c: blk.evidence_ids.conflict.length,
+      i: blk.evidence_ids.irrelevant.length,
+    };
+
+    const fixed =
+      (before.s === 0 && after.s > 0) ||
+      (before.c === 0 && after.c > 0) ||
+      (before.i === 0 && after.i > 0) ||
+      droppedAny;
+
+    if (fixed) report.blocks_fixed += 1;
+  }
+
+  return { meta: verifyMeta, report };
+}
+
+// ─────────────────────────────
+// S-11-1) Raw conflict pool helpers (compute BEFORE response caps)
+// ─────────────────────────────
+function _deepCloneJson(obj) {
+  try {
+    return obj == null ? obj : JSON.parse(JSON.stringify(obj));
+  } catch {
+    return null;
+  }
+}
+
+function _pushArray(dst, v) {
+  if (!dst) return;
+  if (!v) return;
+  if (Array.isArray(v)) dst.push(...v);
+  else dst.push(v);
+}
+
+function _getEvidenceHost(ev) {
+  const h = ev?.host || ev?.source_host || ev?.sourceHost || null;
+  if (h) return _stripWww(String(h));
+
+  const u = ev?.url || ev?.source_url || ev?.sourceUrl || ev?.link || null;
+  return u ? _stripWww(_hostFromUrlish(u)) : "";
+}
+
+function _collectVerifyMetaPools(vm) {
+  const blocks = Array.isArray(vm?.blocks) ? vm.blocks : [];
+  const pools = {
+    support: [],
+    conflict: [],
+    irrelevant: [],
+    by_host: {}, // conflict host distribution
+    counts: { support: 0, conflict: 0, irrelevant: 0, blocks: blocks.length },
+  };
+
+  for (const b of blocks) {
+    const ei = b?.evidence_items || {};
+    const es = Array.isArray(ei.support) ? ei.support : [];
+    const ec = Array.isArray(ei.conflict) ? ei.conflict : [];
+    const eiIr = Array.isArray(ei.irrelevant) ? ei.irrelevant : [];
+
+    const s = b?.supportItems ?? b?.support_items ?? b?.support ?? b?.supports ?? [];
+    const c =
+      b?.conflictItems ??
+      b?.conflict_items ??
+      b?.conflict ??
+      b?.contradict ??
+      b?.contradicts ??
+      [];
+    const i = b?.irrelevantItems ?? b?.irrelevant_items ?? b?.irrelevant ?? b?.irrelevants ?? [];
+
+    _pushArray(pools.support, s);
+    _pushArray(pools.support, es);
+    _pushArray(pools.conflict, c);
+    _pushArray(pools.conflict, ec);
+    _pushArray(pools.irrelevant, i);
+    _pushArray(pools.irrelevant, eiIr);
+  }
+
+  const topEi = vm?.evidence_items || {};
+  if (topEi && typeof topEi === "object") {
+    _pushArray(pools.support, Array.isArray(topEi.support) ? topEi.support : []);
+    _pushArray(pools.conflict, Array.isArray(topEi.conflict) ? topEi.conflict : []);
+    _pushArray(pools.irrelevant, Array.isArray(topEi.irrelevant) ? topEi.irrelevant : []);
+  }
+
+  pools.counts.support = pools.support.length;
+  pools.counts.conflict = pools.conflict.length;
+  pools.counts.irrelevant = pools.irrelevant.length;
+
+  for (const ev of pools.conflict) {
+    const host = _getEvidenceHost(ev);
+    if (!host) continue;
+    pools.by_host[host] = (pools.by_host[host] || 0) + 1;
+  }
+
+  return pools;
+}
+
+function buildRawConflictPoolSummary(rawVerifyMeta, maxHosts = 12) {
+  const pools = _collectVerifyMetaPools(rawVerifyMeta || {});
+  const hostEntries = Object.entries(pools.by_host).sort((a, b) => b[1] - a[1]);
+
+  return {
+    counts: pools.counts,
+    conflict_by_host: Object.fromEntries(hostEntries.slice(0, maxHosts)),
+    conflict_hosts_top: hostEntries.slice(0, maxHosts).map(([h]) => h),
+  };
+}
+
 function hostLooksOfficial(host) {
   if (!host) return false;
   const h = host.toLowerCase();
@@ -1618,6 +2821,89 @@ function _hostMatchesDomain(host, domain) {
   if (!host || !domain) return false;
   if (host === domain) return true;
   return host.endsWith("." + domain);
+}
+
+// ─────────────────────────────
+// ✅ Authority override (실제 근거 도메인 기반)
+// ─────────────────────────────
+const AUTHORITY_DOMAINS = [
+  "kostat.go.kr",
+  "data.go.kr",
+  "mois.go.kr",
+  "oecd.org",
+  "un.org",
+  "unstats.un.org",
+  "worldbank.org",
+  "imf.org",
+  "law.go.kr",
+];
+
+function isAuthorityHost(host) {
+  const h = _stripWww(host);
+  if (!h) return false;
+  return AUTHORITY_DOMAINS.some((d) => _hostMatchesDomain(h, d));
+}
+
+function computeAuthoritySignalsFromNaverItems(items) {
+  const list = Array.isArray(items) ? items : [];
+  const hits = [];
+
+  for (const it of list) {
+    const host = _stripWww(
+      String(it?.source_host || _hostFromUrlish(it?.source_url || it?.link || ""))
+    );
+
+    const tier = String(it?.tier || "").trim();
+    const whitelisted = !!it?.whitelisted;
+
+    const isTier1Authority = whitelisted && tier === "tier1";
+    const isExplicitAuthority = isAuthorityHost(host);
+
+    if (host && (isTier1Authority || isExplicitAuthority)) {
+      hits.push({
+        host,
+        tier: tier || null,
+        whitelisted,
+        naver_type: it?.naver_type || null,
+        source_url: it?.source_url || it?.link || null,
+      });
+    }
+  }
+
+  // host 기준 dedupe
+  const seen = new Set();
+  const uniqHits = [];
+  for (const h of hits) {
+    if (seen.has(h.host)) continue;
+    seen.add(h.host);
+    uniqHits.push(h);
+  }
+
+  const tier1Count = uniqHits.filter((x) => x.tier === "tier1").length;
+
+  return {
+    has_authority: uniqHits.length > 0,
+    authority_count: uniqHits.length,
+    tier1_count: tier1Count,
+    authority_hosts: uniqHits.slice(0, 8).map((x) => x.host),
+    authority_examples: uniqHits.slice(0, 3),
+  };
+}
+
+function computeAuthoritySignalsFromBlocks(blocks, fallbackNaver = []) {
+  const arr = Array.isArray(blocks) ? blocks : [];
+  const pool = [];
+
+  for (const b of arr) {
+    const n = b?.evidence?.naver;
+    if (Array.isArray(n) && n.length) pool.push(...n);
+  }
+
+  if (!pool.length && Array.isArray(fallbackNaver) && fallbackNaver.length) {
+    pool.push(...fallbackNaver);
+  }
+
+  return computeAuthoritySignalsFromNaverItems(pool);
 }
 
 function loadNaverWhitelist() {
@@ -2821,22 +4107,68 @@ function pickTopNaverEvidenceForVerify({
 }) {
   const list = Array.isArray(items) ? items : [];
   const K = Number.isFinite(topK) && topK > 0 ? topK : 3;
-  const minRel = Number.isFinite(minRelevance) ? minRelevance : 0.15;
+  const minRelBase = Number.isFinite(minRelevance) ? minRelevance : 0.15;
+
+  // env로 미세튜닝 가능
+  const WEB_TIER_MAX = (() => {
+    const v = parseInt(process.env.NAVER_WEB_TIER_MAX || "3", 10);
+    return Number.isFinite(v) ? v : 3;
+  })();
+
+  const WEB_REL_BONUS = (() => {
+    const v = parseFloat(process.env.NAVER_WEB_REL_BONUS || "0.10");
+    return Number.isFinite(v) ? v : 0.10;
+  })();
+
+  const PER_HOST_MAX = (() => {
+    const v = parseInt(process.env.NAVER_EVID_PER_HOST || "1", 10);
+    return Number.isFinite(v) ? Math.max(1, v) : 1;
+  })();
+
+  const TIER1_PER_HOST_MAX = (() => {
+    const v = parseInt(process.env.NAVER_EVID_PER_HOST_TIER1 || "2", 10);
+    return Number.isFinite(v) ? Math.max(1, v) : 2;
+  })();
 
   const kw = extractKeywords([query, blockText, ...(naverQueries || [])].join(" "), 14);
   const needNum = hasNumberLike(blockText) || hasNumberLike(query);
 
   const scored = [];
-  for (const it of list) {
-    const isWhitelisted = !!it?.tier; // ✅ 화이트리스트 밖은 evidence 제외(표시는 OK)
-    if (!isWhitelisted) continue;
 
-    if (!allowNews && it?.naver_type === "news") continue; // ✅ 시사성 질문에서만 news 허용
+  for (const it of list) {
+    if (!it || typeof it !== "object") continue;
+
+    const url = String(it?.source_url || it?.link || "").trim();
+    if (!url) continue;
+    if (!isSafeExternalHttpUrl(url)) continue;
+
+    const host = _stripWww(String(it?.source_host || _hostFromUrlish(url) || "").trim().toLowerCase());
+    if (!host) continue;
+
+    const type = String(it?.naver_type || "").trim().toLowerCase();
+    if (!allowNews && type === "news") continue;
+
+    const tierStr = String(it?.tier || "").trim().toLowerCase(); // "tier1" ~ "tier5"
+    const m = tierStr.match(/tier(\d)/);
+    const tierNum = m ? parseInt(m[1], 10) : null;
+
+    const isWhitelisted = !!it?.whitelisted || (tierStr.startsWith("tier") && tierNum != null);
+    const isAuthority = isAuthorityHost(host);
+
+    // ✅ hard filter 핵심: (whitelist or authority)만 evidence 후보로
+    if (!isWhitelisted && !isAuthority) continue;
+
+    // ✅ web은 저티어(4~5) 제거(단, authority host는 예외)
+    if (type === "web" && !isAuthority) {
+      if (tierNum != null && tierNum > WEB_TIER_MAX) continue;
+    }
 
     const text = `${it?.title || ""} ${it?.desc || ""}`;
     const rel = keywordHitRatio(text, kw);
 
-    if (rel < minRel) continue; // ✅ 무관한 결과(의대/비트코인 등) evidence에서 제외
+    // ✅ web은 관련도 기준을 더 올림
+    const minRel = type === "web" ? Math.min(0.95, minRelBase + WEB_REL_BONUS) : minRelBase;
+    if (rel < minRel) continue;
 
     const baseW =
       (typeof it?.tier_weight === "number" && Number.isFinite(it.tier_weight) ? it.tier_weight : 1) *
@@ -2845,15 +4177,40 @@ function pickTopNaverEvidenceForVerify({
     const hasNum = hasNumberLike(text);
     const numFactor = needNum ? (hasNum ? 1.15 : 0.8) : 1.0;
 
-    // 최종 점수: (도메인/타입 가중치) × 관련도 × (수치근거 우선)
     const score = baseW * (0.6 + 0.4 * rel) * numFactor;
 
-    scored.push({ it, score });
+    scored.push({
+      it: {
+        ...it,
+        source_url: it?.source_url || url,
+        source_host: it?.source_host || host,
+      },
+      score,
+      host,
+      tierNum,
+    });
   }
 
   scored.sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, K).map((x) => x.it);
+  // ✅ 동일 host 과다중복 방지(다양성 확보)
+  const picked = [];
+  const hostCount = {};
+
+  for (const s of scored) {
+    if (picked.length >= K) break;
+
+    const h = s.host || "unknown";
+    const limit = (s.tierNum === 1 ? TIER1_PER_HOST_MAX : PER_HOST_MAX);
+
+    hostCount[h] = hostCount[h] || 0;
+    if (hostCount[h] >= limit) continue;
+
+    hostCount[h] += 1;
+    picked.push(s.it);
+  }
+
+  return picked;
 }
 
 async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, modelName, userId }) {
@@ -2865,18 +4222,26 @@ async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, model
 
  const prompt = `
 너는 Cross-Verified AI의 "전처리 엔진"이다.
-목표: (QV) 답변 생성 + 의미블록 분해 + 블록별 외부검증 엔진 쿼리 생성을 한 번에 수행한다.
+목표:
+- (QV) 한국어 답변(answer_ko) 생성 → 그 답변에서 “그대로 복사한 문장”으로 의미블록(blocks) 구성 → 블록별 외부검증 엔진 쿼리 생성
+- (FV) core_text(사실문장)에서 “그대로 복사한 문장”으로 의미블록(blocks) 구성 → 블록별 외부검증 엔진 쿼리 생성 (답변 생성 X)
 
 [입력]
 - mode: ${mode}                // "qv" | "fv"
 - user_query: ${query}
-- core_text(FV에서만 사용): ${mode === "fv" ? baseCore : "(QV에서는 무시)"}
+- core_text(FV에서만 사용): ${mode === "fv" ? baseCore : ""}
+
+[검증 대상 텍스트 정의(핵심)]
+- mode=="qv": 검증 대상 텍스트 = answer_ko (네가 방금 생성한 답변 전체)
+- mode=="fv": 검증 대상 텍스트 = core_text
 
 [절대 규칙 — 위반하면 실패]
 1) 출력은 JSON 1개만. (설명/접두어/접미어/코드블록/마크다운/줄바꿈 코멘트 모두 금지)
 2) JSON은 반드시 double quote(")만 사용하고, trailing comma 금지.
 3) blocks는 반드시 1~${QVFV_MAX_BLOCKS}개.
-4) block.text는 "검증 대상 텍스트"에서 문장을 그대로 복사해서 사용(의역/요약/새 주장 추가 금지).
+4) block.text는 반드시 “검증 대상 텍스트”에서 문장을 그대로 복사해서 사용(의역/요약/새 주장 추가 금지).
+   - QV: answer_ko 안의 문장을 그대로 복사해야 함(= block.text가 answer_ko에 포함되어야 함)
+   - FV: core_text 안의 문장을 그대로 복사해야 함
 5) naver 쿼리에는 '+'를 절대 포함하지 말 것.
 
 [QV 규칙]
@@ -2886,24 +4251,24 @@ async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, model
 
 [FV 규칙]
 - answer_ko는 반드시 "" (빈 문자열).
-- 검증 대상 텍스트는 core_text(없으면 user_query) 그대로.
 
 [blocks 규칙]
 - 각 블록은 "주장/수치/조건" 단위로 1~2문장씩 묶는다.
 - 각 block.text는 30~260자 내로 유지(너무 짧거나 너무 길면 실패).
 - id는 1부터 순서대로.
-
-[engine_queries 규칙]
-- crossref/openalex: 영어 키워드/짧은 구문(2~10단어, 90자 이내)
-- wikidata: 한국어 엔티티/명사 중심(2~8단어, 50자 이내)
-- gdelt: 영어 boolean 쿼리(AND/OR 괄호 허용, 120자 이내)
-- naver: 한국어 짧은 키워드열 배열 1~${BLOCK_NAVER_MAX_QUERIES}개 (각 원소 30자 이내, '+' 금지)
+- engine_queries는 각 엔진에 맞게 작성:
+  - crossref/openalex/gdelt: 영어 키워드/짧은 구문(2~10단어, 90자 이내)
+  - wikidata: 한국어 엔티티/명사 중심
+  - naver: 한국어 검색어 1~${BLOCK_NAVER_MAX_QUERIES}개(각 30자 이내, '+' 절대 금지)
 
 [출력 JSON 스키마]
 {
   "answer_ko": "...",          // FV는 ""
-  "korean_core": "...",
-  "english_core": "...",
+  "topic": "...",              // 질문 토픽(짧게)
+  "question_type": "other",    // fact|howto|opinion|explain|compare|other
+  "recency_need": "medium",    // high|medium|low
+  "korean_core": "...",        // 한국어 핵심(짧게)
+  "english_core": "...",       // 영어 핵심(짧게)
   "blocks": [
     {
       "id": 1,
@@ -2935,6 +4300,19 @@ async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, model
   try { parsed = JSON.parse(jsonText); } catch { parsed = null; }
 
   const answer_ko = String(parsed?.answer_ko || "").trim();
+
+  const topic = String(parsed?.topic || "").trim();
+  const question_type_raw = String(parsed?.question_type || "").trim().toLowerCase();
+  const recency_need_raw = String(parsed?.recency_need || "").trim().toLowerCase();
+
+  const question_type = ["fact","howto","opinion","explain","compare","other"].includes(question_type_raw)
+    ? question_type_raw
+    : "other";
+
+  const recency_need = ["high","medium","low"].includes(recency_need_raw)
+    ? recency_need_raw
+    : "medium";
+
   const korean_core = String(parsed?.korean_core || "").trim() || normalizeKoreanQuestion(baseCore);
   const english_core = String(parsed?.english_core || "").trim() || String(query || "").trim();
 
@@ -2984,7 +4362,10 @@ let blocks = blocksRaw
   })
   .filter((b) => b.text);
 
- // ✅ 최종 안전망: 0개면 base 텍스트로 1개 생성
+ let blocks_source = (mode === "qv" ? "answer_ko" : "core_text");
+let blocks_rebuilt = false;
+
+// ✅ 최종 안전망: 0개면 base 텍스트로 1개 생성
 if (blocks.length === 0) {
   const seedText =
     (mode === "qv")
@@ -3008,14 +4389,77 @@ if (blocks.length === 0) {
   ].filter((b) => b.text);
 }
 
-  return {
-    answer_ko: (mode === "qv" ? (answer_ko || "") : ""),
-    korean_core,
-    english_core,
-    blocks, // ✅ 여기서 항상 2개 이상이 되도록 보장됨
-  };
+// ✅ (S-8) QV에서는 blocks.text가 반드시 answer_ko에서 “그대로 복사된 문장”이어야 함
+// - 모델이 규칙을 어기면, 서버가 answer_ko를 2개로 쪼개서 blocks를 재구성
+try {
+  if (mode === "qv") {
+    const target = normSpace(answer_ko || "");
+    if (target && Array.isArray(blocks) && blocks.length > 0) {
+      const hasBad = blocks.some((b) => {
+        const t = normSpace(b?.text || "");
+        if (!t) return false;
+        return !target.includes(t);
+      });
+
+      if (hasBad) {
+        const [a, b] = splitIntoTwoParts(target);
+
+        const tA = clipBlockText(String(a || "").trim(), 260);
+        const tB = clipBlockText(String(b || "").trim(), 260);
+
+        const rebuilt = [
+          tA
+            ? {
+                id: 1,
+                text: tA,
+                engine_queries: {
+                  crossref: english_core,
+                  openalex: english_core,
+                  wikidata: korean_core,
+                  gdelt: english_core,
+                  naver: fallbackNaverQueryFromText(korean_core).slice(0, BLOCK_NAVER_MAX_QUERIES),
+                },
+              }
+            : null,
+          tB
+            ? {
+                id: 2,
+                text: tB,
+                engine_queries: {
+                  crossref: english_core,
+                  openalex: english_core,
+                  wikidata: korean_core,
+                  gdelt: english_core,
+                  naver: fallbackNaverQueryFromText(korean_core).slice(0, BLOCK_NAVER_MAX_QUERIES),
+                },
+              }
+            : null,
+        ].filter(Boolean);
+
+        if (rebuilt.length > 0) {
+          blocks = rebuilt;
+          blocks_source = "answer_ko(rebuilt)";
+          blocks_rebuilt = true;
+        }
+      }
+    }
+  }
+} catch (e) {
+  if (DEBUG) console.warn("⚠️ (S-8) qv blocks verbatim guard failed:", e?.message || e);
 }
 
+    return {
+    answer_ko: (mode === "qv" ? (answer_ko || "") : ""),
+    topic,
+    question_type,
+    recency_need,
+    korean_core,
+    english_core,
+    blocks_source,
+    blocks_rebuilt,
+    blocks, // ✅ 최종 blocks
+  };
+}
 
 // ─────────────────────────────
 // ✅ 엔진 보정계수 조회 + 가중치 계산
@@ -3284,7 +4728,10 @@ switch (safeMode) {
       qvfvPre = pre;
       qvfvPreDone = true;
 
-      partial_scores.qvfv_pre = {
+            partial_scores.qvfv_pre = {
+        topic: pre.topic ?? null,
+        question_type: pre.question_type ?? null,
+        recency_need: pre.recency_need ?? null,
         korean_core: pre.korean_core,
         english_core: pre.english_core,
         blocks_count: pre.blocks.length,
@@ -3441,28 +4888,82 @@ if (!naverQueries.length) {
   external.gdelt.push(...(gdPack.result || []));
   external.naver.push(...(naverItemsAll || []));
 
-  blocksForVerify.push({
-    id: b.id,
-    text: b.text,
-    queries: {
-      crossref: qCrossref,
-      openalex: qOpenalex,
-      wikidata: qWikidata,
-      gdelt: qGdelt,
-      naver: naverQueries
-    },
-    evidence: {
-      crossref: topArr(crPack.result, BLOCK_EVIDENCE_TOPK),
-      openalex: topArr(oaPack.result, BLOCK_EVIDENCE_TOPK),
-      wikidata: topArr(wdPack.result, 5), // wikidata는 구조상 조금 더 허용
-      gdelt: gdeltForVerify,
-      naver: naverItemsForVerify,
+  const bfv = {
+  id: b.id,
+  text: b.text,
+  queries: {
+    crossref: qCrossref,
+    openalex: qOpenalex,
+    wikidata: qWikidata,
+    gdelt: qGdelt,
+    naver: naverQueries,
+  },
+  evidence: {
+    crossref: topArr(crPack.result, BLOCK_EVIDENCE_TOPK),
+    openalex: topArr(oaPack.result, BLOCK_EVIDENCE_TOPK),
+    wikidata: topArr(wdPack.result, 5),
+    gdelt: gdeltForVerify,
+    naver: naverItemsForVerify,
+  },
+};
+
+// ✅ evidence_id/source_url/source_host/title 부착
+attachEvidenceIdsToBlock(bfv);
+
+// ✅ verify 입력 축소: 엔진별 근거를 “권위/신선도 우선”으로 K개만 남김
+const K_VERIFY_EVID = parseInt(process.env.VERIFY_EVID_TOPK || "2", 10);
+const kE = Number.isFinite(K_VERIFY_EVID) ? Math.max(1, K_VERIFY_EVID) : 2;
+
+bfv.evidence.crossref = sampleEvidenceForVerify("crossref", bfv.evidence.crossref, kE);
+bfv.evidence.openalex = sampleEvidenceForVerify("openalex", bfv.evidence.openalex, kE);
+bfv.evidence.wikidata = sampleEvidenceForVerify("wikidata", bfv.evidence.wikidata, Math.min(2, kE));
+bfv.evidence.gdelt = sampleEvidenceForVerify("gdelt", bfv.evidence.gdelt, kE);
+bfv.evidence.naver = sampleEvidenceForVerify("naver", bfv.evidence.naver, Math.max(1, kE));
+
+blocksForVerify.push(bfv);
+
+// (관측) 각 블록별 verify-evidence 사이즈 기록(응답엔 요약만)
+// ✅ DEBUG일 때만 생성/누적(운영에서는 메모리/CPU 낭비 방지)
+if (DEBUG) {
+  if (!partial_scores.verify_evidence_sampling) partial_scores.verify_evidence_sampling = [];
+  partial_scores.verify_evidence_sampling.push({
+    block_id: bfv.id,
+    topk: kE,
+    counts: {
+      crossref: (bfv.evidence.crossref || []).length,
+      openalex: (bfv.evidence.openalex || []).length,
+      wikidata: (bfv.evidence.wikidata || []).length,
+      gdelt: (bfv.evidence.gdelt || []).length,
+      naver: (bfv.evidence.naver || []).length,
     },
   });
 }
+}
+
+// ✅ 운영에서는 sampling 로그는 아예 제거
+if (!DEBUG) partial_scores.verify_evidence_sampling = null;
+
+// ✅ external.naver는 스코어/시그널(권위/티어)용이므로: 안전URL + (whitelist/authority)만 남김
+external.naver = Array.isArray(external.naver)
+  ? external.naver.filter((it) => {
+      const url = String(it?.source_url || it?.link || "").trim();
+      if (!url || !isSafeExternalHttpUrl(url)) return false;
+
+      const host = _stripWww(String(it?.source_host || _hostFromUrlish(url) || "").trim().toLowerCase());
+      const tierStr = String(it?.tier || "").trim().toLowerCase();
+      const isWhitelisted = !!it?.whitelisted || tierStr.startsWith("tier");
+      const isAuthority = host ? isAuthorityHost(host) : false;
+
+      return isWhitelisted || isAuthority;
+    })
+  : [];
 
 external.naver = dedupeByLink(external.naver).slice(0, NAVER_MULTI_MAX_ITEMS);
+
 qvfvBlocksForVerifyFull = blocksForVerify;
+
+// ✅ Authority signals (실제 근거 출처 기반)
+partial_scores.authority_signals = computeAuthoritySignalsFromBlocks(blocksForVerify, external.naver);
 
 // ✅ 엔진별 쿼리를 partial_scores.engine_queries에 “전부” 저장
 partial_scores.engine_queries = {
@@ -3498,25 +4999,48 @@ partial_scores.engines_requested = enginesRequested;
 partial_scores.engines_used = enginesUsed;
 partial_scores.engines_excluded = enginesExcluded;
 
-partial_scores.blocks_for_verify = blocksForVerify.map((x) => ({
-      id: x.id,
-      text: String(x.text || "").slice(0, 400),
-      queries: x.queries,
-      evidence_counts: {
-        crossref: (x.evidence?.crossref || []).length,
-        openalex: (x.evidence?.openalex || []).length,
-        wikidata: (x.evidence?.wikidata || []).length,
-        gdelt: (x.evidence?.gdelt || []).length,
-        naver: (x.evidence?.naver || []).length,
-      },
-    }));
+const blocksForVerifySlim = blocksForVerify.map((x) => ({
+  id: x.id,
+  text: String(x.text || "").slice(0, 240), // ✅ 운영 payload 줄이기(원하면 120까지 더 줄여도 됨)
+  queries: x.queries,
+  evidence_counts: {
+    crossref: (x.evidence?.crossref || []).length,
+    openalex: (x.evidence?.openalex || []).length,
+    wikidata: (x.evidence?.wikidata || []).length,
+    gdelt: (x.evidence?.gdelt || []).length,
+    naver: (x.evidence?.naver || []).length,
+  },
+}));
 
-    const rec = calcCompositeRecency({
+// ✅ 항상 내보내는 요약(가벼움)
+const totalEvidenceCounts = { crossref: 0, openalex: 0, wikidata: 0, gdelt: 0, naver: 0 };
+for (const b of blocksForVerifySlim) {
+  const c = b?.evidence_counts || {};
+  totalEvidenceCounts.crossref += (c.crossref || 0);
+  totalEvidenceCounts.openalex += (c.openalex || 0);
+  totalEvidenceCounts.wikidata += (c.wikidata || 0);
+  totalEvidenceCounts.gdelt += (c.gdelt || 0);
+  totalEvidenceCounts.naver += (c.naver || 0);
+}
+
+partial_scores.blocks_for_verify_summary = {
+  blocks_total: blocksForVerifySlim.length,
+  sample_block_ids: blocksForVerifySlim.slice(0, 6).map((b) => b?.id ?? null),
+  total_evidence_counts: totalEvidenceCounts,
+  detail_included: !!DEBUG,
+};
+
+// ✅ DEBUG일 때만 상세 제공
+partial_scores.blocks_for_verify = DEBUG ? blocksForVerifySlim : null;
+
+const rec = calcCompositeRecency({
   mode: safeMode,
+  recency_need: qvfvPre?.recency_need,
   gdelt: external.gdelt,
   naver: external.naver,
   crossref: external.crossref,
   openalex: external.openalex,
+  wikidata: external.wikidata,
 });
 partial_scores.recency = rec.overall;
 partial_scores.recency_detail = rec.detail;
@@ -3537,34 +5061,505 @@ partial_scores.recency_detail = rec.detail;
       }
     }
 
-    // ✅ 엔진별 유효 evidence 개수 집계 + E_eff 정의
-    const engineNamesForEff = ["crossref", "openalex", "wikidata", "gdelt", "naver", "github"];
-    const effectiveCounts = {};
+// ✅ 엔진별 유효 evidence 개수 집계 + E_eff 정의 (verify irrelevant 반영: 1단계 naver만)
+const engineNamesForEff = ["crossref", "openalex", "wikidata", "gdelt", "naver", "github"];
+const effectiveCounts = {};
 
-    for (const name of engineNamesForEff) {
-      effectiveCounts[name] = 0;
-    }
+for (const name of engineNamesForEff) {
+  effectiveCounts[name] = 0;
+}
 
-    if (Array.isArray(partial_scores.blocks_for_verify)) {
-      for (const blk of partial_scores.blocks_for_verify) {
-        const ec = blk.evidence_counts || {};
-        for (const name of engineNamesForEff) {
-          const cnt = ec[name];
-          if (typeof cnt === "number" && cnt > 0) {
-            effectiveCounts[name] += cnt;
+// ✅ blocks_for_verify는 운영에서 null이 될 수 있으므로,
+//    항상 존재하는 blocksForVerifySlim(요약본) 기준으로 집계한다.
+const eeffBlocks = Array.isArray(blocksForVerifySlim)
+  ? blocksForVerifySlim
+  : Array.isArray(partial_scores.blocks_for_verify)
+    ? partial_scores.blocks_for_verify
+    : [];
+
+// ✅ verify 2차 irrelevant(3단계: evidence_id 단위) → 해당 evidence_id만 E_eff에서 제외
+//    - evidence_items.irrelevant[].evidence_id 기반(정밀)
+//    - vb.evidence.irrelevant 엔진명 기반은 fallback(통째 제외)으로만 사용
+const PRUNE_ENGINES = ["naver", "gdelt"];
+
+// 정밀(prune 대상 evidence_id)
+const irrelevantEvidenceIdsByEngine = {};
+for (const eng of PRUNE_ENGINES) irrelevantEvidenceIdsByEngine[eng] = new Set();
+
+// fallback(엔진 전체를 블록에서 통째 제외)
+const irrelevantBlockIdsByEngine = {};
+for (const eng of PRUNE_ENGINES) irrelevantBlockIdsByEngine[eng] = new Set();
+
+try {
+  if ((safeMode === "qv" || safeMode === "fv") && verifyMeta && Array.isArray(verifyMeta.blocks)) {
+    for (const vb of verifyMeta.blocks) {
+      const bid = vb?.id;
+
+      // 1) evidence_items.irrelevant: [{ evidence_id, engine, ... }]
+      const irrItems = Array.isArray(vb?.evidence_items?.irrelevant) ? vb.evidence_items.irrelevant : [];
+      for (const it of irrItems) {
+        const eng = it?.engine ? String(it.engine).trim().toLowerCase() : null;
+        const id = it?.evidence_id ? String(it.evidence_id).trim() : null;
+        if (!id) continue;
+        if (eng && irrelevantEvidenceIdsByEngine[eng]) irrelevantEvidenceIdsByEngine[eng].add(id);
+      }
+
+      // 2) (혹시 있을 수 있는) evidence_ids.irrelevant: ["b1:naver:1", ...] 또는 [{evidence_id, engine}, ...]
+      const irrIds = vb?.evidence_ids?.irrelevant;
+      if (Array.isArray(irrIds)) {
+        for (const x of irrIds) {
+          if (!x) continue;
+          if (typeof x === "string") {
+            const id = x.trim();
+            // 엔진 추정: "b{bid}:{engine}:{n}"
+            const m = id.match(/^b[^:]+:([a-z0-9_-]+):/i);
+            const eng = m ? String(m[1]).trim().toLowerCase() : null;
+            if (eng && irrelevantEvidenceIdsByEngine[eng]) irrelevantEvidenceIdsByEngine[eng].add(id);
+          } else if (typeof x === "object") {
+            const id = x?.evidence_id ? String(x.evidence_id).trim() : null;
+            const eng = x?.engine ? String(x.engine).trim().toLowerCase() : null;
+            if (id && eng && irrelevantEvidenceIdsByEngine[eng]) irrelevantEvidenceIdsByEngine[eng].add(id);
           }
         }
       }
+
+      // 3) fallback: evidence.irrelevant 엔진명 배열
+      const irrEng = Array.isArray(vb?.evidence?.irrelevant) ? vb.evidence.irrelevant : [];
+      const irrEngNames = irrEng.map((s) => String(s).trim().toLowerCase());
+      if (bid != null) {
+        for (const eng of PRUNE_ENGINES) {
+          if (irrEngNames.includes(eng)) irrelevantBlockIdsByEngine[eng].add(String(bid));
+        }
+      }
+    }
+  }
+} catch (e) {
+  if (DEBUG) console.warn("⚠️ build irrelevantEvidenceIdsByEngine failed:", e?.message || e);
+}
+
+const prunedEvidenceByEngine = {};
+for (const eng of PRUNE_ENGINES) prunedEvidenceByEngine[eng] = 0;
+
+for (const blk of eeffBlocks) {
+  const ec = blk?.evidence_counts || {};
+  const evObj = blk?.evidence && typeof blk.evidence === "object" ? blk.evidence : {};
+  const bid = blk?.id;
+  const bidKey = bid != null ? String(bid) : null;
+
+  for (const name of engineNamesForEff) {
+    const cnt = ec[name];
+    if (!(typeof cnt === "number" && cnt > 0)) continue;
+
+    let pruned = 0;
+
+    // ✅ 1) 정밀 prune: evidence_id 단위로 제외
+    if (irrelevantEvidenceIdsByEngine && irrelevantEvidenceIdsByEngine[name] && Array.isArray(evObj[name])) {
+      for (const it of evObj[name]) {
+        const id = it?.evidence_id ? String(it.evidence_id).trim() : "";
+        if (id && irrelevantEvidenceIdsByEngine[name].has(id)) pruned += 1;
+      }
     }
 
-    const effectiveEngines = Object.entries(effectiveCounts)
-      .filter(([_, cnt]) => typeof cnt === "number" && cnt > 0)
-      .map(([name]) => name);
+    // ✅ 2) fallback prune(엔진명만 있을 때): 블록 통째 제외
+    if (pruned === 0 && bidKey && irrelevantBlockIdsByEngine && irrelevantBlockIdsByEngine[name]) {
+      if (irrelevantBlockIdsByEngine[name].has(bidKey)) pruned = cnt;
+    }
 
-    // partial_scores에 E_eff 관련 정보 저장
-    partial_scores.effective_engine_counts = effectiveCounts;
-    partial_scores.effective_engines = effectiveEngines;
+    if (pruned > 0) prunedEvidenceByEngine[name] = (prunedEvidenceByEngine[name] || 0) + pruned;
 
+    const kept = Math.max(0, cnt - pruned);
+    if (kept > 0) effectiveCounts[name] += kept;
+  }
+}
+
+partial_scores.verify_irrelevant_prune = {
+  applied: PRUNE_ENGINES.some((e) => (prunedEvidenceByEngine[e] || 0) > 0),
+  removed_items_by_engine: prunedEvidenceByEngine,
+  removed_ids_sample: Object.fromEntries(
+    PRUNE_ENGINES.map((e) => [e, Array.from(irrelevantEvidenceIdsByEngine[e] || []).slice(0, 12)])
+  ),
+  blocks_fallback_by_engine: Object.fromEntries(
+    PRUNE_ENGINES.map((e) => [e, Array.from(irrelevantBlockIdsByEngine[e] || []).slice(0, 50)])
+  ),
+};
+
+// (관측) E_eff 집계가 어떤 입력을 기준으로 했는지 남김
+partial_scores.eeff_basis = {
+  blocks: eeffBlocks.length,
+  source: Array.isArray(blocksForVerifySlim) ? "blocksForVerifySlim" : "partial_scores.blocks_for_verify",
+};
+
+const effectiveEngines = Object.entries(effectiveCounts)
+  .filter(([_, cnt]) => typeof cnt === "number" && cnt > 0)
+  .map(([name]) => name);
+
+// partial_scores에 E_eff 관련 정보 저장
+partial_scores.effective_engine_counts = effectiveCounts;
+partial_scores.effective_engines = effectiveEngines;
+
+        // ✅ 엔진별 호출/0건/스킵/전부-prune를 명확히 남기는 요약(설명가능성 강화)
+    const engineCoverageStats = {};
+
+    const requestedArr = Array.isArray(partial_scores.engines_requested)
+      ? partial_scores.engines_requested
+      : [];
+
+    const usedArr = Array.isArray(partial_scores.engines_used)
+      ? partial_scores.engines_used
+      : [];
+
+    const excludedMap =
+      partial_scores.engines_excluded && typeof partial_scores.engines_excluded === "object"
+        ? partial_scores.engines_excluded
+        : {};
+
+    const engineQueries = partial_scores.engine_queries || {};
+    const engineMetrics2 = partial_scores.engine_metrics || {};
+
+    const hasQueryFor = (eng) => {
+      const v = engineQueries?.[eng];
+      if (Array.isArray(v)) return v.some((s) => String(s || "").trim().length > 0);
+      if (typeof v === "string") return v.trim().length > 0;
+      return false;
+    };
+
+    const callsFor = (eng) => {
+      const c = engineMetrics2?.[eng]?.calls;
+      return typeof c === "number" && Number.isFinite(c) ? c : 0;
+    };
+
+    const excludedReasonFor = (eng) => {
+      const r = excludedMap?.[eng]?.reason;
+      return r ? String(r) : null;
+    };
+
+    const designedToCall = [];
+    const called = [];
+    const skippedNoQuery = [];
+    const noCalls = [];
+    const calledNoResults = [];
+    const calledAllPruned = [];
+
+    for (const name of engineNamesForEff) {
+      const requested = requestedArr.includes(name);
+      const has_query = hasQueryFor(name);
+      const calls = callsFor(name);
+      const excluded_reason = excludedReasonFor(name);
+      const used = usedArr.includes(name);
+
+      const totalResults =
+        partial_scores.engine_results &&
+        typeof partial_scores.engine_results[name] === "number"
+          ? partial_scores.engine_results[name]
+          : null;
+
+      const effEv =
+        typeof effectiveCounts?.[name] === "number" && Number.isFinite(effectiveCounts[name])
+          ? effectiveCounts[name]
+          : 0;
+
+      const in_E_eff = effectiveEngines.includes(name);
+
+      // ✅ “호출했고 결과도 있었는데, 최종 유효근거가 0” = 전부 irrelevant로 prune된 케이스
+      const all_pruned_irrelevant =
+        requested &&
+        has_query &&
+        calls > 0 &&
+        typeof totalResults === "number" &&
+        totalResults > 0 &&
+        (!effEv || effEv <= 0) &&
+        !in_E_eff;
+
+      let call_state = "not_requested";
+      if (requested) {
+        if (!has_query && excluded_reason === "no_query") call_state = "skipped_no_query";
+        else if (excluded_reason === "no_calls") call_state = "no_calls";
+        else if (excluded_reason === "no_results") call_state = "called_no_results";
+        else if (calls > 0) call_state = "called";
+        else call_state = "unknown";
+      }
+
+      // ✅ called인데 all_pruned면 상태를 더 구체화
+      if (call_state === "called" && all_pruned_irrelevant) {
+        call_state = "called_results_but_all_pruned_irrelevant";
+      }
+
+      // ✅ coverage 패널티 타겟(합의 #7)
+      // - 설계상 호출 대상(designed_to_call = requested && has_query)만 coverage 평가 대상으로 본다
+      // - skipped_no_query는 패널티 대상 아님
+      const designed_to_call = requested && has_query;
+      const coverage_penalty_target = designed_to_call;
+
+      if (designed_to_call) designedToCall.push(name);
+      if (calls > 0) called.push(name);
+      if (call_state === "skipped_no_query") skippedNoQuery.push(name);
+      if (call_state === "no_calls") noCalls.push(name);
+      if (call_state === "called_no_results") calledNoResults.push(name);
+      if (call_state === "called_results_but_all_pruned_irrelevant") calledAllPruned.push(name);
+
+      engineCoverageStats[name] = {
+        requested,
+        has_query,
+        designed_to_call,
+        coverage_penalty_target,
+
+        calls,
+        excluded_reason, // "no_query" | "no_calls" | "no_results" | null
+        call_state,      // + "called_results_but_all_pruned_irrelevant"
+
+        used,            // results>0 기준(engines_used)
+        total_results: totalResults,
+
+        effective_evidence: effEv,
+        in_E_eff,
+
+        all_pruned_irrelevant,
+      };
+    }
+
+    partial_scores.engine_coverage_stats = engineCoverageStats;
+
+    // ✅ 한 눈에 “스킵 vs 호출실패 vs 0건 vs 전부-prune”이 보이도록 요약도 제공
+    partial_scores.engine_call_summary = {
+      requested: requestedArr,
+      designed_to_call: designedToCall, // 쿼리 존재(=전처리 기준 호출 대상)
+      called,                           // calls>0
+      used: usedArr,                    // results>0
+      excluded: excludedMap,
+
+      // ✅ S-10: by_engine 포함 (S-2/S-3가 이걸 참조 가능)
+      by_engine: engineCoverageStats,
+
+      counts: {
+        requested: requestedArr.length,
+        designed_to_call: designedToCall.length,
+        called: called.length,
+        used: usedArr.length,
+        skipped_no_query: skippedNoQuery.length,
+        no_calls: noCalls.length,
+        called_no_results: calledNoResults.length,
+        called_results_but_all_pruned_irrelevant: calledAllPruned.length,
+        effective_engines: Array.isArray(effectiveEngines) ? effectiveEngines.length : 0,
+      },
+      lists: {
+        skipped_no_query: skippedNoQuery,
+        no_calls: noCalls,
+        called_no_results: calledNoResults,
+        called_results_but_all_pruned_irrelevant: calledAllPruned,
+      },
+    };
+
+// ✅ (S-2) 엔진별 요약 로그(설명가능성): 호출/결과/유효근거/평균 age_days
+try {
+  const engineResults3 =
+    (partial_scores.engine_results && typeof partial_scores.engine_results === "object")
+      ? partial_scores.engine_results
+      : {};
+
+  const effCounts3 =
+    (partial_scores.effective_engine_counts && typeof partial_scores.effective_engine_counts === "object")
+      ? partial_scores.effective_engine_counts
+      : {};
+
+  const callStats =
+    (partial_scores.engine_call_summary &&
+      typeof partial_scores.engine_call_summary === "object" &&
+      partial_scores.engine_call_summary.by_engine &&
+      typeof partial_scores.engine_call_summary.by_engine === "object")
+        ? partial_scores.engine_call_summary.by_engine
+        : {};
+
+  const avgAgeDays = (arr) => {
+    const a = Array.isArray(arr) ? arr : [];
+    const nums = a
+      .map((x) => (typeof x?.age_days === "number" && Number.isFinite(x.age_days) ? x.age_days : null))
+      .filter((v) => typeof v === "number");
+
+    if (!nums.length) return null;
+    const avg = nums.reduce((s, v) => s + v, 0) / nums.length;
+    return Math.round(avg * 100) / 100;
+  };
+
+  const enginesToExplain = Array.isArray(engineNamesForEff)
+    ? engineNamesForEff
+    : ["crossref", "openalex", "wikidata", "gdelt", "naver", "github"];
+
+  const out = {};
+
+  for (const eng of enginesToExplain) {
+    const raw = (typeof engineResults3[eng] === "number" && Number.isFinite(engineResults3[eng]))
+      ? engineResults3[eng]
+      : null;
+
+    const kept = (typeof effCounts3[eng] === "number" && Number.isFinite(effCounts3[eng]))
+      ? effCounts3[eng]
+      : null;
+
+    // external.* 배열이 존재할 때만 평균 age 계산
+    const extArr =
+      (typeof external === "object" && external && Array.isArray(external[eng]))
+        ? external[eng]
+        : null;
+
+    out[eng] = {
+      call_state: callStats?.[eng]?.call_state ?? null,
+      calls: (typeof callStats?.[eng]?.calls === "number" ? callStats[eng].calls : null),
+      results_raw: raw,
+      effective_kept: kept,
+      pruned_irrelevant: (typeof raw === "number" && typeof kept === "number") ? Math.max(0, raw - kept) : null,
+      avg_age_days: extArr ? avgAgeDays(extArr) : null,
+    };
+  }
+
+  partial_scores.engine_explain = out;
+} catch (e) {
+  if (DEBUG) console.warn("⚠️ engine_explain failed:", e?.message || e);
+  partial_scores.engine_explain = { applied: false, error: e?.message || "unknown" };
+}
+// ✅ (S-3) E_eff(Effective engines) 제외 사유를 엔진별로 확정 기록
+// - "설계상 안 부른 엔진" vs "부르려 했는데 0건" vs "부르긴 했는데 전부 irrelevant로 prune" 구분
+try {
+  const cs =
+    (partial_scores.engine_call_summary && typeof partial_scores.engine_call_summary === "object")
+      ? partial_scores.engine_call_summary
+      : {};
+
+  const byEngine =
+    (cs.by_engine && typeof cs.by_engine === "object")
+      ? cs.by_engine
+      : {};
+
+  const requested = Array.isArray(cs.requested) ? cs.requested : [];
+  const designedToCall = Array.isArray(cs.designed_to_call) ? cs.designed_to_call : [];
+  const called = Array.isArray(cs.called) ? cs.called : [];
+  const used = Array.isArray(cs.used) ? cs.used : [];
+
+  const skippedNoQuery = Array.isArray(cs?.lists?.skipped_no_query) ? cs.lists.skipped_no_query : [];
+  const noCalls = Array.isArray(cs?.lists?.no_calls) ? cs.lists.no_calls : [];
+  const calledNoResults = Array.isArray(cs?.lists?.called_no_results) ? cs.lists.called_no_results : [];
+
+  const engineResults =
+    (partial_scores.engine_results && typeof partial_scores.engine_results === "object")
+      ? partial_scores.engine_results
+      : {};
+
+  const effCounts =
+    (partial_scores.effective_engine_counts && typeof partial_scores.effective_engine_counts === "object")
+      ? partial_scores.effective_engine_counts
+      : {};
+
+  const effectiveEngines = Array.isArray(partial_scores.effective_engines)
+    ? partial_scores.effective_engines
+    : [];
+
+  // 엔진 후보 목록(가능한 넓게)
+  const union = new Set([
+    ...requested,
+    ...designedToCall,
+    ...called,
+    ...used,
+    ...effectiveEngines,
+    ...Object.keys(engineResults || {}),
+    ...Object.keys(effCounts || {}),
+    ...Object.keys(byEngine || {}),
+  ]);
+
+  const prunedAllIrrelevant = [];
+  const excluded = {};
+  const included = {};
+
+  // "called && results_raw > 0 && effective_kept == 0" => 전부 irrelevant로 prune된 케이스
+  for (const eng of union) {
+    const raw = (typeof engineResults?.[eng] === "number" && Number.isFinite(engineResults[eng]))
+      ? engineResults[eng]
+      : null;
+
+    const kept = (typeof effCounts?.[eng] === "number" && Number.isFinite(effCounts[eng]))
+      ? effCounts[eng]
+      : null;
+
+    const isPrunedAll =
+      (typeof raw === "number" && raw > 0) &&
+      (typeof kept === "number" && kept === 0);
+
+    if (isPrunedAll) prunedAllIrrelevant.push(eng);
+  }
+
+  for (const eng of union) {
+    const entry = {
+      call_state: byEngine?.[eng]?.call_state ?? null,
+      in_requested: requested.includes(eng),
+      designed_to_call: designedToCall.includes(eng),
+      called: called.includes(eng),
+      used_results_gt0: used.includes(eng),
+      effective_engine: effectiveEngines.includes(eng),
+      results_raw: (typeof engineResults?.[eng] === "number" ? engineResults[eng] : null),
+      effective_kept: (typeof effCounts?.[eng] === "number" ? effCounts[eng] : null),
+      reason: null,
+      excluded_from_E_eff: false,
+      coverage_penalty_target: null, // true/false/null
+    };
+
+    // ✅ 우선순위 높은 reason부터 확정
+    if (skippedNoQuery.includes(eng)) {
+      // 설계상 안 부른 엔진(쿼리/전처리상 no_query)
+      entry.reason = "design_skipped_no_query";
+      entry.excluded_from_E_eff = true;        // E_eff엔 당연히 없음
+      entry.coverage_penalty_target = false;   // ✅ coverage 패널티 대상 아님(합의 #7)
+    } else if (noCalls.includes(eng)) {
+      // 설계상 호출 대상이었는데, 실제 호출 자체가 안 됨(오류/타임아웃/구현 등)
+      entry.reason = "designed_but_no_calls";
+      entry.excluded_from_E_eff = true;
+      entry.coverage_penalty_target = true;    // ✅ coverage 패널티 대상(합의 #7)
+    } else if (calledNoResults.includes(eng)) {
+      // 호출은 했는데 0건
+      entry.reason = "called_but_zero_results";
+      entry.excluded_from_E_eff = true;
+      entry.coverage_penalty_target = true;    // ✅ coverage 패널티 대상(합의 #7)
+    } else if (prunedAllIrrelevant.includes(eng)) {
+      // 호출했고 결과도 있는데, 필터/판정 후 유효근거 0
+      entry.reason = "called_results_but_all_pruned_irrelevant";
+      entry.excluded_from_E_eff = true;
+      entry.coverage_penalty_target = true;    // ✅ coverage 패널티 대상(합의 #7) — “부르긴 했는데 유효 0”
+    } else if (effectiveEngines.includes(eng)) {
+      entry.reason = "effective_included";
+      entry.excluded_from_E_eff = false;
+      entry.coverage_penalty_target = false;
+    } else {
+      // 여기에 걸리면 케이스가 애매한 것(미요청/미대상/기타)
+      entry.reason = "other_or_not_applicable";
+      entry.excluded_from_E_eff = true;
+      entry.coverage_penalty_target = null;
+    }
+
+    if (entry.excluded_from_E_eff) excluded[eng] = entry;
+    else included[eng] = entry;
+  }
+
+  partial_scores.engine_exclusion_reasons = {
+    effective_engines: effectiveEngines,
+    excluded,
+    included,
+    lists: {
+      design_skipped_no_query: skippedNoQuery,
+      designed_but_no_calls: noCalls,
+      called_but_zero_results: calledNoResults,
+      called_results_but_all_pruned_irrelevant: prunedAllIrrelevant,
+    },
+    counts: {
+      union_total: union.size,
+      effective: effectiveEngines.length,
+      excluded: Object.keys(excluded).length,
+      excluded_no_query: skippedNoQuery.length,
+      excluded_no_calls: noCalls.length,
+      excluded_zero_results: calledNoResults.length,
+      excluded_all_pruned: prunedAllIrrelevant.length,
+    },
+  };
+} catch (e) {
+  if (DEBUG) console.warn("⚠️ engine_exclusion_reasons failed:", e?.message || e);
+  partial_scores.engine_exclusion_reasons = { applied: false, error: e?.message || "unknown" };
+}
     break;
   }
 
@@ -3792,6 +5787,7 @@ if (enginesForCorrection.length > 0) {
 let flash = "";
 let verify = "";
 let verifyMeta = null;
+let verifyMetaRaw = null;
 
 // ✅ 여기서는 "선언(let)" 하지 말고, 필요하면 값만 리셋
 verifyModelUsed = verifyModel;
@@ -3852,36 +5848,146 @@ let answerModelUsed = "gemini-2.5-flash";
         Array.isArray(qvfvBlocksForVerifyFull)
           ? qvfvBlocksForVerifyFull
           : [];
-      // ✅ (패치) 숫자 블록이면: 선택된 Naver evidence URL을 열어 "숫자 포함 발췌(evidence_text)"를 채움
-      // - 특정 사이트 고정 없이 동작
-      // - 숫자 블록일 때만, TOPK URL만, 총 fetch 수 제한
-      if (NAVER_NUMERIC_FETCH && (safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
-        let budget = NAVER_NUMERIC_FETCH_MAX;
+// ✅ (패치) 숫자 블록이면: 선택된 Naver evidence URL을 열어 "숫자 포함 발췌(evidence_text)"를 채움
+// - 특정 사이트 고정 없이 동작
+// - 숫자 블록일 때만, TOPK URL만, 총 fetch 수 제한
+// ✅ (B-5) 권위 출처 우선(통계청/UN/OECD 등)으로 budget 배분
+if (
+  NAVER_NUMERIC_FETCH &&
+  (safeMode === "qv" || safeMode === "fv") &&
+  Array.isArray(blocksForVerify) &&
+  blocksForVerify.length > 0
+) {
+  let budget = NAVER_NUMERIC_FETCH_MAX;
 
-        for (const b of blocksForVerify) {
-          if (budget <= 0) break;
-          if (!hasNumberLike(b?.text) && !hasNumberLike(query)) continue;
+  const MAX_PER_BLOCK = Math.max(1, parseInt(process.env.NAVER_EVIDENCE_TEXT_PER_BLOCK || "2", 10));
+  const MAX_PER_HOST = Math.max(1, parseInt(process.env.NAVER_EVIDENCE_TEXT_PER_HOST || "2", 10));
 
-          const naverEvs = Array.isArray(b?.evidence?.naver) ? b.evidence.naver.slice(0, 3) : [];
-          for (const ev of naverEvs) {
-            if (budget <= 0) break;
-            if (ev?.evidence_text) continue;
+  const fetchedUrls = new Set();
+  const hostCount = {};
 
-            const url = ev?.source_url || ev?.link;
-            if (!url) continue;
-            if (!isSafeExternalHttpUrl(url)) continue;
+  let attempts = 0;
+  let success = 0;
+  let auth_attempts = 0;
+  let auth_success = 0;
 
-            const pageText = await fetchReadableText(url, NAVER_FETCH_TIMEOUT_MS);
-            const excerpt = extractExcerptContainingNumbers(pageText, b?.text || "", EVIDENCE_EXCERPT_CHARS);
+  // 숫자/팩트 블록만 대상으로
+  const numericBlocks = blocksForVerify.filter(
+    (b) => hasNumberLike(b?.text) || hasNumberLike(query)
+  );
 
-            if (excerpt) {
-              ev.evidence_text = excerpt;
-              budget -= 1;
-            }
-          }
+  const buildCandidates = (b) => {
+    const raw = Array.isArray(b?.evidence?.naver) ? b.evidence.naver.slice(0, 3) : [];
+
+    // url/host/authority/tier info를 미리 계산해 정렬
+    const cand = raw
+      .map((ev) => {
+        const url = ev?.source_url || ev?.link;
+        if (!url) return null;
+        if (!isSafeExternalHttpUrl(url)) return null;
+
+        const hostRaw = ev?.source_host || _hostFromUrlish(url);
+        const host = hostRaw ? _stripWww(String(hostRaw).trim().toLowerCase()) : null;
+
+        const isAuth = host ? isAuthorityHost(host) : false;
+
+        // tier: "tier1"~ 같은 문자열을 숫자로
+        const tierStr = String(ev?.tier || "").trim().toLowerCase();
+        const m = tierStr.match(/tier(\d)/);
+        const tierNum = m ? parseInt(m[1], 10) : null;
+
+        return { ev, url, host, isAuth, tierNum };
+      })
+      .filter(Boolean);
+
+    // 정렬: authority 우선 → tier1 우선 → 기타
+    cand.sort((a, b2) => {
+      if (a.isAuth !== b2.isAuth) return a.isAuth ? -1 : 1; // true 먼저
+      const ta = Number.isFinite(a.tierNum) ? a.tierNum : 99;
+      const tb = Number.isFinite(b2.tierNum) ? b2.tierNum : 99;
+      if (ta !== tb) return ta - tb; // 1이 먼저
+      return 0;
+    });
+
+    return cand;
+  };
+
+  // ✅ 2-pass: (1) authority만 먼저 채우고 (2) 남으면 나머지 채움
+  for (const pass of ["authority", "all"]) {
+    for (const b of numericBlocks) {
+      if (budget <= 0) break;
+
+      let blockFetched = 0;
+      const candidates = buildCandidates(b);
+
+      for (const c of candidates) {
+        if (budget <= 0) break;
+        if (blockFetched >= MAX_PER_BLOCK) break;
+
+        const ev = c.ev;
+        if (ev?.evidence_text) continue;
+
+        const url = c.url;
+        if (fetchedUrls.has(url)) continue;
+
+        const host = c.host || "unknown";
+        hostCount[host] = hostCount[host] || 0;
+        if (hostCount[host] >= MAX_PER_HOST) continue;
+
+        // pass 1에서는 authority만
+        if (pass === "authority" && !c.isAuth) continue;
+
+        // ✅ fetch 1회 시도 = budget 1 소모(성공/실패 무관)
+        attempts += 1;
+        if (c.isAuth) auth_attempts += 1;
+
+        let pageText = "";
+        try {
+          pageText = await fetchReadableText(url, NAVER_FETCH_TIMEOUT_MS);
+        } catch (e) {
+          if (DEBUG) console.warn("⚠️ naver evidence_text fetch fail:", e?.message || e);
+          budget -= 1;
+          continue;
+        }
+
+        budget -= 1;
+
+        const excerpt = extractExcerptContainingNumbers(
+          pageText,
+          b?.text || "",
+          EVIDENCE_EXCERPT_CHARS
+        );
+
+        if (excerpt) {
+          ev.evidence_text = excerpt;
+
+          fetchedUrls.add(url);
+          hostCount[host] += 1;
+
+          blockFetched += 1;
+          success += 1;
+          if (c.isAuth) auth_success += 1;
         }
       }
+    }
 
+    if (budget <= 0) break;
+  }
+
+  // ✅ 관측용(요약만)
+  partial_scores.naver_evidence_text_fetch = {
+    enabled: true,
+    attempts,
+    success,
+    auth_attempts,
+    auth_success,
+    unique_urls: fetchedUrls.size,
+    remaining_budget: budget,
+    per_block_max: MAX_PER_BLOCK,
+    per_host_max: MAX_PER_HOST,
+  };
+if (!DEBUG) partial_scores.naver_evidence_text_fetch = { ...(partial_scores.naver_evidence_text_fetch || {}), sample: null };
+}
 
       const coreText =
         safeMode === "qv"
@@ -3894,16 +6000,86 @@ let answerModelUsed = "gemini-2.5-flash";
           ? user_answer
           : query;
 
-      const verifyInput = {
-        mode: safeMode,
-        query,
-        core_text: coreText,
-        blocks: blocksForVerify, // ✅ QV/FV: 전처리 블록 + 증거
-        external,
-        partial_scores,
-      };
+// ✅ verify 입력 축소 파라미터
+const MAX_VERIFY_BLOCKS = parseInt(process.env.MAX_VERIFY_BLOCKS || "6", 10);
+const MAX_VERIFY_BLOCKS_MIN = parseInt(process.env.MAX_VERIFY_BLOCKS_MIN || "2", 10);
 
-      const verifyPrompt = `
+const maxVerifyBlocks = Number.isFinite(MAX_VERIFY_BLOCKS) ? Math.max(0, MAX_VERIFY_BLOCKS) : 6;
+const maxVerifyBlocksMin = Number.isFinite(MAX_VERIFY_BLOCKS_MIN) ? Math.max(0, MAX_VERIFY_BLOCKS_MIN) : 2;
+
+// ✅ verify에 보낼 blocks: 상한 적용 + slim 변환
+const blocksForVerifyForLLM_raw = Array.isArray(blocksForVerify)
+  ? blocksForVerify.slice(0, maxVerifyBlocks)
+  : [];
+
+const blocksForVerifyForLLM =
+  (typeof slimBlockForVerifyLLM === "function")
+    ? blocksForVerifyForLLM_raw.map(slimBlockForVerifyLLM)
+    : blocksForVerifyForLLM_raw;
+
+const verifyInputMaxChars = getVerifyInputCharsByMode(safeMode);
+
+partial_scores.verify_blocks_limit = {
+  requested: Array.isArray(blocksForVerify) ? blocksForVerify.length : 0,
+  used: blocksForVerifyForLLM.length,
+  max: maxVerifyBlocks,
+};
+
+const verifyInput = {
+  mode: safeMode,
+  query,
+  core_text: coreText,
+  blocks: blocksForVerifyForLLM,
+  external,
+
+  // ✅ partial_scores는 verify에 안 넣는다(입력 비대화/timeout 원인)
+  meta: {
+    effective_engines: partial_scores.effective_engines || null,
+    engines_requested: partial_scores.engines_requested || null,
+    engines_used: partial_scores.engines_used || null,
+  },
+};
+
+// ✅ 2차(타임아웃 시) 더 줄인 입력
+const verifyInputMini = {
+  ...verifyInput,
+  blocks: blocksForVerifyForLLM.slice(0, Math.min(blocksForVerifyForLLM.length, maxVerifyBlocksMin)),
+};
+
+// ✅ lookup은 “verify에 실제로 보낸 blocks” 기준으로 1번만 생성(중복 선언 금지)
+const verifyEvidenceLookup = buildEvidenceLookupFromBlocks(blocksForVerifyForLLM);
+
+// (디버그/관측용) lookup 규모만 남김
+partial_scores.verify_evidence_lookup_stats = {
+  size: Object.keys(verifyEvidenceLookup || {}).length,
+  sample_ids: Object.keys(verifyEvidenceLookup || {}).slice(0, 8),
+};
+
+// ✅ (S-9) verifyMeta 응답 크기 안정화용 캡
+// - Gemini가 evidence_items를 많이/길게 뿌려도 서버가 강제로 줄임
+// - conflict(상충)는 절대 “0으로 만들지” 않도록 total-cap에서도 마지막까지 보호
+const VERIFY_META_ITEMS_PER_KIND = (() => {
+  const v = parseInt(process.env.VERIFY_META_ITEMS_PER_KIND || "", 10);
+  if (Number.isFinite(v) && v > 0) return Math.min(5, v);
+  // 운영 기본값: 1 / DEBUG: 2
+  return DEBUG ? 2 : 1;
+})();
+
+const VERIFY_META_ITEMS_TOTAL = (() => {
+  const v = parseInt(process.env.VERIFY_META_ITEMS_TOTAL || "", 10);
+  if (Number.isFinite(v) && v > 0) return Math.min(30, v);
+  // 운영 기본값: 4 / DEBUG: 8
+  return DEBUG ? 8 : 4;
+})();
+
+const VERIFY_META_EVID_TEXT_MAX = (() => {
+  const v = parseInt(process.env.VERIFY_META_EVID_TEXT_MAX || "", 10);
+  if (Number.isFinite(v) && v >= 0) return Math.min(1200, v);
+  // 운영 기본값(0=제거) / DEBUG는 260자까지만 유지
+  return DEBUG ? 260 : 0;
+})();
+
+      const verifyPromptTemplate = `
 당신은 "Cross-Verified AI" 시스템의 메타 검증 엔진입니다.
 
 목표:
@@ -3914,7 +6090,7 @@ let answerModelUsed = "gemini-2.5-flash";
   4) 각 검증엔진별로 이번 질의에 대한 국소 보정값(0.9~1.1) 제안
 
 [입력 JSON]
-${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
+__VERIFY_INPUT_JSON__
 
 입력 필드 설명(요약):
 - mode: "qv" | "fv" | "dv" | "cv" 중 하나
@@ -3926,11 +6102,11 @@ ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
     - CV: 실제 검증 대상 코드/설계 또는 요약
 - blocks:
     - QV/FV: 전처리 단계에서 이미 생성된 의미 블록 배열
-      (각 요소는 id, text, queries, evidence(crossref/openalex/wikidata/gdelt/naver) 를 포함)
+      (각 요소는 id, text, evidence(crossref/openalex/wikidata/gdelt/naver) 를 포함)
     - DV/CV: 서버에서 비워둘 수 있음([])
 - external: crossref / openalex / wikidata / gdelt / naver / github / klaw 등 외부 엔진 결과
-- partial_scores: 서버에서 미리 계산된 전역 스코어
-    (예: recency, validity, consistency, engine_factor, naver_tier_factor 등)
+- meta: 서버가 참고용으로 넣은 요약 메타
+    (예: effective_engines, engines_requested, engines_used)
 
 [작업 지침]
 
@@ -3952,10 +6128,25 @@ ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
      - 0.40~0.69: 불확실 / 부분적으로만 지지 (간접적이거나 단편적인 근거)
      - 0.10~0.39: 근거 부족 또는 논쟁적 (명확한 지지가 없거나 모순 가능성)
      - 0.00~0.09: 명백히 잘못되었거나 반대 증거 존재
-   - 각 블록마다 어떤 엔진이 지지(support) / 충돌(conflict)하는지 기록하십시오.
+      - 각 블록마다 어떤 엔진이 지지(support) / 충돌(conflict)하는지 기록하십시오.
+
+     - 또한 blocks[i].evidence 안에 들어있는 "개별 근거 항목" 중에서:
+       * evidence_items.support / conflict / irrelevant 배열에 “대표 근거”를 객체로 포함하십시오.
+       * (중요) conflict(상충) 근거가 있다면, conflict evidence_items는 “절대 비워두지 마십시오”.
+
+     - 개수 제한(응답 크기 안정화):
+       * 각 종류(support/conflict/irrelevant)당 최대 ${VERIFY_META_ITEMS_PER_KIND}개
+       * 세 종류 합계(총합) 최대 ${VERIFY_META_ITEMS_TOTAL}개
+
+     - 객체 필드(필수): evidence_id, engine, source_url, source_host, title
+       (선택): published_at 또는 age_days, evidence_text(있으면)
+
+     ⚠️ 입력에 없는 URL/host/title/evidence_id를 새로 만들어내지 마십시오.
+     ⚠️ evidence_items에는 반드시 evidence_id를 포함하세요.
+     - evidence_id는 입력 blocks[i].evidence[*].evidence_id 중에서만 선택하세요.
 
 3. 종합 TruthScore(overall_truthscore_raw, 0~1)
-   - 블록별 점수와 partial_scores(recency, validity, consistency 등)를 종합하여
+   - 블록별 점수와 evidence의 시의성/권위/일관성 및 meta를 종합하여
      0~1 사이의 overall_truthscore_raw를 계산하십시오.
    - 이 값은 "순수 0~1 척도"이며, 서버에서는
      truthscore = overall_truthscore_raw
@@ -3963,7 +6154,7 @@ ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
    - overall_truthscore_raw가 1에 가까울수록 전체 내용이 매우 잘 뒷받침됨을 의미합니다.
 
 4. 엔진별 보정 제안(engine_adjust)
-   - external과 partial_scores를 참고하여,
+   - external과 입력 JSON의 evidence 및 meta를 종합하여,
      이번 질의에서 각 엔진의 신뢰도를 0.9~1.1 범위로 제안하십시오.
    - 키: "crossref", "openalex", "wikidata", "gdelt", "naver", "github"
    - 값:
@@ -3984,10 +6175,37 @@ ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
       "id": 1,
       "text": "이 블록에 해당하는 텍스트",
       "block_truthscore": 0.85,
-      "evidence": {
-        "support": ["crossref","naver"],
-        "conflict": ["wikidata"]
-      },
+           "evidence": {
+  "support": ["crossref","naver"],
+  "conflict": ["wikidata"],
+  "irrelevant": []
+},
+"evidence_ids": {
+  "support": ["b1:naver:1"],
+  "conflict": ["b1:wikidata:1"],
+  "irrelevant": []
+},
+"evidence_items": {
+  "support": [
+    {
+      "evidence_id": "b1:naver:1",
+      "engine": "naver",
+      "source_url": "https://...",
+      "source_host": "kostat.go.kr",
+      "title": "..."
+    }
+  ],
+  "conflict": [
+    {
+      "evidence_id": "b1:wikidata:1",
+      "engine": "wikidata",
+      "source_url": "https://...",
+      "source_host": "wikidata.org",
+      "title": "..."
+    }
+  ],
+  "irrelevant": []
+},
       "comment": "이 블록에 이런 점수를 준 이유를 한국어로 한두 문장 설명"
     }
   ],
@@ -4006,6 +6224,26 @@ ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
 }
 `.trim();
 
+// ✅ verifyPrompt / verifyPromptMini 생성 (template placeholder 치환)
+const verifyInputJson = safeVerifyInputForGemini(verifyInput, verifyInputMaxChars);
+const verifyPrompt = verifyPromptTemplate.replace("__VERIFY_INPUT_JSON__", verifyInputJson);
+
+const verifyInputJsonMini = safeVerifyInputForGemini(
+  verifyInputMini,
+  Math.min(verifyInputMaxChars, VERIFY_INPUT_CHARS_MIN)
+);
+const verifyPromptMini = verifyPromptTemplate.replace("__VERIFY_INPUT_JSON__", verifyInputJsonMini);
+
+// ✅ verify evidence_id 역매핑용 lookup(verify 전에 반드시 생성)
+//    (중요) verify에 실제로 보낸 blocks 기준으로 생성해야 정합성이 맞음
+const verifyEvidenceLookup = buildEvidenceLookupFromBlocks(blocksForVerifyForLLM);
+
+// (디버그/관측용) lookup 규모만 남김(전체 map은 응답에 싣지 말자)
+partial_scores.verify_evidence_lookup_stats = {
+  size: Object.keys(verifyEvidenceLookup || {}).length,
+  sample_ids: Object.keys(verifyEvidenceLookup || {}).slice(0, 8),
+};
+
       // ✅ verify는 모델 실패/빈문자 발생이 있어서 fallback 시도
 const verifyPayload = { contents: [{ parts: [{ text: verifyPrompt }] }] };
 
@@ -4017,6 +6255,17 @@ const verifyModelCandidates = [
 ].filter((v, i, a) => v && a.indexOf(v) === i);
 
 let lastVerifyErr = null;
+const isTimeoutish = (e) => {
+  const msg = String(e?.message || "").toLowerCase();
+  return (
+    msg.includes("timeout") ||
+    msg.includes("timed out") ||
+    msg.includes("deadline") ||
+    msg.includes("aborted") ||
+    msg.includes("etimedout") ||
+    msg.includes("exceeded")
+  );
+};
 
 const t_verify = Date.now();
 try {
@@ -4029,9 +6278,8 @@ try {
   payload: verifyPayload,
   opts: { label: `verify:${m}`, minChars: 20 },
 });
-verifyModelUsed = m;
-      verifyModelUsed = m; // ✅ 실제 성공 모델 기록
-      break;
+verifyModelUsed = m; // ✅ 실제 성공 모델 기록
+break;
     } catch (e) {
       const status = e?.response?.status;
 
@@ -4045,6 +6293,57 @@ verifyModelUsed = m;
   recordTime(geminiTimes, "verify_ms", ms_verify);
   recordMetric(geminiMetrics, "verify", ms_verify);
 }
+// ✅ 1차 verify가 타임아웃/빈응답이면: 더 작은 입력으로 2차 시도(verifyPromptMini)
+if ((!verify || !verify.trim()) && isTimeoutish(lastVerifyErr)) {
+  partial_scores.verify_retry = {
+    attempted: true,
+    reason: "timeout_or_empty",
+    last_error: lastVerifyErr?.message || "unknown",
+    max_chars: Math.min(verifyInputMaxChars, VERIFY_INPUT_CHARS_MIN),
+    max_blocks: MAX_VERIFY_BLOCKS_MIN,
+  };
+
+  const verifyPayloadMini = { contents: [{ parts: [{ text: verifyPromptMini }] }] };
+
+  let lastVerifyErr2 = null;
+  const t_retry = Date.now();
+  try {
+    for (const m of verifyModelCandidates) {
+      try {
+        verify = await fetchGeminiRotating({
+          userId: logUserId,
+          keyHint: gemini_key,
+          model: m,
+          payload: verifyPayloadMini,
+          opts: { label: `verify-mini:${m}`, minChars: 20 },
+        });
+        verifyModelUsed = m; // ✅ retry 성공 모델 기록
+        break;
+      } catch (e2) {
+        const status2 = e2?.response?.status;
+        if (status2 === 429) throw e2; // ✅ 쿼터 소진은 즉시 상위로
+        lastVerifyErr2 = e2;
+      }
+    }
+  } finally {
+    const ms = Date.now() - t_retry;
+    recordTime(geminiTimes, "verify_retry_ms", ms);
+    recordMetric(geminiMetrics, "verify_retry", ms);
+  }
+
+  if ((!verify || !verify.trim())) {
+    partial_scores.verify_retry = {
+      ...(partial_scores.verify_retry || {}),
+      success: false,
+      last_error2: lastVerifyErr2?.message || "unknown",
+    };
+  } else {
+    partial_scores.verify_retry = {
+      ...(partial_scores.verify_retry || {}),
+      success: true,
+    };
+  }
+}
 
 // ✅ 끝까지 실패했으면 기존 정책대로: verifyMeta 없이 외부엔진 기반으로만 진행
 if (!verify || !verify.trim()) {
@@ -4057,8 +6356,287 @@ if (!verify || !verify.trim()) {
     const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
     const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
     verifyMeta = JSON.parse(jsonText);
+    verifyMetaRaw = _deepCloneJson(verifyMeta);
+
+    const __lookup =
+      (typeof verifyEvidenceLookup !== "undefined" && verifyEvidenceLookup)
+        ? verifyEvidenceLookup
+        : null;
+
+    // ✅ verifyMeta 안전 보정: evidence_ids 누락 시 evidence_items/lookup으로 복구
+    try {
+      const norm = normalizeVerifyMetaWithEvidenceIds(verifyMeta, __lookup);
+      verifyMeta = norm.meta;
+      partial_scores.verify_normalization = norm.report;
+    } catch (e) {
+      partial_scores.verify_normalization = { applied: false, error: e?.message || "normalize_failed" };
+    }
+
+// ✅ (S-9) verifyMeta evidence_items “강제 캡” + evidence_text 제거/절단
+// - 운영 응답 크기 안정화
+// - conflict(상충) evidence_items는 total-cap에서도 “마지막까지” 보호
+try {
+  const maxKind = VERIFY_META_ITEMS_PER_KIND;
+  const maxTotal = VERIFY_META_ITEMS_TOTAL;
+  const maxText = VERIFY_META_EVID_TEXT_MAX;
+
+  let beforeTotal = 0;
+  let afterTotal = 0;
+  const rawConflictItems = s11_collectConflictItemsFromVerifyMeta(verifyMetaRaw);
+  const rawConflictCount = rawConflictItems.length;
+
+  const countEvidenceItemsTotal = (vm) => {
+    if (!vm || typeof vm !== "object") return 0;
+    let total = 0;
+
+    const blocksArr = Array.isArray(vm.blocks) ? vm.blocks : [];
+    for (const b of blocksArr) {
+      const eiObj =
+        b?.evidence_items && typeof b.evidence_items === "object"
+          ? b.evidence_items
+          : null;
+      if (!eiObj) continue;
+
+      for (const k of ["support", "conflict", "irrelevant"]) {
+        const arr = Array.isArray(eiObj[k]) ? eiObj[k] : [];
+        total += arr.length;
+      }
+    }
+
+    return total;
+  };
+
+  if (verifyMeta && Array.isArray(verifyMeta.blocks)) {
+    for (const blk of verifyMeta.blocks) {
+      const ei = blk?.evidence_items && typeof blk.evidence_items === "object" ? blk.evidence_items : null;
+      if (!ei) continue;
+
+      // 1) per-kind cap + 필드 정리
+      for (const k of ["support", "conflict", "irrelevant"]) {
+        const arr0 = Array.isArray(ei[k]) ? ei[k] : [];
+        beforeTotal += arr0.length;
+
+        const arr = arr0
+          .filter((x) => x && typeof x === "object")
+          .filter((x) => {
+            const id = x.evidence_id ? String(x.evidence_id).trim() : "";
+            return !!id;
+          })
+          .slice(0, maxKind)
+          .map((x) => {
+            const o = { ...x };
+
+            // 운영: evidence_text 제거(또는 maxText==0이면 제거)
+            if (maxText === 0) {
+              if (Object.prototype.hasOwnProperty.call(o, "evidence_text")) delete o.evidence_text;
+            } else {
+              if (typeof o.evidence_text === "string") {
+                o.evidence_text = o.evidence_text.slice(0, maxText);
+              }
+            }
+
+            // 불필요하게 큰 필드(혹시 모델이 뱉으면) 정리
+            if (!DEBUG) {
+              if (Object.prototype.hasOwnProperty.call(o, "raw")) delete o.raw;
+              if (Object.prototype.hasOwnProperty.call(o, "html")) delete o.html;
+              if (Object.prototype.hasOwnProperty.call(o, "content")) delete o.content;
+              if (Object.prototype.hasOwnProperty.call(o, "snippet")) delete o.snippet;
+            }
+
+            return o;
+          });
+
+        ei[k] = arr;
+      }
+
+      // 2) total cap (conflict는 최대한 보호)
+      const getLen = () =>
+        (Array.isArray(ei.support) ? ei.support.length : 0) +
+        (Array.isArray(ei.conflict) ? ei.conflict.length : 0) +
+        (Array.isArray(ei.irrelevant) ? ei.irrelevant.length : 0);
+
+      while (getLen() > maxTotal) {
+        // 먼저 irrelevant 줄이기
+        if (Array.isArray(ei.irrelevant) && ei.irrelevant.length > 0) {
+          ei.irrelevant.pop();
+          continue;
+        }
+        // 다음 support 줄이기
+        if (Array.isArray(ei.support) && ei.support.length > 0) {
+          ei.support.pop();
+          continue;
+        }
+        // conflict는 “1개는 남긴다” (있다면)
+        if (Array.isArray(ei.conflict) && ei.conflict.length > 1) {
+          ei.conflict.pop();
+          continue;
+        }
+        break;
+      }
+
+      afterTotal += getLen();
+    }
+  }
+
+  if (verifyMeta && rawConflictCount > 0) {
+    const cappedConflictItems = s11_collectConflictItemsFromVerifyMeta(verifyMeta);
+    if (Array.isArray(cappedConflictItems) && cappedConflictItems.length === 0) {
+      const fallback = rawConflictItems[0];
+      if (fallback) {
+        verifyMeta.blocks = Array.isArray(verifyMeta.blocks) ? verifyMeta.blocks : [];
+        let targetBlk =
+          verifyMeta.blocks.find(
+            (b) => b?.evidence_items && Array.isArray(b.evidence_items.conflict)
+          ) || verifyMeta.blocks[0];
+
+        if (!targetBlk) {
+          targetBlk = {};
+          verifyMeta.blocks.push(targetBlk);
+        }
+
+        if (!targetBlk.evidence_items || typeof targetBlk.evidence_items !== "object") {
+          targetBlk.evidence_items = {};
+        }
+        if (!Array.isArray(targetBlk.evidence_items.conflict)) {
+          targetBlk.evidence_items.conflict = [];
+        }
+
+        if (targetBlk.evidence_items.conflict.length === 0) {
+          targetBlk.evidence_items.conflict.push(fallback);
+        } else {
+          targetBlk.evidence_items.conflict.unshift(fallback);
+        }
+
+        const getLenRestore = () =>
+          (Array.isArray(targetBlk.evidence_items.support) ? targetBlk.evidence_items.support.length : 0) +
+          (Array.isArray(targetBlk.evidence_items.conflict) ? targetBlk.evidence_items.conflict.length : 0) +
+          (Array.isArray(targetBlk.evidence_items.irrelevant) ? targetBlk.evidence_items.irrelevant.length : 0);
+
+        targetBlk.evidence_items.conflict = targetBlk.evidence_items.conflict.slice(0, Math.max(1, maxKind));
+
+        while (getLenRestore() > maxTotal) {
+          if (Array.isArray(targetBlk.evidence_items.irrelevant) && targetBlk.evidence_items.irrelevant.length > 0) {
+            targetBlk.evidence_items.irrelevant.pop();
+            continue;
+          }
+          if (Array.isArray(targetBlk.evidence_items.support) && targetBlk.evidence_items.support.length > 0) {
+            targetBlk.evidence_items.support.pop();
+            continue;
+          }
+          if (Array.isArray(targetBlk.evidence_items.conflict) && targetBlk.evidence_items.conflict.length > 1) {
+            targetBlk.evidence_items.conflict.pop();
+            continue;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  afterTotal = countEvidenceItemsTotal(verifyMeta);
+
+  partial_scores.verify_meta_evidence_items_cap = {
+    applied: true,
+    per_kind: maxKind,
+    total: maxTotal,
+    evidence_text_max: maxText,
+    before_total_items: beforeTotal,
+    after_total_items: afterTotal,
+  };
+} catch (e) {
+  if (DEBUG) console.warn("⚠️ (S-9) verifyMeta evidence_items cap failed:", e?.message || e);
+  partial_scores.verify_meta_evidence_items_cap = {
+    applied: false,
+    error: e?.message || "unknown",
+  };
+}
+
+    // ✅ (B-7) verifyMeta evidence_items 자동 보강:
+    // - Gemini가 engine/source_url/source_host/title 등을 누락해도
+    //   서버 verifyEvidenceLookup(정답)으로 채워 넣는다.
+    // - evidence_id가 있는 항목만 보강(없으면 그대로 둠)
+    try {
+      if (verifyMeta && Array.isArray(verifyMeta.blocks) && __lookup) {
+        let filled = 0;
+
+        for (const blk of verifyMeta.blocks) {
+          const ei =
+            blk?.evidence_items && typeof blk.evidence_items === "object"
+              ? blk.evidence_items
+              : null;
+          if (!ei) continue;
+
+          for (const k of ["support", "conflict", "irrelevant"]) {
+            if (!Array.isArray(ei[k])) continue;
+
+            ei[k] = ei[k].map((x) => {
+              if (!x) return x;
+
+              // (방어) 문자열이면 evidence_id일 수도/URL일 수도 있음
+              if (typeof x === "string") {
+                const s = x.trim();
+                if (s.startsWith("http://") || s.startsWith("https://")) return x;
+
+                if (s && Object.prototype.hasOwnProperty.call(__lookup, s)) {
+                  const ref = __lookup[s];
+                  if (ref && typeof ref === "object") {
+                    filled += 1;
+                    return {
+                      evidence_id: s,
+                      engine: ref.engine || null,
+                      source_url: ref.source_url || null,
+                      source_host: ref.source_host || null,
+                      title: ref.title || null,
+                      ...(ref.published_at ? { published_at: ref.published_at } : {}),
+                      ...(Number.isFinite(ref.age_days) ? { age_days: ref.age_days } : {}),
+                      ...(Number.isFinite(ref.tier) ? { tier: ref.tier } : {}),
+                      ...(ref.naver_type ? { naver_type: ref.naver_type } : {}),
+                    };
+                  }
+                }
+                return x;
+              }
+
+              // 객체면 “빈 필드만” lookup으로 채움
+              if (typeof x !== "object") return x;
+
+              const id = x.evidence_id ? String(x.evidence_id).trim() : "";
+              if (!id) return x;
+
+              const ref = Object.prototype.hasOwnProperty.call(__lookup, id)
+                ? __lookup[id]
+                : null;
+
+              if (!ref || typeof ref !== "object") return x;
+
+              const next = { ...x };
+              let changed = false;
+
+              if (!next.engine && ref.engine) { next.engine = ref.engine; changed = true; }
+              if (!next.source_url && ref.source_url) { next.source_url = ref.source_url; changed = true; }
+              if (!next.source_host && ref.source_host) { next.source_host = ref.source_host; changed = true; }
+              if (!next.title && ref.title) { next.title = ref.title; changed = true; }
+              if (!next.published_at && ref.published_at) { next.published_at = ref.published_at; changed = true; }
+              if (!Number.isFinite(next.age_days) && Number.isFinite(ref.age_days)) { next.age_days = ref.age_days; changed = true; }
+              if (!Number.isFinite(next.tier) && Number.isFinite(ref.tier)) { next.tier = ref.tier; changed = true; }
+              if (!next.naver_type && ref.naver_type) { next.naver_type = ref.naver_type; changed = true; }
+
+              if (changed) filled += 1;
+              return next;
+            });
+          }
+        }
+
+        partial_scores.verify_lookup_fill = { applied: filled > 0, filled_items: filled };
+      }
+    } catch (e) {
+      if (DEBUG) console.warn("⚠️ verify_lookup_fill failed:", e?.message || e);
+      partial_scores.verify_lookup_fill = { applied: false, error: e?.message || "unknown" };
+    }
+
   } catch {
     verifyMeta = null;
+    verifyMetaRaw = null;
     if (DEBUG) console.warn("⚠️ verifyMeta JSON parse fail");
   }
 }
@@ -4091,18 +6669,111 @@ if (!verify || !verify.trim()) {
       return Math.max(0, Math.min(1, v));
     })();
 
-const enginesUsedSet = new Set(
-  Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines
-);
+const truthscoreEnginesArr =
+  (safeMode === "qv" || safeMode === "fv") && Array.isArray(partial_scores.effective_engines)
+    ? partial_scores.effective_engines
+    : (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines);
+
+partial_scores.truthscore_engines_basis =
+  (safeMode === "qv" || safeMode === "fv") && Array.isArray(partial_scores.effective_engines)
+    ? "effective_engines"
+    : (Array.isArray(partial_scores.engines_used) ? "engines_used" : "engines");
+
+const enginesUsedSet = new Set(Array.isArray(truthscoreEnginesArr) ? truthscoreEnginesArr : []);
+
+// ✅ TruthScore에 실제로 반영된 엔진(가벼운 요약)
+partial_scores.truthscore_engines_used = Array.isArray(truthscoreEnginesArr) ? truthscoreEnginesArr : [];
+
+// ✅ (S-7) 엔진 전역 보정계수도 TruthScore 기준 엔진으로 재계산(E_eff 반영)
+// - QV/FV: effective_engines(검증 evidence>0)만으로 보정 재계산
+// - DV/CV: 기존 engines_used 기준(블록기반 E_eff와 성격이 달라서)
+try {
+  const baseEnginesForCorrection = Array.isArray(truthscoreEnginesArr) ? truthscoreEnginesArr : [];
+  const enginesForCorrection = baseEnginesForCorrection.filter((x) => x !== "klaw");
+
+  // 기존 값 보관(디버깅/설명가능성용)
+  partial_scores.engine_factor_pre_eff = partial_scores.engine_factor;
+  partial_scores.engine_factor_engines_pre_eff = partial_scores.engine_factor_engines;
+
+  if (enginesForCorrection.length > 0) {
+    engineFactor = computeEngineCorrectionFactor(enginesForCorrection, engineStatsMap); // 0.9~1.1
+  } else {
+    engineFactor = 1.0;
+  }
+
+  // ✅ “최종 적용된” 값으로 갱신
+  partial_scores.engine_factor = engineFactor;
+  partial_scores.engine_factor_engines = enginesForCorrection;
+  partial_scores.engine_factor_basis = partial_scores.truthscore_engines_basis;
+} catch (e) {
+  if (DEBUG) console.warn("⚠️ engine_factor(E_eff) recompute failed:", e?.message || e);
+  // 실패 시 기존 engineFactor 유지
+  partial_scores.engine_factor_basis = partial_scores.truthscore_engines_basis;
+}
 
 const useGdelt = enginesUsedSet.has("gdelt");
 const useNaver = enginesUsedSet.has("naver");
 
-const R_t =
+// ✅ (S-7) recency도 TruthScore 기준 엔진(=E_eff)에 없는 엔진은 “무시”해서 재계산
+let R_t =
   (safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "cv") &&
   typeof partial_scores.recency === "number"
     ? Math.max(0, Math.min(1, partial_scores.recency))
     : 1.0;
+
+try {
+  const rd = partial_scores.recency_detail;
+  const weightsEngine = rd && typeof rd.weights_engine === "object" ? rd.weights_engine : null;
+  const scoresEngine = rd && typeof rd.engine_scores === "object" ? rd.engine_scores : null;
+  const floor = rd?.weights_group && typeof rd.weights_group.floor === "number" ? rd.weights_group.floor : null;
+
+  // ✅ QV/FV에 한해 “effective_engines 기반 제외”를 적용 (DV/CV는 engines_used 기반이라 동일)
+  const applyEffFilter = (safeMode === "qv" || safeMode === "fv") && partial_scores.truthscore_engines_basis === "effective_engines";
+
+  if (applyEffFilter && weightsEngine && scoresEngine) {
+    let penalty = 0;
+
+    for (const [eng, wRaw] of Object.entries(weightsEngine)) {
+      const w = (typeof wRaw === "number" && Number.isFinite(wRaw)) ? wRaw : 0;
+      if (w <= 0) continue;
+
+      // E_eff에 없으면 recency 기여 “제외”
+      if (!enginesUsedSet.has(eng)) continue;
+
+      const sRaw = scoresEngine[eng];
+      const s = (typeof sRaw === "number" && Number.isFinite(sRaw)) ? clamp01(sRaw) : 1.0;
+      penalty += w * (1 - s);
+    }
+
+    const rtEff = 1 - penalty;
+    const floor2 = (typeof floor === "number" && Number.isFinite(floor)) ? clamp01(floor) : 0;
+    const rtClamped = Math.max(floor2, clamp01(rtEff));
+
+    partial_scores.recency_pre_eff = partial_scores.recency;
+    partial_scores.recency = rtClamped; // ✅ 최종 TruthScore용 recency로 갱신
+    partial_scores.recency_eff_meta = {
+      applied: true,
+      basis: "effective_engines",
+      floor: floor2,
+      pre: Math.max(0, Math.min(1, R_t)),
+      post: rtClamped,
+    };
+
+    R_t = rtClamped;
+  } else {
+    partial_scores.recency_eff_meta = {
+      applied: false,
+      basis: partial_scores.truthscore_engines_basis,
+    };
+  }
+} catch (e) {
+  if (DEBUG) console.warn("⚠️ recency(E_eff) recompute failed:", e?.message || e);
+  partial_scores.recency_eff_meta = {
+    applied: false,
+    basis: partial_scores.truthscore_engines_basis,
+    error: e?.message || "unknown",
+  };
+}
 
 const N =
   (safeMode === "qv" || safeMode === "fv") &&
@@ -4111,8 +6782,14 @@ const N =
     ? Math.max(0.9, Math.min(1.05, partial_scores.naver_tier_factor))
     : 1.0;
 
-// Coverage Cₜ: E_eff 기반 포화 함수 + 권위출처 예외
+//// Coverage Cₜ: E_eff 기반 포화 함수 + 권위출처 예외 + 설명가능성(메타/스코프)
 let C_t = 1.0;
+
+const coverageBasis = Array.isArray(partial_scores.effective_engines)
+  ? "effective_engines"
+  : Array.isArray(partial_scores.engines_used)
+    ? "engines_used"
+    : "engines";
 
 // E_eff가 있으면 그걸, 없으면 engines_used / engines를 사용
 const effEnginesArr = Array.isArray(partial_scores.effective_engines)
@@ -4121,37 +6798,561 @@ const effEnginesArr = Array.isArray(partial_scores.effective_engines)
     ? partial_scores.engines_used
     : engines;
 
+const effCounts =
+  partial_scores.effective_engine_counts && typeof partial_scores.effective_engine_counts === "object"
+    ? partial_scores.effective_engine_counts
+    : null;
+
 let totalEffEvidence = 0;
-if (
-  Array.isArray(effEnginesArr) &&
-  effEnginesArr.length > 0 &&
-  partial_scores.effective_engine_counts
-) {
+if (Array.isArray(effEnginesArr) && effEnginesArr.length > 0 && effCounts) {
   for (const name of effEnginesArr) {
-    const cnt = partial_scores.effective_engine_counts[name];
-    if (typeof cnt === "number" && cnt > 0) {
-      totalEffEvidence += cnt;
-    }
+    const cnt = effCounts[name];
+    if (typeof cnt === "number" && cnt > 0) totalEffEvidence += cnt;
   }
 }
 
-if (totalEffEvidence > 0) {
-  const N_SAT = 10; // 이 값 근처에서 포화되도록
-  const raw = Math.log(1 + totalEffEvidence) / Math.log(1 + N_SAT);
-  // 너무 낮게 떨어지지 않도록 하한 0.4, 상한 1.0
-  C_t = Math.max(0.4, Math.min(1.0, raw));
+// ✅ coverage 패널티 대상 엔진 집합(=설계상 호출 대상) — no_query 스킵은 제외
+const engineCallSummary =
+  partial_scores.engine_call_summary && typeof partial_scores.engine_call_summary === "object"
+    ? partial_scores.engine_call_summary
+    : null;
+
+const designedToCallArr = Array.isArray(engineCallSummary?.designed_to_call)
+  ? engineCallSummary.designed_to_call
+  : null;
+
+const designedToCallCount = Array.isArray(designedToCallArr) ? designedToCallArr.length : 0;
+const effectiveEngineCount = Array.isArray(partial_scores.effective_engines) ? partial_scores.effective_engines.length : 0;
+
+const engineCoverageRatio =
+  designedToCallCount > 0 ? (effectiveEngineCount / designedToCallCount) : null;
+
+const N_SAT = 10;  // evidence 개수 기준 포화 구간
+const C_T_MIN = 0.4; // evidence가 있을 때 최소 하한(너무 과도한 벌점 방지)
+const C_T_ZERO = Number(process.env.COVERAGE_C_T_ZERO ?? "0.25"); // evidence 0일 때(호출 실패/0건) 하한
+
+let coverageRaw = null;
+let coverageRawEvidence = null;
+let coverageRawEngine = null;
+
+let C_t_base = 1.0;
+
+let coverageEvaluated = true;              // ✅ coverage를 “평가했는지”
+let coverageUnavailableReason = null;      // ✅ 미평가면 사유
+
+// ✅ mode가 coverage를 적용하는지(기본: qv/fv/dv/cv만)
+const coverageModeApplicable =
+  (safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "cv");
+
+// ✅ (개편) 증거 “2개 이하 벌점” 같은 계단식 패널티 폐기
+// - evidence 수는 포화함수(sat log)로 점진 반영
+// - “설계상 호출 대상 엔진(designed_to_call)” 대비 E_eff 비율도 함께 반영
+// - 설계상 호출 대상이 없으면 coverage 미평가(패널티 없음)
+// - 호출 대상이 있는데 evidence 0이면 C_T_ZERO로 페널티(합의 #7)
+if (!coverageModeApplicable) {
+  coverageEvaluated = false;
+  coverageUnavailableReason = "mode_not_applicable";
+  coverageRaw = null;
+  coverageRawEvidence = null;
+  coverageRawEngine = null;
+  C_t_base = C_t; // 1.0 유지
+} else if (!designedToCallCount || designedToCallCount <= 0) {
+  coverageEvaluated = false;
+  coverageUnavailableReason = "no_designed_engines";
+  coverageRaw = null;
+  coverageRawEvidence = null;
+  coverageRawEngine = null;
+  C_t_base = C_t; // 1.0 유지
+} else {
+  // evidence 포화(sat log)
+  coverageRawEvidence = Math.log(1 + totalEffEvidence) / Math.log(1 + N_SAT);
+
+  // 엔진 커버리지 포화(설계상 호출 대상 대비 E_eff)
+  coverageRawEngine = Math.log(1 + effectiveEngineCount) / Math.log(1 + designedToCallCount);
+
+  // 가중 결합(ENV로 조정 가능)
+  let wEvidence = Number(process.env.COVERAGE_W_EVIDENCE ?? "0.75");
+  let wEngine = Number(process.env.COVERAGE_W_ENGINE ?? "0.25");
+  if (!Number.isFinite(wEvidence) || !Number.isFinite(wEngine) || wEvidence < 0 || wEngine < 0 || (wEvidence + wEngine) <= 0) {
+    wEvidence = 0.75;
+    wEngine = 0.25;
+  }
+  const wSum = wEvidence + wEngine;
+  wEvidence = wEvidence / wSum;
+  wEngine = wEngine / wSum;
+
+  coverageRaw = wEvidence * Math.max(0, Math.min(1, coverageRawEvidence))
+              + wEngine * Math.max(0, Math.min(1, coverageRawEngine));
+
+  // evidence가 있으면 기존 최소하한(너무 급락 방지), 없으면 C_T_ZERO로 페널티
+  const floor = (totalEffEvidence > 0)
+    ? C_T_MIN
+    : (Number.isFinite(C_T_ZERO) ? Math.max(0, Math.min(1, C_T_ZERO)) : 0.25);
+
+  C_t_base = Math.max(floor, Math.min(1.0, coverageRaw));
+  C_t = C_t_base;
+
+  partial_scores.coverage_weights = { wEvidence, wEngine };
 }
 
-// 간단 Authority override: 네이버 tier_factor가 높은 경우 Cₜ 하한을 0.7로 보정
-if (
-  typeof partial_scores.naver_tier_factor === "number" &&
-  partial_scores.naver_tier_factor >= 1.02
-) {
-  C_t = Math.max(C_t, 0.7);
+// ✅ (B-6) naver evidence_text fetch로 확인된 authority host를 authority_signals에 보강
+// - evidence_text가 붙은 항목은 “본문 발췌로 확인”된 케이스라 신뢰 신호로 강하게 취급
+try {
+  if (partial_scores.authority_signals && typeof partial_scores.authority_signals === "object") {
+    const as = partial_scores.authority_signals;
+
+    let text_verified_authority_count = 0;
+    const text_verified_authority_hosts = new Set();
+
+    if (Array.isArray(blocksForVerifySlim)) {
+      for (const b of blocksForVerifySlim) {
+        const naverArr = Array.isArray(b?.evidence?.naver) ? b.evidence.naver : [];
+        for (const ev of naverArr) {
+          if (!ev || typeof ev !== "object") continue;
+          if (!ev.evidence_text) continue;
+
+          const host = ev.source_host ? _stripWww(String(ev.source_host).toLowerCase()) : null;
+          if (host && isAuthorityHost(host)) {
+            text_verified_authority_count += 1;
+            text_verified_authority_hosts.add(host);
+          }
+        }
+      }
+    }
+
+    as.text_verified_authority_count = text_verified_authority_count;
+    as.text_verified_authority_hosts = Array.from(text_verified_authority_hosts).slice(0, 30);
+
+    // has_authority가 false/미정이어도, 본문발췌로 authority가 잡히면 true로 올림
+    if (text_verified_authority_count > 0) {
+      as.has_authority = true;
+    }
+
+    // tier1_count가 없으면(또는 0이면), 본문발췌 authority가 있으면 최소 1로 보정(override 트리거용)
+    if (!Number.isFinite(as.tier1_count) || as.tier1_count <= 0) {
+      if (text_verified_authority_count > 0) as.tier1_count = 1;
+    }
+  }
+} catch (e) {
+  if (DEBUG) console.warn("⚠️ authority_signals(text_verified) patch failed:", e?.message || e);
+}
+
+// ✅ Authority override: 실제 근거 출처(도메인/티어) 기반으로 Cₜ 하한 보정
+const auth = partial_scores.authority_signals || null;
+
+partial_scores.authority_override = {
+  applied: false,
+  floor: null,
+  tier1_count: auth?.tier1_count ?? 0,
+  authority_hosts: Array.isArray(auth?.authority_hosts) ? auth.authority_hosts : [],
+};
+
+if (coverageEvaluated && auth && auth.has_authority) {
+  // tier1(최상위) 근거가 있으면 더 강하게 “저표본 패널티 면제”
+  const floor = (auth.tier1_count && auth.tier1_count > 0) ? 0.80 : 0.72;
+
+  C_t = Math.max(C_t, floor);
+
+  partial_scores.authority_override = {
+    applied: true,
+    floor,
+    tier1_count: auth.tier1_count || 0,
+    authority_hosts: Array.isArray(auth.authority_hosts) ? auth.authority_hosts : [],
+  };
 }
 
 // 로그에서 볼 수 있도록 저장
 partial_scores.coverage = C_t;
+
+// ✅ UI/로그용(해석용): coverage를 실제로 평가했는지
+partial_scores.coverage_eval = coverageEvaluated ? C_t : null;   // evidence 기반 평가값(미평가면 null)
+
+// ✅ UI/로그용: coverage “미평가” 플래그(패널티 오해 방지)
+partial_scores.coverage_unavailable = !coverageEvaluated;        // true면 “coverage 미평가”
+partial_scores.coverage_unavailable_reason = coverageUnavailableReason;
+
+// ✅ coverage 계산 “왜 이렇게 나왔는지” 메타
+partial_scores.coverage_meta = {
+  basis: coverageBasis,
+  evaluated: coverageEvaluated,
+  unavailable_reason: coverageUnavailableReason,
+
+  N_SAT,
+  C_T_MIN,
+  C_T_ZERO,
+
+  total_eff_evidence: totalEffEvidence,
+  designed_to_call_count: designedToCallCount,
+  effective_engine_count: effectiveEngineCount,
+  engine_coverage_ratio: engineCoverageRatio,
+
+  raw_evidence: coverageRawEvidence,
+  raw_engine: coverageRawEngine,
+  raw_combined: coverageRaw,
+
+  weights: partial_scores.coverage_weights || null,
+
+  C_t_base,
+  C_t_final: C_t,
+  coverage_eval: coverageEvaluated ? C_t : null,
+  authority_override: partial_scores.authority_override,
+};
+
+// ✅ coverage 계산 스코프(어떤 집합/상태 기준인지)
+// ✅ 항상 내보내는 coverage 스코프 요약(가벼움)
+partial_scores.coverage_scope_summary = {
+  basis: coverageBasis,
+  designed_to_call: Array.isArray(designedToCallArr) ? designedToCallArr : [],
+  designed_to_call_count: designedToCallCount,
+  total_eff_evidence: totalEffEvidence,
+  eff_engines: Array.isArray(effEnginesArr) ? effEnginesArr : [],
+  effective_engines_count: Array.isArray(partial_scores.effective_engines) ? partial_scores.effective_engines.length : null,
+};
+
+// ✅ DEBUG일 때만 상세 스코프 제공(응답 크기 방지)
+partial_scores.coverage_scope = DEBUG
+  ? {
+      eff_engines: Array.isArray(effEnginesArr) ? effEnginesArr : [],
+      effective_engine_counts: effCounts || {},
+      engines_requested: Array.isArray(partial_scores.engines_requested) ? partial_scores.engines_requested : null,
+      engines_used: Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : null,
+      effective_engines: Array.isArray(partial_scores.effective_engines) ? partial_scores.effective_engines : null,
+      engine_call_summary: partial_scores.engine_call_summary || null,
+    }
+  : null;
+
+
+// ✅ ConflictIndex: support vs conflict 비율로 상충 정도를 0~1로 계산 (TruthScore와 분리)
+// ✅ ConflictIndex 분리 + 상세 분해(블록별/엔진별)
+let conflictIndex = null;
+
+// verifyMeta.blocks[].evidence.support/conflict 는 보통 ["crossref","naver"] 같은 “엔진명 문자열 배열”로 옴.
+// 그래서 문자열을 engine으로 인식 + 별칭/URL도 정규화해서 by_engine 분해가 정확해지도록 함.
+const KNOWN_ENGINES = new Set([
+  "crossref",
+  "openalex",
+  "wikidata",
+  "gdelt",
+  "naver",
+  "github",
+  "klaw",
+]);
+
+const normalizeEngineName = (v) => {
+  if (!v) return "unknown";
+  let s = String(v).trim().toLowerCase();
+  if (!s) return "unknown";
+
+  // URL이면 host 기반으로 추정
+  if (s.startsWith("http://") || s.startsWith("https://")) {
+    try {
+      const u = new URL(s);
+      const host = (u.hostname || "").toLowerCase();
+      if (!host) return "unknown";
+      if (host.includes("openalex")) return "openalex";
+      if (host.includes("crossref")) return "crossref";
+      if (host.includes("wikidata") || host.includes("wikipedia")) return "wikidata";
+      if (host.includes("gdelt")) return "gdelt";
+      if (host.includes("naver")) return "naver";
+      if (host.includes("github")) return "github";
+      if (host.includes("law.go.kr")) return "klaw";
+      return "unknown";
+    } catch {
+      // URL parse 실패면 아래 별칭 처리로 진행
+    }
+  }
+
+  // 별칭/표기 흔들림 정리
+  const aliasMap = {
+    "open alex": "openalex",
+    "open-alex": "openalex",
+    "open_alex": "openalex",
+
+    "cross ref": "crossref",
+    "cross-ref": "crossref",
+    "cross_ref": "crossref",
+
+    "wiki": "wikidata",
+    "wikidata.org": "wikidata",
+    "wikipedia": "wikidata",
+
+    "g-delt": "gdelt",
+    "gdeltproject": "gdelt",
+
+    "naver news": "naver",
+
+    "k-law": "klaw",
+    "k_law": "klaw",
+    "law.go.kr": "klaw",
+    "klaw": "klaw",
+  };
+
+  if (aliasMap[s]) s = aliasMap[s];
+
+  // "engine: crossref" 같은 형태도 방어
+  s = s.replace(/^engine\s*:\s*/i, "").trim();
+
+  return KNOWN_ENGINES.has(s) ? s : "unknown";
+};
+
+const inferEngineFromEvidenceItem = (item) => {
+  if (!item) return "unknown";
+
+  // ✅ support/conflict가 문자열 배열인 경우가 가장 흔함
+  if (typeof item === "string") return normalizeEngineName(item);
+
+  // object 형태인 경우(확장 대비)
+  const cand =
+    item.engine ||
+    item.source_engine ||
+    item.provider ||
+    item.source ||
+    item.origin ||
+    item.engine_name;
+
+  if (cand && typeof cand === "string") {
+    return normalizeEngineName(cand);
+  }
+
+  const url = item.source_url || item.url || item.link;
+  if (url && typeof url === "string") {
+    return normalizeEngineName(url);
+  }
+
+  return "unknown";
+};
+
+const bump = (obj, key, field, inc = 1) => {
+  if (!obj[key]) obj[key] = { support: 0, conflict: 0, irrelevant: 0, total: 0, conflict_index: null };
+  obj[key][field] += inc;
+  obj[key].total += inc;
+};
+
+if (verifyMeta && Array.isArray(verifyMeta.blocks)) {
+  let totalSupport = 0;
+  let totalConflict = 0;
+  let totalIrrelevant = 0;
+
+ const byBlock = [];
+const byEngine = {};
+const byHost = {};
+
+const inferUrlFromEvidenceItem = (item) => {
+  if (!item) return null;
+  if (typeof item === "string") {
+    // URL이면 사용, 엔진명 문자열이면 null
+    return (item.startsWith("http://") || item.startsWith("https://")) ? item : null;
+  }
+  return item.source_url || item.url || item.link || null;
+};
+
+const inferHostFromEvidenceItem = (item) => {
+  if (!item) return null;
+
+  // 1) 명시 host
+  const h1 = (typeof item === "object" && item.source_host) ? String(item.source_host) : null;
+  if (h1) return _stripWww(h1.toLowerCase());
+
+  // 2) URL로부터 host 추출
+  const url = inferUrlFromEvidenceItem(item);
+  const h2 = url ? _hostFromUrlish(url) : null;
+  return h2 ? _stripWww(String(h2).toLowerCase()) : null;
+};
+
+const bumpHost = (obj, host, field, inc = 1) => {
+  const h = host ? _stripWww(String(host).toLowerCase()) : null;
+  if (!h) return;
+  if (!obj[h]) obj[h] = { support: 0, conflict: 0, irrelevant: 0, total: 0, conflict_index: null };
+  obj[h][field] += inc;
+  obj[h].total += inc;
+};
+
+const uniqHosts = (items, limit = 8) => {
+  const arr = Array.isArray(items) ? items : [];
+  const set = new Set();
+  const out = [];
+  for (const it of arr) {
+    const h = inferHostFromEvidenceItem(it);
+    if (!h) continue;
+    if (set.has(h)) continue;
+    set.add(h);
+    out.push(h);
+    if (out.length >= limit) break;
+  }
+  return out;
+};
+
+  for (let i = 0; i < verifyMeta.blocks.length; i++) {
+    const blk = verifyMeta.blocks[i] || {};
+    const ev = blk && blk.evidence ? blk.evidence : {};
+
+    const supportArr = Array.isArray(ev.support) ? ev.support : [];
+const conflictArr = Array.isArray(ev.conflict) ? ev.conflict : [];
+const irrelevantArr = Array.isArray(ev.irrelevant) ? ev.irrelevant : [];
+
+// ✅ 새 포맷: url/host/title 포함 “근거 아이템들”
+const evItems = (blk && typeof blk === "object") ? blk.evidence_items : null;
+const supportItems = Array.isArray(evItems?.support) ? evItems.support : [];
+const conflictItems = Array.isArray(evItems?.conflict) ? evItems.conflict : [];
+const irrelevantItems = Array.isArray(evItems?.irrelevant) ? evItems.irrelevant : [];
+
+// ✅ host(도메인) 단위 집계는 evidence_items로만 계산(없으면 집계 없음)
+for (const it of supportItems) bumpHost(byHost, inferHostFromEvidenceItem(it), "support", 1);
+for (const it of conflictItems) bumpHost(byHost, inferHostFromEvidenceItem(it), "conflict", 1);
+for (const it of irrelevantItems) bumpHost(byHost, inferHostFromEvidenceItem(it), "irrelevant", 1);
+
+
+    const suppCount = supportArr.length;
+    const confCount = conflictArr.length;
+    const irrCount = irrelevantArr.length;
+
+    totalSupport += suppCount;
+    totalConflict += confCount;
+    totalIrrelevant += irrCount;
+
+    // 엔진별 분해: evidence item에 engine 필드가 없으면 unknown으로 집계
+    for (const it of supportArr) {
+      const eng = inferEngineFromEvidenceItem(it);
+      bump(byEngine, eng, "support", 1);
+    }
+    for (const it of conflictArr) {
+      const eng = inferEngineFromEvidenceItem(it);
+      bump(byEngine, eng, "conflict", 1);
+    }
+    for (const it of irrelevantArr) {
+      const eng = inferEngineFromEvidenceItem(it);
+      bump(byEngine, eng, "irrelevant", 1);
+    }
+
+    const denomBlk = suppCount + confCount;
+    const blkConflictIndex = denomBlk > 0 ? (confCount / denomBlk) : null;
+
+   const uniqTop = (arr, limit = 8) => {
+  const set = new Set();
+  const out = [];
+  for (const x of arr) {
+    const n = normalizeEngineName(x);
+    if (n === "unknown") continue;
+    if (set.has(n)) continue;
+    set.add(n);
+    out.push(n);
+    if (out.length >= limit) break;
+  }
+  return out;
+};
+
+byBlock.push({
+  index: typeof blk.index === "number" ? blk.index : i,
+  block_id: blk.block_id ?? null,
+  title: blk.title ?? null,
+  support: suppCount,
+  conflict: confCount,
+  irrelevant: irrCount,
+  conflict_index: blkConflictIndex,
+
+  // ✅ 디버깅용: 어떤 엔진이 support/conflict로 찍혔는지
+  support_engines: uniqTop(supportArr, 8),
+  conflict_engines: uniqTop(conflictArr, 8),
+  irrelevant_engines: uniqTop(irrelevantArr, 8),
+});
+  support_hosts: uniqHosts(supportItems, 8),
+  conflict_hosts: uniqHosts(conflictItems, 8),
+  irrelevant_hosts: uniqHosts(irrelevantItems, 8),
+  }
+
+  // 엔진별 conflict_index 계산
+  for (const [eng, stats] of Object.entries(byEngine)) {
+    const denomEng = (stats.support || 0) + (stats.conflict || 0);
+    stats.conflict_index = denomEng > 0 ? ((stats.conflict || 0) / denomEng) : null;
+  }
+
+  const denom = totalSupport + totalConflict;
+  conflictIndex = denom > 0 ? (totalConflict / denom) : null;
+
+  // 기존 필드 유지
+  partial_scores.conflict_index = conflictIndex;
+
+  // ✅ 상세 로그(너무 커지지 않게 block은 상위 30개까지만)
+  const byBlockSorted = [...byBlock].sort((a, b) => (b.conflict || 0) - (a.conflict || 0));
+  const topConflictBlocks = byBlockSorted.slice(0, 10);
+
+  // engine도 conflict 많은 순으로 정렬한 리스트 제공
+  const byEngineList = Object.entries(byEngine)
+    .map(([engine, v]) => ({ engine, ...v }))
+    .sort((a, b) => (b.conflict || 0) - (a.conflict || 0));
+
+// host별 conflict_index 계산 + 보기 좋은 리스트
+for (const [host, stats] of Object.entries(byHost)) {
+  const denomHost = (stats.support || 0) + (stats.conflict || 0);
+  stats.conflict_index = denomHost > 0 ? ((stats.conflict || 0) / denomHost) : null;
+}
+
+const byHostList = Object.entries(byHost)
+  .map(([host, v]) => ({ host, ...v }))
+  .sort((a, b) => (b.conflict || 0) - (a.conflict || 0));
+
+const topConflictHosts = byHostList.slice(0, 10);
+
+  const conflictDetail = {
+  totals: {
+    support: totalSupport,
+    conflict: totalConflict,
+    irrelevant: totalIrrelevant,
+    denom_support_conflict: totalSupport + totalConflict,
+    conflict_index: conflictIndex,
+  },
+  by_block: byBlock.slice(0, 30),
+  top_conflict_blocks: topConflictBlocks,
+  by_engine: byEngine,
+  by_engine_list: byEngineList,
+  by_host: byHost,
+  by_host_list: byHostList,
+  top_conflict_hosts: topConflictHosts,
+  notes: {
+    engine_infer: "evidence item에 engine/source_engine/provider 등이 없으면 unknown으로 집계됨",
+    detail_included_only_when_debug: true,
+  },
+};
+
+// ✅ 항상 내보내는 “요약”(응답 크기 안정화)
+partial_scores.conflict_summary = {
+  totals: conflictDetail.totals,
+  top_conflict_blocks: (conflictDetail.top_conflict_blocks || []).slice(0, 5).map((b) => ({
+    index: b.index,
+    block_id: b.block_id ?? null,
+    title: b.title ?? null,
+    support: b.support,
+    conflict: b.conflict,
+    irrelevant: b.irrelevant,
+    conflict_index: b.conflict_index,
+    conflict_engines: b.conflict_engines || [],
+    conflict_hosts: b.conflict_hosts || [],
+    conflict_evidence_samples: b.conflict_evidence_samples ? b.conflict_evidence_samples.slice(0, 2) : [],
+  })),
+  top_conflict_engines: (conflictDetail.by_engine_list || []).slice(0, 8).map((e) => ({
+    engine: e.engine,
+    support: e.support,
+    conflict: e.conflict,
+    irrelevant: e.irrelevant,
+    conflict_index: e.conflict_index,
+  })),
+  top_conflict_hosts: (conflictDetail.top_conflict_hosts || []).slice(0, 8).map((h) => ({
+    host: h.host,
+    support: h.support,
+    conflict: h.conflict,
+    irrelevant: h.irrelevant,
+    conflict_index: h.conflict_index,
+  })),
+  detail_included: !!DEBUG,
+};
+
+// ✅ DEBUG일 때만 풀 디테일 제공
+partial_scores.conflict_detail = DEBUG ? conflictDetail : null;
+} else {
+  partial_scores.conflict_index = null;
+  partial_scores.conflict_summary = null; // ✅ 추가
+  partial_scores.conflict_detail = null;
+}
 
     // DV/CV: GitHub 유효성 Vᵣ, 없으면 0.7 중립값
         const useGithub = enginesUsedSet.has("github");
@@ -4203,12 +7404,34 @@ partial_scores.coverage = C_t;
     // (옵션) partial_scores에도 넣어 두면 로그에서 같이 볼 수 있음
     partial_scores.engine_adjust = perEngineAdjust;
 
-    // ─────────────────────────────
-    // ⑥ 로그 및 DB 반영
-    // ─────────────────────────────
-const enginesForWeight = Array.isArray(partial_scores.engines_used)
-  ? partial_scores.engines_used.filter((x) => x !== "klaw")
-  : engines.filter((x) => x !== "klaw");
+// ─────────────────────────────
+// ⑥ 로그 및 DB 반영 (점수 계산 이후 / E_eff 반영)
+// ─────────────────────────────
+
+// ✅ 엔진 weight 업데이트는 E_eff(=effective_engines) 우선
+const enginesForWeight = Array.isArray(partial_scores.effective_engines)
+  ? partial_scores.effective_engines.filter((x) => x !== "klaw")
+  : Array.isArray(partial_scores.engines_used)
+    ? partial_scores.engines_used.filter((x) => x !== "klaw")
+    : Array.isArray(engines)
+      ? engines.filter((x) => x !== "klaw")
+      : [];
+
+// ✅ “호출은 됐는데(used에 있었는데) 최종 유효근거 0이라 빠진 엔진”을 로그로 남김
+const excludedNoEffectiveEvidence =
+  Array.isArray(partial_scores.engines_used) && Array.isArray(partial_scores.effective_engines)
+    ? partial_scores.engines_used.filter((e) => !partial_scores.effective_engines.includes(e))
+    : [];
+
+partial_scores.engine_weight_meta = {
+  basis: Array.isArray(partial_scores.effective_engines)
+    ? "effective_engines"
+    : Array.isArray(partial_scores.engines_used)
+      ? "engines_used"
+      : "engines",
+  engines_for_weight: enginesForWeight,
+  excluded_no_effective_evidence: excludedNoEffectiveEvidence,
+};
 
 await Promise.all(
   enginesForWeight.map((eName) => {
@@ -4229,7 +7452,6 @@ await Promise.all(
     return updateWeight(eName, engineTruth, engineMs);
   })
 );
-
 
 // ✅ Gemini 총합(ms) — 모든 Gemini 단계 완료 후 계산
 partial_scores.gemini_total_ms = Object.values(geminiTimes)
@@ -4312,22 +7534,83 @@ created_at: new Date(),
 ]);
 
 // ─────────────────────────────
-// ⑦ 결과 반환 (ⅩⅤ 규약 형태로 래핑)
-// ─────────────────────────────
+    // ⑦ 결과 반환 (ⅩⅤ 규약 형태로 래핑)
+    // ─────────────────────────────
 const truthscore_pct = Math.round(truthscore * 10000) / 100; // 2 decimals
 const truthscore_text = `${truthscore_pct.toFixed(2)}%`;
 
 // ✅ normalizedPartial이 따로 없으니 일단 동일하게 사용
 const normalizedPartial = partial_scores;
+const conflictPoolSummary = verifyMetaRaw ? s11_buildConflictPoolSummary(verifyMetaRaw) : null;
+const conflictCounts = conflictPoolSummary?.counts || null;
+const conflictByHost = conflictPoolSummary?.conflict_by_host || null;
+const conflictHostsTop = conflictPoolSummary?.conflict_hosts_top || null;
+const conflictIndexRaw =
+  conflictCounts && typeof conflictCounts.conflict === "number"
+    ? (() => {
+        const denom = (conflictCounts.support || 0) + (conflictCounts.conflict || 0);
+        return denom > 0 ? conflictCounts.conflict / denom : null;
+      })()
+    : null;
+
+// ✅ ConflictIndex(상충도) — TruthScore와 분리된 “불확실성 지표”
+const __conf01 =
+  typeof conflictIndexRaw === "number"
+    ? Math.max(0, Math.min(1, conflictIndexRaw))
+    : (typeof normalizedPartial?.conflict_index === "number" &&
+      Number.isFinite(normalizedPartial.conflict_index)
+        ? Math.max(0, Math.min(1, normalizedPartial.conflict_index))
+        : null);
+
+const __confPct =
+  typeof __conf01 === "number" ? Math.round(__conf01 * 10000) / 100 : null;
+
+const __confLevel =
+  typeof __conf01 === "number"
+    ? (__conf01 >= 0.6 ? "high" : __conf01 >= 0.3 ? "medium" : "low")
+    : null;
+
+const __uncertainty01 = __conf01;
+const __uncertaintyPct =
+  typeof __uncertainty01 === "number" ? Math.round(__uncertainty01 * 10000) / 100 : null;
 
 const payload = {
   mode: safeMode,
+
+  // ✅ TruthScore (그대로)
   truthscore: truthscore_text,
   truthscore_pct,
   truthscore_01: Number(truthscore.toFixed(4)),
+
+  // ✅ ConflictIndex (분리)
+  conflict_index_pct: __confPct,
+  conflict_index_01: __conf01,
+  conflict_level: __confLevel,
+  conflict_counts: conflictCounts || null,
+  conflict_by_host: conflictByHost || null,
+  conflict_hosts_top: conflictHostsTop || null,
+  conflict_summary: normalizedPartial?.conflict_summary ?? null,
+  uncertainty_01: __uncertainty01,
+  uncertainty_pct: __uncertaintyPct,
+
+  // ✅ UI/로그용 “불확실성 요약”(TruthScore와 분리)
+  uncertainty: {
+    conflict_index_01: __conf01,
+    conflict_index_pct: __confPct,
+    conflict_level: __confLevel,
+    uncertainty_01: __uncertainty01,
+    uncertainty_pct: __uncertaintyPct,
+
+    coverage_unavailable: !!normalizedPartial?.coverage_unavailable,
+    coverage_unavailable_reason: normalizedPartial?.coverage_unavailable_reason ?? null,
+
+    authority_override: normalizedPartial?.authority_override ?? null,
+  },
+
   elapsed,
- engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
-engines_requested: partial_scores.engines_requested || engines,
+  engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
+  engines_requested: partial_scores.engines_requested || engines,
+
   partial_scores: normalizedPartial,
   flash_summary: flash,
   verify_raw: verify,
@@ -4335,6 +7618,14 @@ engines_requested: partial_scores.engines_requested || engines,
   engine_times: engineTimes,
   engine_metrics: engineMetrics,
 };
+
+if (DEBUG && conflictPoolSummary) {
+  payload.conflict_pool_summary = {
+    counts: conflictCounts || { support: 0, conflict: 0, irrelevant: 0, blocks: 0 },
+    conflict_by_host: conflictByHost || {},
+    conflict_hosts_top: conflictHostsTop || [],
+  };
+}
 
 // ✅ debug: effective config & whitelist meta (Render env: DEBUG_EFFECTIVE_CONFIG=1)
 if (process.env.DEBUG_EFFECTIVE_CONFIG === "1") {
