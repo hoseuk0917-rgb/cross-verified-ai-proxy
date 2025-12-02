@@ -1338,16 +1338,6 @@ function getJsonBody(req) {
   return {};
 }
 
-function getJsonBody(req) {
-  const b = req.body;
-  if (!b) return {};
-  if (typeof b === "object") return b;          // 정상(JSON 파싱된 경우)
-  if (typeof b === "string") {                  // 문제 케이스(문자열로 들어온 경우)
-    try { return JSON.parse(b); } catch { return {}; }
-  }
-  return {};
-}
-
 async function getSupabaseAuthUser(req) {
   // ✅ request 단위 캐시 (null도 캐시)
   if (Object.prototype.hasOwnProperty.call(req, "_supabaseAuthUser")) {
