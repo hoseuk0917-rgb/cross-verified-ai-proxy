@@ -3,8 +3,17 @@
 // (Full Extended + LV External Module + Translation + Naver Region Detection)
 // =======================================================
 
-process.on("unhandledRejection", r => console.error("⚠️ Unhandled:", r));
-process.on("uncaughtException", e => console.error("💥 Crash:", e));
+process.on("unhandledRejection", (r) => {
+  const msg = r?.message || String(r);
+  console.error("⚠️ Unhandled:", msg);
+  if (!isProd && r?.stack) console.error(r.stack);
+});
+
+process.on("uncaughtException", (e) => {
+  const msg = e?.message || String(e);
+  console.error("💥 Crash:", msg);
+  if (!isProd && e?.stack) console.error(e.stack);
+});
 
 import express from "express";
 import session from "express-session";
@@ -33,10 +42,173 @@ import { fetchKLawAll } from "./src/modules/klaw_module.js";
 // ✅ 번역모듈 (DeepL + Gemini Flash-Lite fallback)
 import { translateText } from "./src/modules/translateText.js";
 
+// ─────────────────────────────
+// ✅ Timeout / retry / timebox utils
+// ─────────────────────────────
+const HTTP_TIMEOUT_MS = parseInt(process.env.HTTP_TIMEOUT_MS || "12000", 10);
+const ENGINE_TIMEBOX_MS = parseInt(process.env.ENGINE_TIMEBOX_MS || "25000", 10); // 엔진 1개 상한
+const GEMINI_TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS || "45000", 10); // Gemini는 더 길게
+
+const ENGINE_RETRY_MAX = parseInt(process.env.ENGINE_RETRY_MAX || "1", 10); // 0~1 권장
+const ENGINE_RETRY_BASE_MS = parseInt(process.env.ENGINE_RETRY_BASE_MS || "350", 10);
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function withTimebox(promiseFactory, ms, label = "timebox") {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+
+  try {
+    // promiseFactory는 ({signal})을 받아서 axios/fetch에 signal을 넘길 수 있어야 함
+    return await promiseFactory({ signal: ctrl.signal });
+  } catch (e) {
+    // ✅ Node/axios 취소 케이스까지 TIMEBOX_TIMEOUT으로 통일
+    const isAbort =
+      e?.name === "AbortError" ||
+      e?.name === "CanceledError" ||
+      e?.code === "ERR_CANCELED" ||
+      /aborted|canceled|cancelled/i.test(String(e?.message || ""));
+
+    if (isAbort) {
+      const err = new Error(`${label} timeout (${ms}ms)`);
+      err.code = "TIMEBOX_TIMEOUT";
+      throw err;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 재시도: 네트워크/5xx/타임아웃류만 제한적으로
+function isRetryable(err) {
+  const code = String(err?.code || "");
+  const msg = String(err?.message || "");
+  const status = err?.response?.status;
+
+  if (code.includes("TIMEOUT") || code === "ECONNABORTED") return true;
+  if (msg.includes("timeout")) return true;
+  if (status && status >= 500) return true; // 5xx
+  if (code === "ENOTFOUND" || code === "ECONNRESET" || code === "EAI_AGAIN") return true;
+  return false;
+}
+
+async function withRetry(fn, { maxRetries, baseMs, label }) {
+  let attempt = 0;
+  let lastErr = null;
+
+  while (attempt <= maxRetries) {
+    try {
+      return await fn(attempt);
+    } catch (e) {
+      lastErr = e;
+      if (attempt >= maxRetries || !isRetryable(e)) break;
+
+      const backoff = baseMs * Math.pow(2, attempt);
+      console.warn(`⚠️ retryable error in ${label} (attempt=${attempt + 1}/${maxRetries + 1}):`, e?.message || e);
+      await sleep(backoff);
+      attempt++;
+    }
+  }
+  throw lastErr;
+}
+
 dotenv.config();
 
 const isProd = process.env.NODE_ENV === "production";
-const DEBUG = process.env.DEBUG === "true";
+
+// ─────────────────────────────
+// ✅ LOG REDACTION (PROD safe)
+// ─────────────────────────────
+const LOG_REDACT = String(process.env.LOG_REDACT || (isProd ? "1" : "0")) === "1";
+const LOG_REDACT_MAX_STR = parseInt(process.env.LOG_REDACT_MAX_STR || "6000", 10);
+
+const SENSITIVE_KEY_RE =
+  /(authorization|cookie|set-cookie|x-admin-token|x-api-key|api[-_]?key|secret|token|password|session|gemini|openai|naver|supabase|service[_-]?key|client_secret|refresh_token|access_token)/i;
+
+function maskToken(t) {
+  const s = String(t || "");
+  if (s.length <= 10) return "***";
+  return `${s.slice(0, 4)}…${s.slice(-4)}`;
+}
+
+function redactText(input) {
+  let s = String(input ?? "");
+  if (!s) return s;
+
+  // 너무 긴 로그는 잘라서 메모리/노이즈 방지
+  if (s.length > LOG_REDACT_MAX_STR) s = s.slice(0, LOG_REDACT_MAX_STR) + "…(truncated)";
+
+  // Bearer 토큰
+  s = s.replace(/Bearer\s+([A-Za-z0-9\-._~+/]+=*)/gi, (_, t) => `Bearer ${maskToken(t)}`);
+
+  // Google API key (AIza…)
+  s = s.replace(/AIza[0-9A-Za-z\-_]{20,}/g, (m) => maskToken(m));
+
+  // OpenAI 스타일 sk- 키(혹시 있을 때)
+  s = s.replace(/\bsk-[A-Za-z0-9]{10,}\b/g, (m) => maskToken(m));
+
+  // query/body 형태 key=... / token=... / secret=...
+  s = s.replace(
+    /\b(key|api_key|apikey|token|secret|password|session|naver_secret|gemini_key|supabase_service_key)\b\s*=\s*([^\s&]+)/gi,
+    (_, k, v) => `${k}=${maskToken(v)}`
+  );
+
+  // JSON "key":"value"
+  s = s.replace(
+    /"((?:api[_-]?key|token|secret|password|authorization|cookie|gemini[_-]?key|naver[_-]?secret|supabase[_-]?service[_-]?key))"\s*:\s*"([^"]+)"/gi,
+    (_, k, v) => `"${k}":"${maskToken(v)}"`
+  );
+
+  return s;
+}
+
+function redactAny(x, depth = 0) {
+  if (!LOG_REDACT) return x;
+  if (x == null) return x;
+
+  if (typeof x === "string") return redactText(x);
+
+  if (x instanceof Error) {
+    // 에러는 stack/message에 민감정보 섞이는 경우가 있어서 문자열로 안전하게 출력
+    const msg = redactText(x.message || "");
+    const st = redactText(x.stack || "");
+    return `${x.name}: ${msg}${st ? `\n${st}` : ""}`;
+  }
+
+  if (typeof x !== "object") return x;
+
+  if (depth >= 4) return "[Object]";
+
+  if (Array.isArray(x)) return x.slice(0, 50).map((v) => redactAny(v, depth + 1));
+
+  const out = {};
+  const keys = Object.keys(x).slice(0, 80);
+  for (const k of keys) {
+    if (SENSITIVE_KEY_RE.test(k)) out[k] = "***";
+    else out[k] = redactAny(x[k], depth + 1);
+  }
+  return out;
+}
+
+function installConsoleRedactor() {
+  if (!LOG_REDACT) return;
+
+  const wrap = (fn) => (...args) => fn(...args.map((a) => redactAny(a)));
+  console.log = wrap(console.log.bind(console));
+  console.info = wrap(console.info.bind(console));
+  console.warn = wrap(console.warn.bind(console));
+  console.error = wrap(console.error.bind(console));
+  console.debug = wrap(console.debug.bind(console));
+
+  console.log("✅ LOG_REDACT enabled");
+}
+
+installConsoleRedactor();
+
+const DEBUG = !isProd && process.env.DEBUG === "true";
 
 // ✅ ADD: Secrets 암호화(서버 마스터키) + Pacific 리셋 TZ
 const SETTINGS_ENC_KEY_B64 = (process.env.SETTINGS_ENC_KEY_B64 || "").trim(); // base64(32bytes)
@@ -46,7 +218,10 @@ const GEMINI_KEYRING_MAX = parseInt(process.env.GEMINI_KEYRING_MAX || "10", 10);
 
 const app = express();
 
+app.disable("x-powered-by");
 
+// ✅ 기본 노출 최소화
+app.disable("x-powered-by");
 
 // trust proxy는 세션보다 위에서, 운영일 때만
 if (isProd) app.set("trust proxy", 1);
@@ -61,36 +236,55 @@ const REGION =
   "unknown";
 
 function pickDatabaseUrl() {
-  const url =
-    process.env.SUPABASE_DATABASE_URL ||
-    process.env.DATABASE_URL ||
-    process.env.DATABASE_URL_INTERNAL ||
-    "";
+  const candidates = [
+    ["SUPABASE_DATABASE_URL", process.env.SUPABASE_DATABASE_URL],
+    ["DATABASE_URL", process.env.DATABASE_URL],
+    ["DATABASE_URL_INTERNAL", process.env.DATABASE_URL_INTERNAL],
+  ];
 
-  const u = String(url).trim();
+  const found = candidates.find(([, v]) => String(v ?? "").trim().length > 0);
+  const source = found?.[0] || "";
+  const raw = found?.[1] || "";
+  const u = String(raw).trim();
+
+  if (!u) {
+    throw new Error("No database URL provided. Set SUPABASE_DATABASE_URL (recommended) or DATABASE_URL.");
+  }
 
   if (!/^postgres(ql)?:\/\//i.test(u)) {
-    throw new Error("DATABASE_URL must start with postgres:// or postgresql://");
+    throw new Error(`${source || "DATABASE_URL"} must start with postgres:// or postgresql://`);
   }
   if (/^postgres(ql)?:\/\/https?:\/\//i.test(u)) {
-    throw new Error("DATABASE_URL is malformed (contains https:// after protocol)");
+    throw new Error(`${source || "DATABASE_URL"} is malformed (contains https:// after protocol)`);
   }
   if (u.includes("onrender.com")) {
-    throw new Error("DATABASE_URL must be a Postgres URL (Supabase), not a Render app URL");
+    throw new Error(`${source || "DATABASE_URL"} must be a Postgres URL (Supabase), not a Render app URL`);
   }
 
-  // ✅ 추가: Render Postgres 호스트 차단 (dpg-xxx.oregon-postgres.render.com 등)
+  // ✅ Render Postgres 호스트 차단 (dpg-xxx...render.com 등)
   try {
     const host = new URL(u).hostname || "";
     if (host.includes("render.com") || host.includes("postgres.render.com")) {
-      throw new Error("DATABASE_URL points to Render Postgres. Use SUPABASE_DATABASE_URL instead.");
+      throw new Error(`${source || "DATABASE_URL"} points to Render Postgres. Use SUPABASE_DATABASE_URL instead.`);
     }
   } catch {}
 
-  return u;
+  return { url: u, source };
 }
 
-const DB_URL = pickDatabaseUrl();
+const { url: DB_URL, source: DB_URL_SOURCE } = pickDatabaseUrl();
+
+// ✅ 부팅 로그(비밀값 노출 없이: host만)
+try {
+  const host = new URL(DB_URL).hostname || "unknown";
+  if (!isProd) {
+    console.log(`✅ DB URL selected via ${DB_URL_SOURCE || "DATABASE_URL"} (host=${host})`);
+  } else {
+    console.log(`✅ DB URL selected via ${DB_URL_SOURCE || "DATABASE_URL"}`);
+  }
+} catch {
+  console.log(`✅ DB URL selected via ${DB_URL_SOURCE || "DATABASE_URL"}`);
+}
 
 // ✅ 여기서 먼저 풀/스토어 준비
 const useSsl =
@@ -142,14 +336,14 @@ app.use(
     // ✅ Postgres 세션 스토어 연결
     store: sessionStore,
 
-    secret: process.env.SESSION_SECRET || "dev-secret",
+    secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
-    proxy: isProd,
+    proxy: true,
 
     cookie: {
       httpOnly: true,
-      maxAge: 86400000,
+      maxAge: (parseInt(process.env.SESSION_TTL_DAYS || "14", 10) * 24 * 60 * 60 * 1000),
       secure: SESSION_SECURE,
       sameSite: SESSION_SAMESITE,
       ...(SESSION_DOMAIN ? { domain: SESSION_DOMAIN } : {}),
@@ -163,13 +357,6 @@ const REQUIRE_USER_AUTH = process.env.REQUIRE_USER_AUTH === "true";
 // 🔹 엔진 보정 롤오버 윈도우 (기본 20회, .env에서 ENGINE_CORRECTION_WINDOW로 조정 가능)
 const ENGINE_CORRECTION_WINDOW = parseInt(
   process.env.ENGINE_CORRECTION_WINDOW || "20",
-  10
-);
-
-// 🔹 외부 엔진 / Gemini 공통 HTTP 타임아웃 (ms)
-//    - 기본 45000ms, Render 환경변수 HTTP_TIMEOUT_MS 로 조정 가능
-const HTTP_TIMEOUT_MS = parseInt(
-  process.env.HTTP_TIMEOUT_MS || "45000",
   10
 );
 
@@ -240,18 +427,63 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || "")
   .map(s => s.trim())
   .filter(Boolean);
 
-app.use(cors({
+const corsOptions = {
   origin: (origin, cb) => {
-    // 모바일 앱/서버투서버처럼 Origin이 없는 경우 허용
-    if (!origin) return cb(null, true);
-
-    // 등록된 origin만 허용
+    if (!origin) return cb(null, true); // curl/서버-서버
     if (CORS_ORIGINS.includes(origin)) return cb(null, true);
-
-    return cb(new Error("CORS_NOT_ALLOWED"), false);
+    return cb(null, false); // 에러 던지지 않음(불필요한 500 방지)
   },
   credentials: true,
-}));
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Token"],
+  exposedHeaders: ["Retry-After"],
+  maxAge: 86400,
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
+// ─────────────────────────────
+// ✅ Safe request logging (morgan)
+// ─────────────────────────────
+function redactUrl(u) {
+  const s = String(u || "");
+  const idx = s.indexOf("?");
+  if (idx < 0) return s;
+  const base = s.slice(0, idx);
+  const qs = s.slice(idx + 1);
+
+  // token/key/secret 류 쿼리값만 마스킹
+  const masked = qs.replace(
+    /(^|&)(token|key|api_key|apikey|secret|password|session|auth)=([^&]*)/gi,
+    (_, p, k, v) => `${p}${k}=${maskToken(v)}`
+  );
+  return `${base}?${masked}`;
+}
+
+// ✅ Safe request logging (morgan)
+morgan.token("safe-url", (req) => redactUrl(req.originalUrl || req.url));
+morgan.token("user", (req) => (req.user?.email || req.user?.id || req.user?.sub || "-"));
+
+// ✅ morgan middleware mount (single)
+const MORGAN_ENABLED = String(process.env.MORGAN_ENABLED || "true").toLowerCase() !== "false";
+
+if (MORGAN_ENABLED) {
+  console.log(`✅ Morgan enabled (NODE_ENV=${process.env.NODE_ENV || "unknown"})`);
+  app.use(
+    morgan(":remote-addr :user :method :safe-url :status :res[content-length] - :response-time ms", {
+      // Render 로그에 확실히 남게 console.log로 강제
+      stream: { write: (msg) => console.log(msg.trimEnd()) },
+      skip: (req) => {
+      const p = req.originalUrl || req.url || "";
+      if (p.startsWith("/health")) return true;
+       // ✅ 디버깅 중에는 test-db도 로그 보이게 (필요하면 다시 true로)
+       // if (p.startsWith("/api/test-db")) return true;
+       return false;
+      },
+    })
+  );
+}
 
 // ─────────────────────────────
 // ✅ (추가) CORS 에러를 JSON으로 정리해서 반환
@@ -270,8 +502,12 @@ app.use((err, req, res, next) => {
   return next(err);
 });
 
-app.use(express.json({ limit: "8mb" }));
-app.use(express.urlencoded({ extended: true }));
+const BODY_JSON_LIMIT = process.env.BODY_JSON_LIMIT || "4mb";
+const BODY_URLENC_LIMIT = process.env.BODY_URLENC_LIMIT || BODY_JSON_LIMIT;
+
+app.use(express.json({ limit: BODY_JSON_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: BODY_URLENC_LIMIT }));
+
 // ✅ Morgan: Render 헬스체크/Flutter SW 요청 로그 스킵
 // ✅ Morgan: Render 헬스체크/노이즈 요청 로그 스킵 (더 강력 버전)
 function getBasePath(req) {
@@ -327,6 +563,211 @@ function buildError(code, message, detail = null) {
   };
   if (detail) payload.detail = detail;
   return payload;
+}
+
+// ─────────────────────────────
+// ✅ Basic rate-limit + payload guards (no deps)
+// ─────────────────────────────
+const VERIFY_RATE_LIMIT_PER_MIN = parseInt(
+  process.env.VERIFY_RATE_LIMIT_PER_MIN || (isProd ? "30" : "300"),
+  10
+);
+const VERIFY_RATE_LIMIT_WINDOW_MS = parseInt(
+  process.env.VERIFY_RATE_LIMIT_WINDOW_MS || "60000",
+  10
+);
+
+const VERIFY_MAX_QUERY_CHARS = parseInt(process.env.VERIFY_MAX_QUERY_CHARS || "2000", 10);
+const VERIFY_MAX_CORE_TEXT_CHARS = parseInt(process.env.VERIFY_MAX_CORE_TEXT_CHARS || "4000", 10);
+const VERIFY_MAX_USER_ANSWER_CHARS = parseInt(process.env.VERIFY_MAX_USER_ANSWER_CHARS || "8000", 10);
+
+function getClientIp(req) {
+  const xf = req.headers["x-forwarded-for"];
+  if (xf) return String(xf).split(",")[0].trim();
+  return req.ip || req.socket?.remoteAddress || "unknown";
+}
+
+function hash16(s) {
+  try {
+    return crypto.createHash("sha256").update(String(s)).digest("hex").slice(0, 16);
+  } catch {
+    return "";
+  }
+}
+
+function makeFixedWindowLimiter({ windowMs, max, keyFn, name }) {
+  const hits = new Map();
+  const cleanupMs = Math.max(windowMs, 60_000);
+
+  const t = setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of hits.entries()) {
+      if (!v || now > v.resetAt + windowMs) hits.delete(k);
+    }
+  }, cleanupMs);
+  if (t && typeof t.unref === "function") t.unref();
+
+  return (req, res, next) => {
+    if (!Number.isFinite(max) || max <= 0) return next();
+
+    const key = keyFn(req);
+    const now = Date.now();
+    let rec = hits.get(key);
+
+    if (!rec || now > rec.resetAt) {
+      rec = { count: 0, resetAt: now + windowMs };
+      hits.set(key, rec);
+    }
+
+    rec.count++;
+
+    if (rec.count > max) {
+      const retryAfterSec = Math.max(1, Math.ceil((rec.resetAt - now) / 1000));
+      res.setHeader("Retry-After", String(retryAfterSec));
+      return res.status(429).json(
+        buildError("RATE_LIMITED", "요청이 너무 많습니다. 잠시 후 다시 시도하세요.", {
+          scope: name,
+          retry_after_sec: retryAfterSec,
+        })
+      );
+    }
+
+    return next();
+  };
+}
+
+const verifyRateLimit = makeFixedWindowLimiter({
+  windowMs: VERIFY_RATE_LIMIT_WINDOW_MS,
+  max: VERIFY_RATE_LIMIT_PER_MIN,
+  name: "verify",
+  keyFn: (req) => {
+    const ip = getClientIp(req);
+    const auth = String(req.headers.authorization || "");
+    const tok = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+    const t = tok ? hash16(tok) : "";
+    return t ? `${ip}|t:${t}` : ip;
+  },
+});
+
+function enforceVerifyPayloadLimits(req, res, next) {
+  const b = req.body || {};
+
+  const q = String(b.query ?? "");
+  const core = String(b.core_text ?? "");
+  const ua = String(b.user_answer ?? "");
+
+  if (q.length > VERIFY_MAX_QUERY_CHARS) {
+    return res.status(413).json(
+      buildError("PAYLOAD_TOO_LARGE", `query가 너무 깁니다. (max ${VERIFY_MAX_QUERY_CHARS} chars)`)
+    );
+  }
+  if (core.length > VERIFY_MAX_CORE_TEXT_CHARS) {
+    return res.status(413).json(
+      buildError("PAYLOAD_TOO_LARGE", `core_text가 너무 깁니다. (max ${VERIFY_MAX_CORE_TEXT_CHARS} chars)`)
+    );
+  }
+  if (ua.length > VERIFY_MAX_USER_ANSWER_CHARS) {
+    return res.status(413).json(
+      buildError("PAYLOAD_TOO_LARGE", `user_answer가 너무 깁니다. (max ${VERIFY_MAX_USER_ANSWER_CHARS} chars)`)
+    );
+  }
+
+  return next();
+}
+
+function requireVerifyAuth(req, res, next) {
+  if (!isProd) return next();
+
+  const auth = String(req.headers.authorization || "");
+  const tok = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+
+  // 운영에서 localtest 같은 디버그 토큰 차단
+  if (tok && tok.toLowerCase() === "localtest") {
+    return res.status(401).json(buildError("UNAUTHORIZED", "Invalid token"));
+  }
+
+  // 토큰 있으면 통과
+  if (tok) return next();
+
+  // 세션 로그인(패스포트) 통과
+  if (req.user) return next();
+
+  return res.status(401).json(buildError("UNAUTHORIZED", "Authorization required"));
+}
+
+// ─────────────────────────────
+// ✅ PROD key_uuid 정책: 기본 무시(안전) / 필요 시 admin만 허용
+// KEY_UUID_PROD_POLICY: ignore | reject | admin_only
+//  - ignore: 운영에서 key_uuid 들어오면 삭제하고 진행(권장)
+//  - reject: 운영에서 key_uuid 들어오면 403
+//  - admin_only: 운영에서 key_uuid는 x-admin-token(=DIAG_TOKEN or DEV_ADMIN_TOKEN) 있을 때만 허용
+// ─────────────────────────────
+const KEY_UUID_PROD_POLICY = String(process.env.KEY_UUID_PROD_POLICY || "ignore").toLowerCase();
+
+function isAdminOverride(req) {
+  const tok = String(req.headers["x-admin-token"] || "");
+  const adminTok = process.env.DIAG_TOKEN || process.env.DEV_ADMIN_TOKEN || "";
+  return !!adminTok && tok && tok === adminTok;
+}
+
+function guardProdKeyUuid(req, res, next) {
+  if (!isProd) return next();
+
+  const hasKeyUuid = !!(req.body?.key_uuid || req.body?.keyUuid);
+  if (!hasKeyUuid) return next();
+
+  if (KEY_UUID_PROD_POLICY === "ignore") {
+    delete req.body.key_uuid;
+    delete req.body.keyUuid;
+    return next();
+  }
+
+  if (KEY_UUID_PROD_POLICY === "admin_only") {
+    if (isAdminOverride(req)) return next();
+    return res.status(403).json(buildError("FORBIDDEN", "key_uuid is admin-only in production"));
+  }
+
+  // reject
+  return res.status(403).json(buildError("FORBIDDEN", "key_uuid is not allowed in production"));
+}
+
+// admin 라우트: (1) x-admin-token(DEV_ADMIN_TOKEN) 이거나 (2) 기존 ensureAuth 통과면 허용
+function ensureAuthOrAdminToken(req, res, next) {
+  // (선택) isAdminOverride가 있으면 우선 허용
+  if (typeof isAdminOverride === "function" && isAdminOverride(req)) return next();
+
+  // x-admin-token(DEV_ADMIN_TOKEN or DIAG_TOKEN)으로 우회 허용
+  const tok = String(req.headers["x-admin-token"] || "");
+  const adminTok = process.env.DEV_ADMIN_TOKEN || process.env.DIAG_TOKEN || "";
+  if (adminTok && tok === adminTok) return next();
+
+  // 그 외는 기존 세션 인증 흐름
+  return ensureAuth(req, res, next);
+}
+
+// ─────────────────────────────
+// ✅ PROD: dev/admin route guard
+// ─────────────────────────────
+const ALLOW_DEV_ROUTES_IN_PROD = String(process.env.ALLOW_DEV_ROUTES_IN_PROD || "0") === "1";
+
+function requireAdminToken(req, res, next) {
+  const tok = String(req.headers["x-admin-token"] || "");
+  const adminTok = process.env.DEV_ADMIN_TOKEN || process.env.DIAG_TOKEN || "";
+  if (!adminTok || tok !== adminTok) {
+    return res.status(403).json(buildError("FORBIDDEN", "Admin token required"));
+  }
+  return next();
+}
+
+function blockDevRoutesInProd(req, res, next) {
+  if (!isProd) return next();
+  if (ALLOW_DEV_ROUTES_IN_PROD) return next();
+
+  // 운영에서 /api/dev/* 는 기본 차단
+  if (req.path && req.path.startsWith("/api/dev")) {
+    return res.status(404).json(buildError("NOT_FOUND", "Not found"));
+  }
+  return next();
 }
 
 function maybeTruncateText(s) {
@@ -1260,6 +1701,27 @@ function ensureAuth(req, res, next) {
 // ─────────────────────────────
 const DEV_ADMIN_TOKEN = process.env.DEV_ADMIN_TOKEN || null;
 
+// ─────────────────────────────
+// ✅ DIAG 보호(운영 노출 최소화)
+// - PROD에서는 기본적으로 test/diag 엔드포인트를 숨김(404)
+// - 필요 시 헤더 x-admin-token 으로만 접근 가능
+// - 토큰은 DIAG_TOKEN 우선, 없으면 DEV_ADMIN_TOKEN 재사용
+// ─────────────────────────────
+const DIAG_TOKEN = process.env.DIAG_TOKEN || DEV_ADMIN_TOKEN || null;
+
+function isDiagAuthorized(req) {
+  const tok = String(req.headers["x-admin-token"] || "");
+  return !!DIAG_TOKEN && tok && tok === DIAG_TOKEN;
+}
+
+function requireDiag(req, res, next) {
+  if (process.env.NODE_ENV !== "production") return next();
+  if (isDiagAuthorized(req)) return next();
+  return res.status(404).json(buildError("NOT_FOUND", "Not available"));
+}
+
+app.use(blockDevRoutesInProd);
+
 // ✅ PROD에서는 dev seed endpoint 차단
 if (process.env.NODE_ENV === "production") {
   app.post("/api/dev/seed-secrets", (req, res) =>
@@ -1794,22 +2256,52 @@ function engineQueriesPresent(q) {
 // ✅ External Engines + Fail-Grace Wrapper
 // ─────────────────────────────
 async function safeFetch(name, fn, q) {
-  for (let i = 0; i < 2; i++) {
+  // ENGINE_RETRY_MAX=1 이면 총 2회 시도(기존과 동일)
+  const attempts = Math.max(1, (parseInt(process.env.ENGINE_RETRY_MAX || String(ENGINE_RETRY_MAX || 1), 10) || 1) + 1);
+  const baseMs = parseInt(process.env.ENGINE_RETRY_BASE_MS || String(ENGINE_RETRY_BASE_MS || 350), 10) || 350;
+
+  for (let i = 0; i < attempts; i++) {
     try {
-      return await fn(q);
+      // ✅ 엔진별 상한(Timebox) + Abort signal 전달
+      // fn은 (q, {signal}) 형태면 signal을 axios/fetch에 넘길 수 있음(권장)
+      // fn이 (q)만 받아도 JS는 추가 인자를 무시하므로 호환됨
+      return await withTimebox(
+        ({ signal }) => fn(q, { signal }),
+        ENGINE_TIMEBOX_MS,
+        name
+      );
     } catch (err) {
-      // ✅ 인증/설정 오류 같은 '치명(fatal)'은 fail-grace 하지 말고 즉시 중단
+      // ✅ 치명 오류는 즉시 중단
       if (err?._fatal) {
         await handleEngineFail(name, q, err.message);
         throw err;
       }
 
-      if (i === 1) {
+      const status = err?.response?.status;
+      const code = err?.code || err?.name;
+
+      const isTimeout =
+        code === "TIMEBOX_TIMEOUT" || code === "ECONNABORTED" || code === "ERR_CANCELED";
+      const isRetryableStatus =
+        status === 408 || status === 429 || (typeof status === "number" && status >= 500);
+
+      const shouldRetry = i < attempts - 1 && (isTimeout || isRetryableStatus || !status);
+
+      if (!shouldRetry) {
         await handleEngineFail(name, q, err.message);
         return [];
       }
+
+      if (DEBUG) {
+        console.warn(`⚠️ ${name} retry (${i + 1}/${attempts}) :`, err?.message || err);
+      }
+      await sleep(baseMs * Math.pow(2, i)); // simple backoff
     }
   }
+
+  // 논리상 도달하지 않지만 안전망
+  await handleEngineFail(name, q, "unknown");
+  return [];
 }
 
 function ensureMetric(engineMetrics, name) {
@@ -1885,7 +2377,8 @@ function normalizeNaverToken(t) {
   return s;
 }
 
-async function callNaver(query, clientId, clientSecret) {
+async function callNaver(query, clientId, clientSecret, ctx = {}) {
+  const signal = ctx?.signal;
   const q = sanitizeNaverQuery(query);
 
   const headers = {
@@ -1916,6 +2409,7 @@ async function callNaver(query, clientId, clientSecret) {
         headers,
         params: { query: q, display: 3 },
         timeout: HTTP_TIMEOUT_MS,
+        signal,
       });
 
       let items =
@@ -2011,10 +2505,11 @@ async function callNaver(query, clientId, clientSecret) {
 // ─────────────────────────────
 // ✅ External Engine Wrappers
 // ─────────────────────────────
-async function fetchCrossref(q) {
+async function fetchCrossref(q, ctx = {}) {
+  const signal = ctx?.signal;
   const { data } = await axios.get(
     `https://api.crossref.org/works?query=${encodeURIComponent(q)}&rows=3`,
-    { timeout: HTTP_TIMEOUT_MS }
+    { timeout: HTTP_TIMEOUT_MS, signal }
   );
 
   const items = data?.message?.items || [];
@@ -2034,10 +2529,11 @@ async function fetchCrossref(q) {
     .filter(Boolean);
 }
 
-async function fetchOpenAlex(q) {
+async function fetchOpenAlex(q, ctx = {}) {
+  const signal = ctx?.signal;
   const { data } = await axios.get(
     `https://api.openalex.org/works?search=${encodeURIComponent(q)}&per_page=3`,
-    { timeout: HTTP_TIMEOUT_MS }
+    { timeout: HTTP_TIMEOUT_MS, signal }
   );
 
   const results = data?.results || [];
@@ -2051,21 +2547,23 @@ async function fetchOpenAlex(q) {
     .filter(Boolean);
 }
 
-async function fetchWikidata(q) {
+async function fetchWikidata(q, ctx = {}) {
+  const signal = ctx?.signal;
   const { data } = await axios.get(
     `https://www.wikidata.org/w/api.php?action=wbsearchentities&language=ko&format=json&search=${encodeURIComponent(
       q
     )}`,
-    { timeout: HTTP_TIMEOUT_MS }                    // ✅ 추가
+    { timeout: HTTP_TIMEOUT_MS, signal }
   );
   return data?.search?.map((i) => i.label) || [];
 }
 
 // 🔹 GDELT 뉴스 기반 시의성 엔진
-async function fetchGDELT(q) {
+async function fetchGDELT(q, ctx = {}) {
+  const signal = ctx?.signal;
   const { data } = await axios.get(
     `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&format=json&maxrecords=3`,
-    { timeout: HTTP_TIMEOUT_MS }
+    { timeout: HTTP_TIMEOUT_MS, signal }
   );
 
   return (
@@ -2077,7 +2575,8 @@ async function fetchGDELT(q) {
 }
 
 // 🔹 GitHub 리포 검색 엔진 (DV/CV용)
-async function fetchGitHub(q, token) {
+async function fetchGitHub(q, token, ctx = {}) {
+  const signal = ctx?.signal;
   const headers = {
     "User-Agent": "CrossVerifiedAI",
   };
@@ -2089,10 +2588,10 @@ async function fetchGitHub(q, token) {
 
   let data;
 try {
-  const resp = await axios.get(
-    `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=3`,
-    { headers, timeout: HTTP_TIMEOUT_MS }
-  );
+  const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=3`;
+
+  const resp = await axios.get(url, { headers, timeout: HTTP_TIMEOUT_MS, signal });
+
   data = resp.data;
 } catch (e) {
   const s = e?.response?.status;
@@ -2163,23 +2662,79 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
   const label = opts.label || `gemini:${model}`;
   const minChars = Number.isFinite(opts.minChars) ? opts.minChars : 1;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${gemini_key}`;
+  // ✅ key를 URL(query)에 두지 말고 헤더로 (키 노출 리스크↓)
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
-    const timeoutMs = getGeminiTimeoutMs(model, opts);
-     const { data } = await axios.post(url, payload, { timeout: timeoutMs });
+  const timeoutMs = getGeminiTimeoutMs(model, opts);
 
-  const text = extractGeminiText(data);
-  if ((text || "").trim().length < minChars) {
-    const finishReason = data?.candidates?.[0]?.finishReason;
-    const blockReason = data?.promptFeedback?.blockReason;
-    const err = new Error(
-      `${label}: GEMINI_EMPTY_TEXT (finish=${finishReason || "?"}, block=${blockReason || "?"})`
-    );
-    err._gemini_empty = true;
+  const apiKey = String(gemini_key || "").trim();
+  if (!apiKey) {
+    const err = new Error(`${label}: GEMINI_KEY_MISSING`);
+    err.code = "GEMINI_KEY_MISSING";
     throw err;
   }
 
-  return text;
+  const maxRetries = Number.isFinite(opts.maxRetries) ? opts.maxRetries : ENGINE_RETRY_MAX;
+  const baseMs = Number.isFinite(opts.retryBaseMs) ? opts.retryBaseMs : ENGINE_RETRY_BASE_MS;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const { data } = await withTimebox(
+        ({ signal }) =>
+          axios.post(url, payload, {
+            timeout: timeoutMs,
+            signal,
+            headers: {
+              "Content-Type": "application/json",
+              ...(opts.headers || {}),
+              "x-goog-api-key": apiKey,
+            },
+          }),
+        timeoutMs,
+        label
+      );
+
+      const text = extractGeminiText(data);
+      if ((text || "").trim().length < minChars) {
+        const finishReason = data?.candidates?.[0]?.finishReason;
+        const blockReason = data?.promptFeedback?.blockReason;
+        const err = new Error(
+          `${label}: GEMINI_EMPTY_TEXT (finish=${finishReason || "?"}, block=${blockReason || "?"})`
+        );
+        err._gemini_empty = true;
+        throw err; // ✅ 빈 텍스트는 retry하지 않음
+      }
+
+      return text;
+    } catch (e) {
+      const status = e?.response?.status;
+      const code = e?.code || e?.name;
+
+      // ✅ 인증/권한/요청형식 오류는 retry 금지 (rotating wrapper가 처리)
+      if (status === 400 || status === 401 || status === 403 || status === 404) throw e;
+      if (e?._gemini_empty) throw e;
+
+      const isTimeout =
+        code === "TIMEBOX_TIMEOUT" || code === "ECONNABORTED" || code === "ERR_CANCELED";
+      const isRetryableStatus =
+        status === 408 || status === 429 || (typeof status === "number" && status >= 500);
+
+      const shouldRetry = attempt < maxRetries && (isTimeout || isRetryableStatus || !status);
+
+      if (shouldRetry) {
+        if (DEBUG) {
+          console.warn(
+            `⚠️ retryable error in ${label} (attempt=${attempt + 1}/${maxRetries + 1}):`,
+            e?.message || e
+          );
+        }
+        await sleep(baseMs * Math.pow(2, attempt)); // 간단 백오프
+        continue;
+      }
+
+      throw e;
+    }
+  }
 }
 
 // ✅ ADD: Rotation wrapper
@@ -2738,10 +3293,12 @@ function extractExcerptContainingNumbers(pageText, blockText, maxChars = 700) {
   return null;
 }
 
-async function fetchReadableText(url, timeoutMs = 5000) {
+async function fetchReadableText(url, timeoutMs = 5000, ctx = {}) {
+  const signal = ctx?.signal;
   try {
     const r = await axios.get(url, {
       timeout: timeoutMs,
+      signal,
       maxContentLength: 1024 * 1024,
       maxBodyLength: 1024 * 1024,
       headers: {
@@ -3076,15 +3633,12 @@ function computeEngineCorrectionFactor(engines = [], statsMap = {}) {
   return Math.max(0.9, Math.min(1.1, C));
 }
 
-  
-
-
 // ─────────────────────────────
 // ✅ Verify Core (QV / FV / DV / CV / LV)
 //   - DV/CV: GitHub 기반 TruthScore 직접 계산 (Gemini→GitHub)
 //   - LV: TruthScore 없이 K-Law 결과만 제공 (Ⅸ 명세 반영)
 // ─────────────────────────────
-app.post("/api/verify", async (req, res) => {
+app.post("/api/verify", verifyRateLimit, enforceVerifyPayloadLimits, requireVerifyAuth, guardProdKeyUuid, async (req, res) => {
   let logUserId = null;   // ✅ 요청마다 독립
   let authUser = null;    // ✅ 요청마다 독립
 
@@ -3405,7 +3959,7 @@ if (!naverQueries.length) {
 
     const { result } = await safeFetchTimed(
       "naver",
-      (qq) => callNaver(qq, naverIdFinal, naverSecretFinal),
+      (qq, ctx) => callNaver(qq, naverIdFinal, naverSecretFinal, ctx),
       nq,
       engineTimes,
       engineMetrics
@@ -3563,7 +4117,7 @@ partial_scores.recency_detail = rec.detail;
     for (const q of (ghQueries || []).slice(0, 3)) {
       const { result } = await safeFetchTimed(
         "github",
-          (qq) => fetchGitHub(qq, githubTokenFinal),
+          (qq, ctx) => fetchGitHub(qq, githubTokenFinal, ctx),
         q,
         engineTimes,
         engineMetrics
@@ -3843,8 +4397,13 @@ let answerModelUsed = "gemini-2.5-flash";
             if (!url) continue;
             if (!isSafeExternalHttpUrl(url)) continue;
 
-            const pageText = await fetchReadableText(url, NAVER_FETCH_TIMEOUT_MS);
-            const excerpt = extractExcerptContainingNumbers(pageText, b?.text || "", EVIDENCE_EXCERPT_CHARS);
+            const pageText = await withTimebox(
+  ({ signal }) => fetchReadableText(url, NAVER_FETCH_TIMEOUT_MS, { signal }),
+  NAVER_FETCH_TIMEOUT_MS,
+  "naver_numeric_fetch"
+);
+
+const excerpt = extractExcerptContainingNumbers(pageText, b?.text || "", EVIDENCE_EXCERPT_CHARS);
 
             if (excerpt) {
               ev.evidence_text = excerpt;
@@ -4748,7 +5307,7 @@ app.get("/api/jobs/:jobId", async (req, res) => {
 // ─────────────────────────────
 
 // 관리자 대시보드 (간단 상태 확인용)
-app.get("/admin/dashboard", ensureAuth, async (req, res) => {
+app.get("/admin/dashboard", ensureAuthOrAdminToken, async (req, res) => {
   return res.json(
     buildSuccess({
       message: "Admin dashboard is alive",
@@ -4760,7 +5319,7 @@ app.get("/admin/dashboard", ensureAuth, async (req, res) => {
 });
 
 // 엔진 통계 조회
-app.get("/admin/engine-stats", ensureAuth, async (req, res) => {
+app.get("/admin/engine-stats", ensureAuthOrAdminToken, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from("engine_stats")
@@ -4794,7 +5353,7 @@ app.get("/admin/engine-stats", ensureAuth, async (req, res) => {
 });
 
 // 엔진 보정값 수동 조정 (override_ce 설정/초기화)
-app.post("/admin/engine-stats/override", ensureAuth, async (req, res) => {
+app.post("/admin/engine-stats/override", ensureAuthOrAdminToken, async (req, res) => {
   try {
     const { engine_name, override_ce, action } = req.body;
 
@@ -4891,7 +5450,7 @@ app.post("/admin/engine-stats/override", ensureAuth, async (req, res) => {
 });
 
 // Naver 화이트리스트 조회
-app.get("/admin/naver-whitelist", ensureAuth, async (req, res) => {
+app.get("/admin/naver-whitelist", ensureAuthOrAdminToken, async (req, res) => {
   return res.json(
     buildSuccess({
       whitelist: whitelistData || { tiers: {} },
@@ -4900,7 +5459,7 @@ app.get("/admin/naver-whitelist", ensureAuth, async (req, res) => {
 });
 
 // Naver 도메인 tier 테스트용 (어드민)
-app.get("/admin/naver-test-domain", ensureAuth, (req, res) => {
+app.get("/admin/naver-test-domain", ensureAuthOrAdminToken, (req, res) => {
   const { link } = req.query;
   if (!link) {
     return sendError(
@@ -4923,7 +5482,7 @@ app.get("/admin/naver-test-domain", ensureAuth, (req, res) => {
 // ─────────────────────────────
 // ✅ Admin UI (EJS 대시보드 화면)
 // ─────────────────────────────
-app.get("/admin/ui", ensureAuth, async (req, res) => {
+app.get("/admin/ui", ensureAuthOrAdminToken, async (req, res) => {
   try {
     // 엔진 통계 조회
     const { data: engineStats, error } = await supabase
@@ -5020,7 +5579,7 @@ const gt = lastRequest?.partial_scores_obj?.gemini_times || {};
 // ─────────────────────────────
 // ✅ Health / DB / Server Start
 // ─────────────────────────────
-app.get("/api/test-db", async (_, res) => {
+app.get("/api/test-db", requireDiag, async (_, res) => {
   try {
     const c = await pgPool.connect();
 
@@ -5033,7 +5592,7 @@ app.get("/api/test-db", async (_, res) => {
       buildSuccess({
         message: "✅ DB 연결 성공",
         time: r1.rows[0].now,
-        session_store: r2.rows[0].session_store, // ✅ 'session_store'면 정상, null이면 없음/스키마 다름
+        session_store: r2.rows[0].session_store,
       })
     );
   } catch (e) {
@@ -5049,17 +5608,24 @@ app.get("/api/test-db", async (_, res) => {
   }
 });
 
-app.get("/health", async (_, res) => {
+app.get("/health", async (req, res) => {
+  const diag = process.env.NODE_ENV !== "production" || isDiagAuthorized(req);
+
   let pac = { pt_date: null, next_reset_utc: null };
-  try { pac = await getPacificResetInfoCached(); } catch {}
+  if (diag) {
+    try { pac = await getPacificResetInfoCached(); } catch {}
+  }
+
   return res.status(200).json({
     status: "ok",
     version: "v18.4.0-pre",
     uptime: process.uptime().toFixed(2) + "s",
-    region: REGION,
-    pacific_pt_date: pac.pt_date,
-    pacific_next_reset_utc: pac.next_reset_utc,
     timestamp: new Date().toISOString(),
+    ...(diag ? {
+      region: REGION,
+      pacific_pt_date: pac.pt_date,
+      pacific_next_reset_utc: pac.next_reset_utc,
+    } : {}),
   });
 });
 
@@ -5078,7 +5644,7 @@ app.head("/", (_, res) => {
 });
 
 // ✅ 세션이 "진짜로 DB에 써지는지" 테스트 (cookie + DB row 확인)
-app.get("/api/test-session", async (req, res) => {
+app.get("/api/test-session", requireDiag, async (req, res) => {
   try {
     if (!req.session) {
       return res.status(500).json(
@@ -5192,4 +5758,22 @@ app.listen(PORT, () => {
   );
     console.log("🔹 Naver 서버 직접 호출 (Region 제한 해제)");
   console.log("🔹 Supabase + Gemini 2.5 (Flash / Pro / Lite) 정상 동작");
+});
+
+app.use((err, req, res, next) => {
+  console.error("💥 unhandled express error:", err);
+
+  if (res.headersSent) return next(err);
+
+  const status = err?.status || err?.statusCode || 500;
+
+  // 운영: 내부 디테일/스택 숨김
+  if (isProd) {
+    return res.status(status).json(buildError("INTERNAL_SERVER_ERROR", "Server error"));
+  }
+
+  // 개발: 디테일 노출 허용
+  return res.status(status).json(buildError("INTERNAL_SERVER_ERROR", err?.message || "Server error", {
+    stack: err?.stack || null,
+  }));
 });
