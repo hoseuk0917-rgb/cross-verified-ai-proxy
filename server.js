@@ -325,7 +325,10 @@ const SESSION_SECURE = (SESSION_SAMESITE === "none") ? true : isProd;
 const SESSION_DOMAIN = process.env.SESSION_DOMAIN || undefined;
 
 // ✅ 운영이면 secret 강제(권장)
-if (isProd && !process.env.SESSION_SECRET) {
+const SESSION_SECRET =
+  String(process.env.SESSION_SECRET || "").trim() || "dev-secret";
+
+if (isProd && SESSION_SECRET === "dev-secret") {
   throw new Error("SESSION_SECRET is required in production");
 }
 
@@ -806,7 +809,6 @@ function safeSourcesForDB(obj, maxLen = 20000) {
         blocks: Array.isArray(vm?.blocks) ? vm.blocks.slice(0, 8) : null,
       };
     }
-
 
     // external 배열은 상한 축소
     const cut = (v, n) => (Array.isArray(v) ? v.slice(0, n) : v);
