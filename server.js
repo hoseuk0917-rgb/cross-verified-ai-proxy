@@ -653,7 +653,7 @@ const verifyRateLimit = makeFixedWindowLimiter({
 });
 
 function enforceVerifyPayloadLimits(req, res, next) {
-  const b = req.body || {};
+    const b = getJsonBody(req);
 
   const q = String(b.query ?? "");
   const core = String(b.core_text ?? "");
@@ -1328,13 +1328,24 @@ function getBearerToken(req) {
   return m ? m[1].trim() : null;
 }
 
-function toPseudoEmail(token) {
-  // Bearer localtest 같은 값도 users 테이블에 박히게 “가짜 이메일”로 통일
-  const safe = String(token || "")
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]/g, "_")
-    .slice(0, 60) || "anon";
-  return `${safe}@local.test`;
+function getJsonBody(req) {
+  const b = req.body;
+  if (!b) return {};
+  if (typeof b === "object") return b;          // 정상(JSON 파싱된 경우)
+  if (typeof b === "string") {                  // 문제 케이스(문자열로 들어온 경우)
+    try { return JSON.parse(b); } catch { return {}; }
+  }
+  return {};
+}
+
+function getJsonBody(req) {
+  const b = req.body;
+  if (!b) return {};
+  if (typeof b === "object") return b;          // 정상(JSON 파싱된 경우)
+  if (typeof b === "string") {                  // 문제 케이스(문자열로 들어온 경우)
+    try { return JSON.parse(b); } catch { return {}; }
+  }
+  return {};
 }
 
 async function getSupabaseAuthUser(req) {
@@ -1891,17 +1902,53 @@ app.post("/api/settings/save", async (req, res) => {
       return res.status(400).json(buildError("VALIDATION_ERROR", "userId 해결 실패"));
     }
 
-    const {
-      gemini_keys,
-      action,
+        const body = (() => {
+      if (!req.body) return {};
+      if (typeof req.body === "object") return req.body;
+      if (typeof req.body === "string") {
+        try { return JSON.parse(req.body); } catch { return {}; }
+      }
+      return {};
+    })();
 
-      // ✅ NEW: 다른 엔진 키도 같이 저장
-      naver_id,
-      naver_secret,
-      klaw_key,
-      github_token,
-      deepl_key,
-    } = req.body;
+    const integrationsIn = body.integrations || {};
+    const geminiIn = body.gemini || {};
+
+    const action = body.action ?? geminiIn.action ?? "replace";
+
+    // ✅ gemini_keys: (레거시) top-level gemini_keys OR (신규) gemini.keyring.keys
+    const gemini_keys =
+      body.gemini_keys ??
+      geminiIn.keyring?.keys ??
+      geminiIn.keys;
+
+    // ✅ integrations: (레거시) top-level OR (신규) integrations.* / integrations.<provider>.*
+    const naver_id =
+      body.naver_id ??
+      integrationsIn.naver_id ??
+      integrationsIn.naver?.id ??
+      integrationsIn.naver?.client_id;
+
+    const naver_secret =
+      body.naver_secret ??
+      integrationsIn.naver_secret ??
+      integrationsIn.naver?.secret ??
+      integrationsIn.naver?.client_secret;
+
+    const klaw_key =
+      body.klaw_key ??
+      integrationsIn.klaw_key ??
+      integrationsIn.klaw?.key;
+
+    const github_token =
+      body.github_token ??
+      integrationsIn.github_token ??
+      integrationsIn.github?.token;
+
+    const deepl_key =
+      body.deepl_key ??
+      integrationsIn.deepl_key ??
+      integrationsIn.deepl?.key;
 
     const hasOtherPayload =
       naver_id !== undefined ||
