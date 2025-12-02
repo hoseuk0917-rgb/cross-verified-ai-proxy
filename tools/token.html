@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Supabase JWT 뽑기</title>
+  </head>
+
+  <body style="font-family: system-ui; padding: 16px; line-height: 1.4;">
+    <h3>Supabase JWT 뽑기</h3>
+
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin:12px 0;">
+      <button id="login">Google 로그인</button>
+      <button id="show">세션 보기</button>
+      <button id="logout">로그아웃</button>
+      <button id="hard">하드리셋</button>
+    </div>
+
+    <div style="font-size:12px; opacity:.75; margin-bottom:10px;">
+      redirectTo:
+      <code id="rt"></code>
+    </div>
+
+    <pre id="out" style="white-space: pre-wrap; background:#f6f6f6; padding:12px; border-radius:12px;"></pre>
+
+    <script type="module">
+      import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+      // ✅ 여기 2개만 너 프로젝트 값으로 바꿔줘
+      const SUPABASE_URL = "https://wwgxpmhkafzctwrnsipl.supabase.co";
+      const SUPABASE_ANON_KEY = "sb_publishable_UiLwBvTgjWsbShWvFqNOCg_PntnqWEz";
+
+      const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: true,
+        },
+      });
+
+      const out = document.getElementById("out");
+      const rt = document.getElementById("rt");
+      const redirectTo = location.origin + location.pathname; // e.g. http://localhost:5173/token.html
+      rt.textContent = redirectTo;
+
+      const log = (x) => {
+        out.textContent = (typeof x === "string") ? x : JSON.stringify(x, null, 2);
+      };
+
+      async function show(tag) {
+        const { data, error } = await supabase.auth.getSession();
+        log({
+          tag,
+          url: location.href,
+          hasHash: !!location.hash,
+          hasSearch: !!location.search,
+          error: error ? String(error) : null,
+          session: data?.session
+  ? {
+      email: data.session.user?.email,
+      expires_at: data.session.expires_at,
+      access_token: data.session.access_token,      // ✅ 전체 JWT (이걸 복사)
+      refresh_token: data.session.refresh_token,    // (선택) 보관용
+    }
+  : null,
+        });
+      }
+
+      // ✅ PKCE(code) 콜백이면 여기서 “세션 교환”을 해줘야 세션이 생김
+      async function handleCodeCallbackIfAny() {
+        const u = new URL(location.href);
+
+        const err = u.searchParams.get("error") || u.searchParams.get("error_code");
+        const errDesc = u.searchParams.get("error_description");
+        if (err || errDesc) {
+          log({ tag: "oauth_error", err, errDesc, url: location.href });
+          return;
+        }
+
+        const code = u.searchParams.get("code");
+        if (!code) return;
+
+        const { data, error } = await supabase.auth.exchangeCodeForSession(location.href);
+        log({
+          tag: "exchangeCodeForSession",
+          ok: !error,
+          error: error ? String(error) : null,
+          user: data?.session?.user?.email || null,
+        });
+
+        // code 파라미터 제거(새로고침 반복 방지)
+        history.replaceState({}, document.title, location.pathname);
+      }
+
+      // ✅ auth 이벤트 디버깅 + SIGNED_IN 이면 해시/쿼리 정리
+      supabase.auth.onAuthStateChange((event, session) => {
+        log({
+          tag: "onAuthStateChange",
+          event,
+          session: session ? { email: session.user?.email, expires_at: session.expires_at } : null,
+          url_before_clean: location.href,
+        });
+
+        if (event === "SIGNED_IN") {
+          history.replaceState({}, document.title, location.pathname);
+        }
+      });
+
+      // 1) code 콜백 교환 먼저
+      await handleCodeCallbackIfAny();
+
+      // 2) implicit(hash)나 저장된 세션 로딩 타이밍 때문에 3번 찍어봄
+      await show("page_load");
+      setTimeout(() => show("after_500ms"), 500);
+      setTimeout(() => show("after_1500ms"), 1500);
+
+      document.getElementById("login").onclick = async () => {
+        const { data, error } = await supabase.auth.signInWithOAuth({
+          provider: "google",
+          options: {
+            redirectTo,
+            // 로그아웃 후 꼬이는 경우 “계정 선택” 강제
+            queryParams: { prompt: "select_account" },
+          },
+        });
+
+        if (error) return log(String(error));
+        if (data?.url) location.href = data.url; // ✅ 반드시 이동
+        else log({ tag: "login", note: "No oauth url returned", data });
+      };
+
+      document.getElementById("show").onclick = async () => show("manual_show");
+
+      // ✅ 테스트 도구는 local 로그아웃 권장 (global은 토큰 전체 폐기라 꼬이면 복구가 어려움)
+      document.getElementById("logout").onclick = async () => {
+        const before = await supabase.auth.getSession();
+        const { error } = await supabase.auth.signOut({ scope: "local" });
+        const after = await supabase.auth.getSession();
+        log({
+          tag: "logout_local",
+          before: before.data.session ? { email: before.data.session.user?.email } : null,
+          error: error ? String(error) : null,
+          after: after.data.session ? { email: after.data.session.user?.email } : null,
+        });
+      };
+
+      // ✅ 완전 꼬였을 때: 저장된 세션/토큰 싹 제거 + 새로고침
+      document.getElementById("hard").onclick = async () => {
+        try { await supabase.auth.signOut({ scope: "local" }); } catch {}
+
+        for (const k of Object.keys(localStorage)) {
+          if (k.includes("sb-") || k.includes("supabase")) localStorage.removeItem(k);
+        }
+        for (const k of Object.keys(sessionStorage)) sessionStorage.removeItem(k);
+
+        location.href = location.pathname;
+      };
+    </script>
+  </body>
+</html>

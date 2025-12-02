@@ -678,22 +678,30 @@ function enforceVerifyPayloadLimits(req, res, next) {
   return next();
 }
 
-function requireVerifyAuth(req, res, next) {
+async function requireVerifyAuth(req, res, next) {
   if (!isProd) return next();
 
-  const auth = String(req.headers.authorization || "");
-  const tok = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  const tok = (getBearerToken(req) || "").trim();
 
   // 운영에서 localtest 같은 디버그 토큰 차단
   if (tok && tok.toLowerCase() === "localtest") {
     return res.status(401).json(buildError("UNAUTHORIZED", "Invalid token"));
   }
 
-  // 토큰 있으면 통과
-  if (tok) return next();
-
   // 세션 로그인(패스포트) 통과
   if (req.user) return next();
+
+  // (선택) admin 토큰(=DIAG_TOKEN or DEV_ADMIN_TOKEN) 우회 허용
+  if (isAdminOverride(req)) return next();
+
+  // Bearer가 없으면 거절
+  if (!tok) {
+    return res.status(401).json(buildError("UNAUTHORIZED", "Authorization required"));
+  }
+
+  // ✅ Bearer가 있으면 "Supabase JWT"로 검증해서만 통과
+  const authUser = await getSupabaseAuthUser(req);
+  if (authUser) return next();
 
   return res.status(401).json(buildError("UNAUTHORIZED", "Authorization required"));
 }
@@ -1330,12 +1338,29 @@ function toPseudoEmail(token) {
 }
 
 async function getSupabaseAuthUser(req) {
-  const token = getBearerToken(req);
-  if (!token) return null;
+  // ✅ request 단위 캐시 (null도 캐시)
+  if (Object.prototype.hasOwnProperty.call(req, "_supabaseAuthUser")) {
+    return req._supabaseAuthUser;
+  }
 
-  const { data, error } = await supabase.auth.getUser(token);
-  if (error) return null;
-  return data?.user || null;
+  const token = getBearerToken(req);
+  if (!token) {
+    req._supabaseAuthUser = null;
+    return null;
+  }
+
+  try {
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error) {
+      req._supabaseAuthUser = null;
+      return null;
+    }
+    req._supabaseAuthUser = data?.user || null;
+    return req._supabaseAuthUser;
+  } catch {
+    req._supabaseAuthUser = null;
+    return null;
+  }
 }
 
 function isUuid(v) {
