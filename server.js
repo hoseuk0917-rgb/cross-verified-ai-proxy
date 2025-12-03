@@ -4769,6 +4769,26 @@ external.github = (external.github || [])
   .filter(isRelevantGithubRepo)
   .filter(r => !isBigCuratedListRepo(r));
 
+// ✅ fallback 트리거(Express rate-limit 류 질의일 때만)
+const needExpressRateLimit = (() => {
+  const base = `${query || ""} ${answerText || ""}`.toLowerCase();
+
+  // ghQueries가 scope에 없을 수도 있으니 방어
+  const qs =
+    (typeof ghQueries !== "undefined" && Array.isArray(ghQueries) ? ghQueries : [])
+      .map(x => String(x || "").toLowerCase());
+
+  const blob = [base, ...qs].join(" ");
+
+  return (
+    blob.includes("express-rate-limit") ||
+    blob.includes("rate-limit-redis") ||
+    blob.includes("rate limit redis") ||
+    blob.includes("keygenerator") ||
+    blob.includes("trust proxy")
+  );
+})();
+  
 // 0건이면(특히 express-rate-limit 케이스) GitHub에 1회 fallback 쿼리 추가로 더 찾아봄
 if (
   (safeMode === "dv" || safeMode === "cv") &&
