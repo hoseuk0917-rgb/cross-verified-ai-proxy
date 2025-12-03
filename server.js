@@ -4229,7 +4229,7 @@ partial_scores.recency_detail = rec.detail;
 
 // ✅ (B안 보강) Gemini가 sentinel을 놓쳐도, "명백한 비코드"는 DV/CV를 강제 종료
 if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(rawQuery)) {
-  const startedAt = Date.now();
+  const elapsedMs = Date.now() - start;
 
   const suggestedMode =
     userCoreText && userCoreText.trim().length > 0 ? "fv" : "qv";
@@ -4258,7 +4258,7 @@ if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(rawQuery))
       truthscore: "0.00%",
       truthscore_pct: 0,
       truthscore_01: 0,
-      elapsed: Date.now() - startedAt,
+      elapsed: elapsedMs,
 
       engines: [],
       engines_requested: ["github"],
@@ -4351,7 +4351,7 @@ if (
   github_classifier.reason = reason;
   github_classifier.confidence = confidence;
 
-    const startedAt = Date.now();
+    const elapsedMs = Date.now() - start;
 
   const suggestedMode =
     (safeMode === "cv" && typeof user_answer === "string" && user_answer.trim().length > 0)
@@ -4386,7 +4386,7 @@ if (
       truthscore: "0.00%",
       truthscore_pct: 0,
       truthscore_01: 0,
-      elapsed: Date.now() - startedAt,
+      elapsed: elapsedMs,
 
       engines: [],
       engines_requested: ["github"],
@@ -4445,7 +4445,30 @@ for (const q of ghQueries.slice(0, 3)) {
   if (Array.isArray(result) && result.length) external.github.push(...result);
 }
 
-external.github = (external.github || []).slice(0, 12);
+// ✅ GitHub 결과 정리: 중복 제거 + stars 우선 + 최신 업데이트 우선 (품질 개선)
+external.github = (external.github || [])
+  .filter(Boolean)
+  .map(r => ({
+    ...r,
+    stars: Number(r?.stars ?? r?.stargazers_count ?? 0),
+    updated: String(r?.updated ?? r?.updated_at ?? ""),
+  }))
+  // 중복 제거(이름 기준) — 네 로그처럼 중복(repo가 2번) 나오는 것 방지
+  .filter((r, idx, arr) => {
+    const key = String(r?.name || "").toLowerCase();
+    if (!key) return false;
+    return idx === arr.findIndex(x => String(x?.name || "").toLowerCase() === key);
+  })
+  // stars 내림차순 → updated 최신순
+  .sort((a, b) => {
+    const ds = (b.stars - a.stars);
+    if (ds !== 0) return ds;
+    const ta = Date.parse(a.updated || "") || 0;
+    const tb = Date.parse(b.updated || "") || 0;
+    return tb - ta;
+  })
+  .slice(0, 12);
+
 // ✅ DV/CV는 GitHub 근거가 0이면 여기서 종료(헛소리 방지) + (스키마 통일: code/suggested_mode/classifier)
 if (
   (safeMode === "dv" || safeMode === "cv") &&
