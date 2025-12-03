@@ -2652,7 +2652,14 @@ async function fetchGitHub(q, token, ctx = {}) {
 
   let data;
 try {
-  const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=3`;
+  const q2 = String(q || "")
+  .replace(/["']/g, "")
+  .replace(/\s+/g, " ")
+  .trim();
+
+if (!q2) return [];
+
+  const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q2)}&per_page=5`;
 
   const resp = await axios.get(url, { headers, timeout: HTTP_TIMEOUT_MS, signal });
 
@@ -2997,20 +3004,42 @@ async function buildGithubQueriesFromGemini(
   userId
 ) {
   try {
-    const baseText =
+    let baseText =
       user_answer && user_answer.trim().length > 0
         ? `질문:\n${query}\n\n검증 대상 내용(요약 또는 코드):\n${user_answer}`
         : `질문:\n${query}`;
 
-    const prompt = `
-당신은 GitHub 검색 쿼리를 설계하는 보조 엔진입니다.
-아래 내용을 바탕으로, "관련성이 높은 GitHub 리포지토리를 찾기 좋은 검색어" 1~3개만 생성하세요.
+        const prompt = `
+너는 DV/CV 모드에서 "GitHub 근거 수집"을 위한 1회성 분류+쿼리 생성기다.
 
+[1] 먼저 입력이 "코드/개발" 질의인지 판정하라.
+- YES(코드/개발): 에러/버그/스택트레이스/로그, server.js 등 파일/코드, 라이브러리/프레임워크, 설정, 배포/DevOps, 보안, 성능, 테스트, API/DB 설계, 리팩터링 등
+- NO(비코드): 통계/정책/사회/경제/역사/일반 사실관계, 단순 정보질문, 번역/요약, 의견, 잡담 등
+
+[2] 출력은 반드시 JSON 객체 1개만(설명/마크다운/추가 텍스트 금지)
+
+- NO면 아래 형식 "딱 이것만" 출력:
+{"queries":["__NON_CODE__::<간단사유(한국어)>::<confidence 0-1>"]}
+
+- YES면 GitHub repository search(q=...)에서 결과가 잘 나오는 영문 키워드 기반 쿼리 1~3개 출력:
+{"queries":["query1","query2","query3"]}
+
+[3] YES일 때 쿼리 규칙
+- 따옴표(") 사용 금지 (검색 0건 유발하니 절대 쓰지 말 것)
+- 너무 긴 문장 금지. 짧은 핵심 키워드 위주.
+- 가능하면 in:name,description,readme 를 붙여 검색 적중률을 올릴 것
+- 필요하면 stars:>50 같은 제한은 1개 쿼리에만 가볍게
+- 사용자가 준 기술 키워드(예: express-rate-limit, trust proxy 등)는 그대로 포함
+
+[예시]
+입력: "2024년 한국 합계출산율은?"
+출력: {"queries":["__NON_CODE__::통계/인구 질문(코드 아님)::0.95"]}
+
+입력: "server.js에서 express rate limit이 과하게 걸릴 때 진단/개선"
+출력: {"queries":["express-rate-limit trust proxy in:name,description,readme","express rate limit middleware x-forwarded-for in:readme stars:>50"]}
+
+입력:
 ${baseText}
-
-출력 형식은 반드시 다음 JSON 형식만 사용하세요 (설명 금지):
-
-{"queries":["검색어1","검색어2","검색어3"]}
 `.trim();
 
     const text = await fetchGeminiRotating({
@@ -3033,8 +3062,14 @@ ${baseText}
 
     const arr = Array.isArray(parsed.queries) ? parsed.queries : [];
     const cleaned = arr
-      .map((s) => String(s).trim())
-      .filter((s) => s.length > 0);
+  .map((s) =>
+    String(s || "")
+      .replace(/["']/g, "")           // ✅ 따옴표 제거(0 results 방지)
+      .replace(/\s+/g, " ")
+      .trim()
+  )
+  .filter((s) => s.length > 0);
+
 
     return cleaned.length > 0 ? cleaned : [query];
   } catch (e) {
@@ -3727,6 +3762,29 @@ app.post("/api/verify", verifyRateLimit, enforceVerifyPayloadLimits, requireVeri
 
   const safeMode = (mode || "").trim().toLowerCase();
 
+  // ✅ DV/CV(=GitHub-only)에서 비코드 질의가 들어오는 걸 조기에 차단하기 위한 휴리스틱
+const rawQuery = (typeof query === "string" ? query : "").trim();
+
+// ✅ (B안 보강) Gemini sentinel이 가끔 뚫려도 "명백한 비코드(통계/정책/일반사실)"는 DV/CV에서 차단
+const looksObviouslyNonCode = (s) => {
+  const t = String(s || "").trim();
+  if (!t) return true;
+
+  // 코드/개발 힌트(이게 하나라도 있으면 non-code로 단정하지 않음)
+  const codeHint =
+    /(server\.js|stack|error|exception|trace|http|api|express|node|npm|yarn|pnpm|docker|kubernetes|k8s|redis|postgres|sql|jwt|oauth|flutter|dart|react|typescript|javascript|git(hub)?|commit|pull request|pr|issue|rate[- ]?limit|nginx|render|supabase|curl|powershell|python|파이썬)/i;
+
+  // 비코드(통계/정책/일반사실) 힌트 — "명백한" 케이스만(고정밀)
+  const nonCode =
+    /(합계출산율|출산율|인구|gdp|물가|실업률|환율|주가|대통령|선거|법률|정책|날씨|여행|맛집|번역|요약|연봉|집값|부동산|금리|코스피|코스닥|비트코인)/i;
+
+  // 개발 문맥이면 non-code 아님
+  if (t.includes("```")) return false;
+  if (/\.(js|mjs|cjs|ts|tsx|jsx|dart|py|go|java|kt|cs|cpp|c|rs|swift|sql|yml|yaml|json|env)\b/i.test(t)) return false;
+
+  return nonCode.test(t) && !codeHint.test(t);
+};
+
   // ✅ FV 검증 대상(사실 문장) 우선 입력값
   const userCoreText = (core_text || "").toString().trim();
 
@@ -3750,6 +3808,7 @@ if (!allowedModes.includes(safeMode)) {
     const geminiModelRaw = (gemini_model || "").toString().trim().toLowerCase();
 let verifyModel = null;        // 요청에서 "의도한" verify 모델
 let verifyModelUsed = null;    // ✅ 실제로 성공한 verify 모델(에러 캐치에서도 써야 하므로 바깥 스코프)
+
 
 if (safeMode === "qv" || safeMode === "fv") {
   if (geminiModelRaw === "flash") {
@@ -4168,28 +4227,237 @@ partial_scores.recency_detail = rec.detail;
         ? user_answer
         : query;
 
-    // ✅ GitHub 쿼리 생성 (Gemini)
-    const t_q = Date.now();
-   const ghQueries = await buildGithubQueriesFromGemini(
+        // ✅ (B안 보강) Gemini가 sentinel을 놓쳐도, "명백한 비코드"는 DV/CV를 강제 종료
+if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(rawQuery)) {
+  const startedAt = Date.now();
+  const msg =
+    `DV/CV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
+    `현재 질의는 통계/정책/일반 사실 질문으로 보여 DV/CV를 종료합니다.\n\n` +
+    `- 권장: 동일 질의를 QV/FV로 보내 주세요.\n` +
+    `- DV/CV를 유지하려면: 코드/로그/레포 링크/에러 메시지 등 개발 근거를 포함해 주세요.\n`;
+
+  return res.status(200).json({
+    success: true,
+    data: {
+      mode: safeMode,
+      truthscore: "0.00%",
+      truthscore_pct: 0,
+      truthscore_01: 0,
+      elapsed: Date.now() - startedAt,
+      engines: [],
+      engines_requested: ["github"],
+      partial_scores: {
+        mode_mismatch: true,
+        expected: "code/dev query grounded on GitHub",
+        received: "obvious non-code stats/policy/general query",
+      },
+      flash_summary: msg,
+      verify_raw:
+        "```json\n" +
+        JSON.stringify(
+          {
+            mode_mismatch: true,
+            mode: safeMode,
+            reason: "obvious non-code query blocked before GitHub search",
+          },
+          null,
+          2
+        ) +
+        "\n```",
+    },
+    timestamp: new Date().toISOString(),
+  });
+}
+
+    // ✅ GitHub 쿼리 생성 (Gemini) + (B안) 1-call 분류: 비코드면 sentinel로 종료
+const t_q = Date.now();
+const ghQueriesRaw = await buildGithubQueriesFromGemini(
   safeMode, query, answerText, gemini_key, logUserId
 );
-    const ms_q = Date.now() - t_q;
-    recordTime(geminiTimes, "github_query_builder_ms", ms_q);
-    recordMetric(geminiMetrics, "github_query_builder", ms_q);
+const ms_q = Date.now() - t_q;
+recordTime(geminiTimes, "github_query_builder_ms", ms_q);
+recordMetric(geminiMetrics, "github_query_builder", ms_q);
 
-    // ✅ GitHub 검색(최대 3쿼리)
-    for (const q of (ghQueries || []).slice(0, 3)) {
-      const { result } = await safeFetchTimed(
-        "github",
-          (qq, ctx) => fetchGitHub(qq, githubTokenFinal, ctx),
-        q,
-        engineTimes,
-        engineMetrics
-      );
-      if (Array.isArray(result) && result.length) external.github.push(...result);
+// NOTE: buildGithubQueriesFromGemini는 항상 "배열"을 리턴한다고 가정
+const ghQueries = Array.isArray(ghQueriesRaw)
+  ? ghQueriesRaw
+      .map(x =>
+        String(x || "")
+          .replace(/["']/g, "")   // ✅ 따옴표 제거(검색 0건 방지)
+          .replace(/\s+/g, " ")
+          .trim()
+      )
+      .filter(Boolean)
+  : [];
+
+// ✅ (B안) sentinel 규칙: ["__NON_CODE__::<reason>::<confidence>"] 면 DV/CV 종료
+let github_classifier = { is_code_query: true, reason: "", confidence: null };
+
+if (
+  ghQueries.length === 1 &&
+  typeof ghQueries[0] === "string" &&
+  ghQueries[0].startsWith("__NON_CODE__::")
+) {
+  github_classifier.is_code_query = false;
+
+  const prefix = "__NON_CODE__::";
+  const rest = ghQueries[0].slice(prefix.length);
+
+  // reason에 "::"가 들어가도 안전하게 파싱 (마지막 "::" 뒤를 confidence로 시도)
+  let reason = (rest || "").trim();
+  let confidence = null;
+
+  const lastSep = rest.lastIndexOf("::");
+  if (lastSep >= 0) {
+    const maybeReason = rest.slice(0, lastSep).trim();
+    const maybeConfStr = rest.slice(lastSep + 2).trim();
+    const conf = Number(maybeConfStr);
+    if (Number.isFinite(conf)) {
+      reason = maybeReason || reason;
+      confidence = conf;
     }
+  }
 
-    external.github = (external.github || []).slice(0, 12);
+  github_classifier.reason = reason;
+  github_classifier.confidence = confidence;
+
+  const startedAt = Date.now();
+
+  const msg =
+    `DV/CV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
+    `Gemini 분류 결과: 비코드 질의로 판단되어 DV/CV를 종료합니다.\n` +
+    (github_classifier.reason ? `사유: ${github_classifier.reason}\n` : "") +
+    (github_classifier.confidence !== null ? `confidence: ${github_classifier.confidence}\n` : "") +
+    `\n권장:\n` +
+    `- 일반 사실/통계/정책 검증이면 QV/FV로 보내세요.\n` +
+    `- DV/CV를 유지하려면 server.js/로그/에러/코드블록/레포 링크 등 "코드 근거"를 포함하세요.\n`;
+
+  return res.status(200).json({
+    success: true,
+    data: {
+      mode: safeMode,
+      truthscore: "0.00%",
+      truthscore_pct: 0,
+      truthscore_01: 0,
+      elapsed: Date.now() - startedAt,
+
+      engines: [],
+      engines_requested: ["github"],
+
+      partial_scores: {
+        mode_mismatch: true,
+        github_classifier,
+        github_queries: ghQueries,
+        engine_queries: { github: [] },
+        engine_results: { github: 0 },
+      },
+
+      // DV/CV 응답 포맷 유지(프론트/로그 안정)
+      flash_summary: msg,
+      verify_raw:
+        "```json\n" +
+        JSON.stringify(
+          {
+            mode_mismatch: true,
+            mode: safeMode,
+            github_classifier,
+            note: "Non-code query rejected by Gemini classifier sentinel; no GitHub search executed.",
+          },
+          null,
+          2
+        ) +
+        "\n```",
+
+      gemini_verify_model: "gemini-2.5-flash", // 분류/쿼리빌더 호출 모델(참고용)
+      engine_times: {},
+      engine_metrics: {},
+      gemini_times: {},     // 원하면 여기도 채워도 되는데, 조기종료라 빈 값으로 둬도 OK
+      gemini_metrics: {},
+
+      // 항상 존재하게 해서 프론트가 기대하는 키 유지
+      github_repos: [],
+    },
+    timestamp: new Date().toISOString(),
+  });
+}
+
+// ✅ GitHub 검색(최대 3쿼리)
+for (const q of ghQueries.slice(0, 3)) {
+  const { result } = await safeFetchTimed(
+    "github",
+    (qq, ctx) => fetchGitHub(qq, githubTokenFinal, ctx),
+    q,
+    engineTimes,
+    engineMetrics
+  );
+  if (Array.isArray(result) && result.length) external.github.push(...result);
+}
+
+external.github = (external.github || []).slice(0, 12);
+// ✅ DV/CV는 GitHub 근거가 0이면 여기서 종료(헛소리 방지)
+if ((safeMode === "dv" || safeMode === "cv") && (!Array.isArray(external.github) || external.github.length === 0)) {
+  const msg =
+    `DV/CV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
+    `하지만 이번 요청은 GitHub 검색 결과가 0건이라 근거를 확보하지 못했습니다.\n\n` +
+    `- 생성된 GitHub queries:\n  - ${(Array.isArray(ghQueries) ? ghQueries.join("\n  - ") : "")}\n\n` +
+    `권장:\n` +
+    `- 레포 URL/패키지명(express-rate-limit)/에러 로그/코드 블록을 포함해서 다시 요청\n` +
+    `- 또는 QV/FV로 일반 사실검증 수행\n`;
+
+  return res.status(200).json({
+    success: true,
+    data: {
+      mode: safeMode,
+      truthscore: "0.00%",
+      truthscore_pct: 0,
+      truthscore_01: 0,
+      elapsed: Date.now() - start,
+      engines: [],
+      engines_requested: ["github"],
+      partial_scores: {
+        no_evidence: true,
+        github_queries: ghQueries,
+        engine_queries: { github: uniqStrings(Array.isArray(ghQueries) ? ghQueries : [], 12) },
+        engine_results: { github: 0 },
+        engine_times: engineTimes,
+        engine_metrics: engineMetrics,
+        gemini_times: geminiTimes,
+        gemini_metrics: geminiMetrics,
+      },
+      flash_summary: msg,
+      verify_raw:
+        "```json\n" +
+        JSON.stringify(
+          {
+            no_evidence: true,
+            mode: safeMode,
+            github_queries: ghQueries,
+            reason: "GitHub search returned 0 repositories; DV/CV requires GitHub-grounded evidence.",
+          },
+          null,
+          2
+        ) +
+        "\n```",
+      gemini_verify_model: verifyModelUsed || "gemini-2.5-pro",
+      engine_times: engineTimes,
+      engine_metrics: engineMetrics,
+      effective_config: {
+        NAVER_RELEVANCE_MIN,
+        BLOCK_EVIDENCE_TOPK,
+        BLOCK_NAVER_EVIDENCE_TOPK,
+        NAVER_NUMERIC_FETCH,
+        NAVER_FETCH_TIMEOUT_MS,
+        EVIDENCE_EXCERPT_CHARS,
+        NAVER_NUMERIC_FETCH_MAX,
+        whitelist_version: wlVersion,
+        whitelist_lastUpdate: wlLastUpdate,
+        whitelist_has_kosis: wlHasKosis,
+      },
+      github_repos: [],
+    },
+    timestamp: new Date().toISOString(),
+  });
+}
 
 const rec = calcCompositeRecency({
   mode: safeMode,
