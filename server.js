@@ -4792,7 +4792,7 @@ if (
         ) +
         "\n```",
 
-      /      // 프론트/로그 안정용(있어도 되고 없어도 되지만, 통일 위해 유지)
+      /// 프론트/로그 안정용(있어도 되고 없어도 되지만, 통일 위해 유지)
       engine_times: engineTimes,
       engine_metrics: engineMetrics,
       gemini_times: geminiTimes,
