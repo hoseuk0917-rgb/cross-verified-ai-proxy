@@ -4619,6 +4619,41 @@ const isRelevantGithubRepo = (r) => {
   return true;
 };
 
+// ✅ DV/CV: GitHub 검색 실행 (Gemini가 만든 ghQueries 기반)
+if (
+  (safeMode === "dv" || safeMode === "cv") &&
+  Array.isArray(ghQueries) &&
+  ghQueries.length > 0
+) {
+  for (const q of ghQueries) {
+    const qq = sanitizeGithubQuery(q, ghUserText);
+    if (!qq) continue;
+
+    // engine_queries.github 에도 남기기(있을 때만)
+    try {
+      if (
+        typeof engineQueries === "object" &&
+        engineQueries &&
+        Array.isArray(engineQueries.github)
+      ) {
+        engineQueries.github.push(qq);
+      }
+    } catch {}
+
+    const { result } = await safeFetchTimed(
+      "github",
+      (qq2, ctx) => fetchGitHub(qq2, githubTokenFinal, ctx),
+      qq,
+      engineTimes,
+      engineMetrics
+    );
+
+    if (Array.isArray(result) && result.length) {
+      external.github.push(...result);
+    }
+  }
+}
+
 // 🌟 필터링 전 raw 보관(디버깅/메시지용)
 const github_raw_before_filter = Array.isArray(external.github) ? [...external.github] : [];
 
