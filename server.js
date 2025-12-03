@@ -2640,6 +2640,152 @@ async function fetchGDELT(q, ctx = {}) {
 
 // 🔹 GitHub 리포 검색 엔진 (DV/CV용)
 
+// ✅ GitHub query sanitize (DV/CV 안정화: url/repo 힌트 우선)
+function sanitizeGithubQuery(q, userText = "") {
+  let s = String(q ?? "").replace(/\s+/g, " ").trim();
+  if (!s) return s;
+  s = s.replace(/["']/g, "").trim();
+
+  const blob = `${s} ${String(userText || "")}`;
+
+  const mUrl = blob.match(/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\.git)?/i);
+  if (mUrl) return (`repo:${mUrl[1]}/${mUrl[2]}`).replace(/\.git$/i, "");
+
+  const mRepo = blob.match(/\b([A-Za-z0-9_.-]{2,})\/([A-Za-z0-9_.-]{2,})\b/);
+  if (mRepo) return (`repo:${mRepo[1]}/${mRepo[2]}`).replace(/\.git$/i, "");
+
+  if (s.length > 240) s = s.slice(0, 240).trim();
+  return s;
+}
+
+// ✅ (DV/CV 품질) 대형 curated/awesome 리스트 레포 제거 (점수 왜곡 방지)
+// - TDZ 방지 위해 "function" 선언(hoist)으로 고정
+function isBigCuratedListRepo(r) {
+  const full = String(r?.full_name || "").toLowerCase().trim();
+  const desc = String(r?.description || "").toLowerCase();
+  const topics = Array.isArray(r?.topics) ? r.topics.join(" ").toLowerCase() : "";
+  const stars = Number(r?.stars ?? r?.stargazers_count ?? 0);
+
+  const blocked = new Set([
+    "public-apis/public-apis",
+    "awesome-selfhosted/awesome-selfhosted",
+    "practical-tutorials/project-based-learning",
+    "ripienaar/free-for-dev",
+    "jaywcjlove/awesome-mac",
+    "avelino/awesome-go",
+    "vuejs/awesome-vue",
+    "f/awesome-chatgpt-prompts",
+    "punkpeye/awesome-mcp-servers",
+    "modelcontextprotocol/servers",
+    "rust-unofficial/awesome-rust",
+    "vsouza/awesome-ios",
+    "serhii-londar/open-source-mac-os-apps",
+    "alebcay/awesome-shell",
+    "jondot/awesome-react-native",
+    "matteocrippa/awesome-swift",
+  ]);
+  if (blocked.has(full)) return true;
+
+  const blob = `${full} ${desc} ${topics}`;
+  if (
+    stars >= 20000 &&
+    (blob.includes("awesome") ||
+      blob.includes("curated") ||
+      blob.includes("list of") ||
+      blob.includes("resources") ||
+      blob.includes("directory") ||
+      blob.includes("public api") ||
+      blob.includes("public apis"))
+  ) return true;
+
+  return false;
+}
+
+// ✅ GitHub 결과 relevance 필터(awesome/curated/list 레포 제거 포함)
+function isRelevantGithubRepo(r) {
+  if (!r || typeof r !== "object") return false;
+
+  const full = String(r?.full_name || "").toLowerCase().trim();
+  const name = String(r?.name || "").toLowerCase().trim();
+  if (!full && !name) return false;
+
+  if (isBigCuratedListRepo(r)) return false;
+
+  const desc = String(r?.description || "").toLowerCase();
+  const topics = Array.isArray(r?.topics) ? r.topics.join(" ").toLowerCase() : "";
+  const blob = `${full} ${name} ${desc} ${topics}`;
+
+  if (
+    blob.includes("awesome") ||
+    blob.includes("curated") ||
+    blob.includes("list of") ||
+    blob.includes("collection") ||
+    blob.includes("resources") ||
+    blob.includes("directory")
+  ) {
+    const stars = Number(r?.stars ?? r?.stargazers_count ?? 0);
+    if (stars >= 5000) return false;
+  }
+
+  const size = Number(r?.size ?? 0);
+  const language = String(r?.language || "").trim();
+  if (!language && size > 0 && size < 20) return false;
+
+  return true;
+}
+
+async function fetchGitHub(q, token, ctx = {}) {
+  const signal = ctx?.signal;
+
+  if (!token) throw new Error("GITHUB_TOKEN_REQUIRED");
+
+  const headers = {
+    "User-Agent": "CrossVerifiedAI",
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+  };
+
+  const userText = String(ctx?.userText || ctx?.user_text || "").trim();
+  const page = Math.max(1, Number(ctx?.page || 1));
+  const perPage = Math.min(100, Math.max(1, Number(ctx?.per_page || ctx?.perPage || 50)));
+
+  const q2 = sanitizeGithubQuery(q, userText);
+  if (!q2) return [];
+
+  const url = "https://api.github.com/search/repositories";
+
+  const run = async (pageNo) => {
+    const resp = await axios.get(url, {
+      headers,
+      params: { q: q2, per_page: perPage, page: pageNo },
+      timeout: HTTP_TIMEOUT_MS,
+      signal,
+    });
+    return Array.isArray(resp?.data?.items) ? resp.data.items : [];
+  };
+
+  let items = await run(page);
+
+  // ✅ 패치2) per_page 늘렸는데도 0이면 “2페이지” 한 번 더 가져오기
+  // (1페이지가 curated/awesome으로 꽉 차서 필터 후 실사용 repo가 안 잡히는 경우 대비)
+  if (!items.length && page === 1) {
+    items = await run(2);
+  }
+
+  return (items || []).map((it) => ({
+    name: it?.full_name || it?.name,
+    full_name: it?.full_name,
+    url: it?.html_url,
+    description: it?.description,
+    stars: it?.stargazers_count,
+    forks: it?.forks_count,
+    updated: it?.updated_at,
+    language: it?.language,
+    topics: it?.topics,
+    size: it?.size,
+  }));
+}
+
 // ✅ GitHub 결과 relevance 필터(awesome/curated/list 레포 제거 포함)
 function isRelevantGithubRepo(r) {
   if (!r || typeof r !== "object") return false;
@@ -4811,7 +4957,7 @@ if (
 
     const { result } = await safeFetchTimed(
       "github",
-      (qq, ctx) => fetchGitHub(qq, githubTokenFinal, ctx),
+      (qq, ctx) => fetchGitHub(qq, githubTokenFinal, { ...ctx, userText: ghUserText }),
         sanitizeGithubQuery(q, ghUserText),
       engineTimes,
       engineMetrics
