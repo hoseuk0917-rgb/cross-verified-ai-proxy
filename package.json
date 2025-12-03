@@ -1,0 +1,56 @@
+{
+  "name": "cross-verified-ai-proxy",
+  "version": "14.2.1",
+  "description": "Cross-Verified AI Proxy Server (Render + Supabase + Google OAuth + Naver + K-Law + TruthScore + Multi-Engine Verify)",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "cross-env NODE_ENV=development nodemon server.js",
+    "test": "echo \"No tests configured\""
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.80.0",
+    "axios": "^1.7.4",
+    "connect-pg-simple": "^9.0.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "ejs": "^3.1.10",
+    "express": "^4.21.2",
+    "express-async-errors": "^3.1.1",
+    "express-session": "^1.18.2",
+    "fast-xml-parser": "^4.4.1",
+    "googleapis": "^165.0.0",
+    "morgan": "^1.10.1",
+    "nodemailer": "^7.0.10",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "pg": "^8.11.5",
+    "xml2js": "^0.6.2"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "nodemon": "^3.1.10"
+  },
+  "overrides": {
+    "glob": "^12.0.0"
+  },
+  "engines": {
+    "node": ">=20.x"
+  },
+  "keywords": [
+    "Cross-Verified-AI",
+    "Gemini-2.5",
+    "Render",
+    "Supabase",
+    "Google-OAuth",
+    "Admin-Dashboard",
+    "Naver-API",
+    "K-Law",
+    "TruthScore",
+    "Multi-Engine",
+    "User-Key"
+  ],
+  "author": "Ho Seok Goh",
+  "license": "MIT"
+}
