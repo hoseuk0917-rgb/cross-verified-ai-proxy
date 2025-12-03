@@ -4452,7 +4452,7 @@ recordTime(geminiTimes, "github_query_builder_ms", ms_q);
 recordMetric(geminiMetrics, "github_query_builder", ms_q);
 
 // NOTE: buildGithubQueriesFromGemini는 항상 "배열"을 리턴한다고 가정
-const ghQueries = Array.isArray(ghQueriesRaw)
+let ghQueries = Array.isArray(ghQueriesRaw)
   ? ghQueriesRaw
       .map(x =>
         String(x || "")
@@ -4466,11 +4466,43 @@ const ghQueries = Array.isArray(ghQueriesRaw)
 // ✅ (B안) sentinel 규칙: ["__NON_CODE__::<reason>::<confidence>"] 면 DV/CV 종료
 let github_classifier = { is_code_query: true, reason: "", confidence: null };
 
+const forceGithubEvidenceQuery =
+  /(?:github|깃허브|repo|repository|레포|리포|issue|pull request|pr|commit|branch|npm|package|sdk|library)/i.test(
+    `${query} ${ghUserText || ""}`
+  ) ||
+  /(?:github\.com\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/i.test(`${query} ${answerText || ""}`);
+
 if (
   ghQueries.length === 1 &&
   typeof ghQueries[0] === "string" &&
   ghQueries[0].startsWith("__NON_CODE__::")
 ) {
+  // ✅ repo 힌트/개발근거 키워드가 있으면 sentinel을 “검색용 쿼리”로 강제 교체하고 DV 계속
+  if (forceGithubEvidenceQuery) {
+    const src = String(`${query} ${answerText || ""} ${ghUserText || ""}`);
+    const m = src.match(/(?:github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/i);
+
+    if (m) {
+      const owner = m[1];
+      const repo = String(m[2]).replace(/\.git$/i, "");
+      ghQueries = [
+        `user:${owner} ${repo} in:name,description,readme`,
+        `${owner}/${repo} in:name,description`,
+      ];
+    } else {
+      ghQueries = [
+        `${query} in:name,description,readme`,
+        `${query} stars:>20 in:name,description,readme`,
+      ];
+    }
+
+    // github_classifier는 “강제 통과”로 기록만 남기고 아래 흐름 계속
+    github_classifier.is_code_query = true;
+    github_classifier.reason = "forced_github_mode: repo hint / github keywords";
+    github_classifier.confidence = github_classifier.confidence ?? 0.6;
+
+  } else {
+    // ⬇️ (여기 아래는 기존 코드 그대로) non-code면 DV/CV 종료 return ...
   github_classifier.is_code_query = false;
 
   const prefix = "__NON_CODE__::";
@@ -4582,17 +4614,30 @@ const wantsCuratedListsFromText = (t) =>
   /\b(awesome|curated|curation|list|directory|collection|resources|public[- ]?apis)\b/i.test(String(t || ""));
 
 const ghUserText = String(answerText || query || "");
-const sanitizeGithubQuery = (q, userText) => {
-  const qq = String(q || "").trim();
-  if (!qq) return qq;
-  if (wantsCuratedListsFromText(userText)) return qq;
+function sanitizeGithubQuery(q, userText = "") {
+  let s = String(q || "").replace(/\s+/g, " ").trim();
+  if (!s) return "";
 
-  // repo/org/user 같은 하드 타겟이면 굳이 변형하지 않음
-  if (/(\brepo:|\borg:|\buser:|\blanguage:)/i.test(qq)) return qq;
+  // 컨트롤 문자 제거 + 따옴표 제거(검색 0건 방지)
+  s = s.replace(/[\u0000-\u001f]/g, "").replace(/["']/g, "").trim();
+  if (!s) return "";
 
-  // 기본적으로 awesome/curated list만 제외(너무 공격적으로 -list는 안 건다)
-  return `${qq} -awesome -"curated list" -"awesome list"`.trim();
-};
+  // ✅ 사용자가 “awesome/리스트”를 원하면(명시) 차단 토큰 붙이지 않음
+  const wantsCurated = /(?:awesome|curated|list|public-apis|free-for-dev|awesome-selfhosted)/i.test(
+    `${s} ${userText}`
+  );
+
+  // ✅ 기본은 curated/awesome 도배 방지
+  if (!wantsCurated) {
+    // 너무 과하게 -list 를 넣으면 정상 repo readme에 "list"가 있어도 걸려서 제외될 수 있어 빼고,
+    // “awesome/public-apis 계열”만 확실히 죽이는 토큰 위주로 간다.
+    s += " -awesome -curated -public-apis -awesome-selfhosted -free-for-dev -project-based-learning";
+  }
+
+  // 너무 긴 쿼리 방지
+  if (s.length > 256) s = s.slice(0, 256).trim();
+  return s;
+}
 
 // ✅ (DV/CV 품질) GitHub repo relevance 필터 + 1회 fallback
 const githubRepoBlob = (r) => {
@@ -4658,7 +4703,9 @@ if (
 const github_raw_before_filter = Array.isArray(external.github) ? [...external.github] : [];
 
 // 1차 필터
-external.github = (external.github || []).filter(isRelevantGithubRepo);
+external.github = (external.github || [])
+  .filter(isRelevantGithubRepo)
+  .filter(r => !isBigCuratedListRepo(r));
 
 // 0건이면(특히 express-rate-limit 케이스) GitHub에 1회 fallback 쿼리 추가로 더 찾아봄
 if (
@@ -4721,11 +4768,16 @@ external.github = (external.github || [])
   .slice(0, 12);
 
 // ✅ (DV/CV 품질) 대형 curated/awesome 리스트 레포 제거 (점수 왜곡 방지)
+// ✅ (DV/CV 품질) 대형 curated/awesome 리스트 레포 제거 (점수 왜곡 방지)
 function isBigCuratedListRepo(r) {
-  const full = String(r?.full_name || "").toLowerCase();
-  const desc = String(r?.description || "").toLowerCase();
-  const topics = Array.isArray(r?.topics) ? r.topics.join(" ").toLowerCase() : "";
-  const stars = Number(r?.stars ?? r?.stargazers_count ?? 0);
+  // ⚠️ 너의 현재 결과 객체는 full_name이 아니라 name(= "owner/repo")로 들어오는 케이스가 있음
+  const full = String(r?.full_name || r?.name || r?.repo || "").toLowerCase();
+  const desc = String(r?.description || r?.desc || "").toLowerCase();
+  const topics = Array.isArray(r?.topics)
+    ? r.topics.join(" ").toLowerCase()
+    : String(r?.topic || "").toLowerCase();
+
+  const stars = Number(r?.stars ?? r?.stargazers_count ?? r?.stargazers ?? 0);
 
   // 1) 정확히 박멸할 것들(네 로그에 뜬 애들 포함)
   const blocked = new Set([
@@ -4739,21 +4791,34 @@ function isBigCuratedListRepo(r) {
     "f/awesome-chatgpt-prompts",
     "punkpeye/awesome-mcp-servers",
     "modelcontextprotocol/servers",
+    "rust-unofficial/awesome-rust",
+    "vsouza/awesome-ios",
+    "alebcay/awesome-shell",
+    "jondot/awesome-react-native",
+    "matteocrippa/awesome-swift",
+    "serhii-londar/open-source-mac-os-apps",
   ]);
   if (blocked.has(full)) return true;
 
-  // 2) “awesome/curated/list/resources” + 별폭탄은 거의 다 목록 레포 → 제거
+  // 2) “awesome/curated/list/resources” 시그널 + 별폭탄이면 거의 다 목록 레포
   const blob = `${full} ${desc} ${topics}`;
-  if (
-    stars >= 20000 &&
-    (blob.includes("awesome") ||
-      blob.includes("curated") ||
-      blob.includes("list of") ||
-      blob.includes("resources") ||
-      blob.includes("directory") ||
-      blob.includes("public api") ||
-      blob.includes("public apis"))
-  ) return true;
+
+  const hasCuratedSignals =
+    blob.includes("awesome") ||
+    blob.includes("curated") ||
+    blob.includes("public apis") ||
+    blob.includes("public api") ||
+    blob.includes("free-for-dev") ||
+    blob.includes("free for dev") ||
+    blob.includes("list of") ||
+    blob.includes("resources") ||
+    blob.includes("directory") ||
+    blob.includes("collection");
+
+  if (stars >= 20000 && hasCuratedSignals) return true;
+
+  // 3) 이름 자체가 awesome 계열이면(중간 규모 이상도) 제거
+  if ((full.includes("/awesome-") || full.startsWith("awesome-")) && stars >= 2000) return true;
 
   return false;
 }
