@@ -2657,11 +2657,21 @@ try {
   .replace(/\s+/g, " ")
   .trim();
 
-if (!q2) return [];
+// ✅ GitHub query sanitize (quotes/commas/whitespace) — malformed/0-result 방지
+const q2s = String(q2 || "")
+  .replace(/[“”]/g, '"')
+  .replace(/[‘’]/g, "'")
+  .replace(/["']/g, "")            // 따옴표 제거
+  .replace(/\s+/g, " ")            // 공백 정리
+  .replace(/^[,\s]+|[,\s]+$/g, "") // 앞/뒤 쉼표 제거
+  .trim()
+  .slice(0, 220);
 
-  const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q2)}&per_page=10&sort=stars&order=desc`;
+if (!q2s) return [];
 
-  const resp = await axios.get(url, { headers, timeout: HTTP_TIMEOUT_MS, signal });
+const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q2s)}&per_page=5`;
+
+const resp = await axios.get(url, { headers, timeout: HTTP_TIMEOUT_MS, signal });
 
   data = resp.data;
 } catch (e) {
@@ -4540,17 +4550,23 @@ if (
   });
 }
 
-// ✅ GitHub 검색(최대 3쿼리)
-for (const q of ghQueries.slice(0, 3)) {
-  const { result } = await safeFetchTimed(
-    "github",
-    (qq, ctx) => fetchGitHub(qq, githubTokenFinal, ctx),
-    q,
-    engineTimes,
-    engineMetrics
-  );
-  if (Array.isArray(result) && result.length) external.github.push(...result);
-}
+// ✅ (DV/CV 품질) GitHub 검색 쿼리에서 'awesome/curated list'류를 기본 제외
+// - 사용자가 리스트를 원하면(awesome/list 등) 그대로 둠
+const wantsCuratedListsFromText = (t) =>
+  /\b(awesome|curated|curation|list|directory|collection|resources|public[- ]?apis)\b/i.test(String(t || ""));
+
+const ghUserText = String(answerText || query || "");
+const sanitizeGithubQuery = (q, userText) => {
+  const qq = String(q || "").trim();
+  if (!qq) return qq;
+  if (wantsCuratedListsFromText(userText)) return qq;
+
+  // repo/org/user 같은 하드 타겟이면 굳이 변형하지 않음
+  if (/(\brepo:|\borg:|\buser:|\blanguage:)/i.test(qq)) return qq;
+
+  // 기본적으로 awesome/curated list만 제외(너무 공격적으로 -list는 안 건다)
+  return `${qq} -awesome -"curated list" -"awesome list"`.trim();
+};
 
 // ✅ (DV/CV 품질) GitHub repo relevance 필터 + 1회 fallback
 const githubRepoBlob = (r) => {
@@ -4606,7 +4622,7 @@ if (
     const { result } = await safeFetchTimed(
       "github",
       (qq, ctx) => fetchGitHub(qq, githubTokenFinal, ctx),
-      q,
+        sanitizeGithubQuery(q, ghUserText),
       engineTimes,
       engineMetrics
     );
@@ -4625,6 +4641,8 @@ external.github = (external.github || [])
     stars: Number(r?.stars ?? r?.stargazers_count ?? 0),
     updated: String(r?.updated ?? r?.updated_at ?? ""),
   }))
+  .filter(r => !isBigCuratedListRepo(r)) // ✅ 추가: curated list 제거
+
   // 중복 제거(이름 기준) — 네 로그처럼 중복(repo가 2번) 나오는 것 방지
   .filter((r, idx, arr) => {
     const key = String(r?.name || "").toLowerCase();
@@ -4640,6 +4658,44 @@ external.github = (external.github || [])
     return tb - ta;
   })
   .slice(0, 12);
+
+  // ✅ (DV/CV 품질) 대형 curated/awesome 리스트 레포 제거 (점수 왜곡 방지)
+const isBigCuratedListRepo = (r) => {
+  const full = String(r?.full_name || "").toLowerCase();
+  const desc = String(r?.description || "").toLowerCase();
+  const topics = Array.isArray(r?.topics) ? r.topics.join(" ").toLowerCase() : "";
+  const stars = Number(r?.stars ?? r?.stargazers_count ?? 0);
+
+  // 1) 정확히 박멸할 것들(네 로그에 뜬 애들 포함)
+  const blocked = new Set([
+    "public-apis/public-apis",
+    "awesome-selfhosted/awesome-selfhosted",
+    "practical-tutorials/project-based-learning",
+    "ripienaar/free-for-dev",
+    "jaywcjlove/awesome-mac",
+    "avelino/awesome-go",
+    "vuejs/awesome-vue",
+    "f/awesome-chatgpt-prompts",
+    "punkpeye/awesome-mcp-servers",
+    "modelcontextprotocol/servers",
+  ]);
+  if (blocked.has(full)) return true;
+
+  // 2) “awesome/curated/list/resources” + 별폭탄은 거의 다 목록 레포 → 제거
+  const blob = `${full} ${desc} ${topics}`;
+  if (
+    stars >= 20000 &&
+    (blob.includes("awesome") ||
+      blob.includes("curated") ||
+      blob.includes("list of") ||
+      blob.includes("resources") ||
+      blob.includes("directory") ||
+      blob.includes("public api") ||
+      blob.includes("public apis"))
+  ) return true;
+
+  return false;
+};
 
   // ✅ (DV/CV 품질 가드) "별 0~2짜리 잡음 repo"만 남았으면 근거로 인정하지 않음
 // - 단, 사용자가 "명확한 레포"를 찍어준 경우(github.com/owner/repo 또는 owner/repo 형태)는 예외 허용
