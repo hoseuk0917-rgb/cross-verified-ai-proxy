@@ -4449,6 +4449,7 @@ const t_q = Date.now();
 const ghQueriesRaw = await buildGithubQueriesFromGemini(
   safeMode, query, answerText, gemini_key, logUserId
 );
+const ghUserText = String(query || "").trim();
 const ms_q = Date.now() - t_q;
 recordTime(geminiTimes, "github_query_builder_ms", ms_q);
 recordMetric(geminiMetrics, "github_query_builder", ms_q);
