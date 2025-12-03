@@ -2639,6 +2639,46 @@ async function fetchGDELT(q, ctx = {}) {
 }
 
 // 🔹 GitHub 리포 검색 엔진 (DV/CV용)
+
+// ✅ GitHub 결과 relevance 필터(awesome/curated/list 레포 제거 포함)
+function isRelevantGithubRepo(r) {
+  if (!r || typeof r !== "object") return false;
+
+  const full = String(r?.full_name || "").toLowerCase().trim();
+  const name = String(r?.name || "").toLowerCase().trim();
+  if (!full && !name) return false;
+
+  // ✅ (DV/CV 품질) 대형 curated/awesome 리스트 레포 제거
+  try {
+    if (typeof isBigCuratedListRepo === "function" && isBigCuratedListRepo(r)) return false;
+  } catch {}
+
+  const desc = String(r?.description || "").toLowerCase();
+  const topics = Array.isArray(r?.topics) ? r.topics.join(" ").toLowerCase() : "";
+  const blob = `${full} ${name} ${desc} ${topics}`;
+
+  // 추가로 흔한 “목록 레포” 패턴(블록리스트 외) 억제
+  if (
+    blob.includes("awesome") ||
+    blob.includes("curated") ||
+    blob.includes("list of") ||
+    blob.includes("collection") ||
+    blob.includes("resources") ||
+    blob.includes("directory")
+  ) {
+    const stars = Number(r?.stars ?? r?.stargazers_count ?? 0);
+    // 별이 높으면 거의 확정적으로 목록 레포 → 제거
+    if (stars >= 5000) return false;
+  }
+
+  // “README만/빈 레포” 성격 최소 컷(너무 공격적이면 여기만 완화하면 됨)
+  const size = Number(r?.size ?? 0);
+  const language = String(r?.language || "").trim();
+  if (!language && size > 0 && size < 20) return false;
+
+  return true;
+}
+
 async function fetchGitHub(q, token, ctx = {}) {
   const signal = ctx?.signal;
   const headers = {
