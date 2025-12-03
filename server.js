@@ -4792,11 +4792,11 @@ if (
         ) +
         "\n```",
 
-      // 프론트/로그 안정용(있어도 되고 없어도 되지만, 통일 위해 유지)
-      engine_times,
-      engine_metrics,
-      gemini_times,
-      gemini_metrics,
+      /      // 프론트/로그 안정용(있어도 되고 없어도 되지만, 통일 위해 유지)
+      engine_times: engineTimes,
+      engine_metrics: engineMetrics,
+      gemini_times: geminiTimes,
+      gemini_metrics: geminiMetrics,
       github_repos: [],
     },
     timestamp: new Date().toISOString(),
