@@ -4321,7 +4321,19 @@ if (
   github_classifier.reason = reason;
   github_classifier.confidence = confidence;
 
-  const startedAt = Date.now();
+    const startedAt = Date.now();
+
+  const suggestedMode =
+    (safeMode === "cv" && typeof user_answer === "string" && user_answer.trim().length > 0)
+      ? "fv"
+      : "qv";
+
+  const classifier = {
+    type: "gemini_non_code",
+    method: "buildGithubQueriesFromGemini/sentinel",
+    confidence: github_classifier.confidence,
+    reason: github_classifier.reason || "gemini_classified_non_code",
+  };
 
   const msg =
     `DV/CV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
@@ -4329,12 +4341,17 @@ if (
     (github_classifier.reason ? `사유: ${github_classifier.reason}\n` : "") +
     (github_classifier.confidence !== null ? `confidence: ${github_classifier.confidence}\n` : "") +
     `\n권장:\n` +
-    `- 일반 사실/통계/정책 검증이면 QV/FV로 보내세요.\n` +
+    `- 일반 사실/통계/정책 검증이면 ${suggestedMode.toUpperCase()}로 보내세요.\n` +
     `- DV/CV를 유지하려면 server.js/로그/에러/코드블록/레포 링크 등 "코드 근거"를 포함하세요.\n`;
 
   return res.status(200).json({
     success: true,
     data: {
+      // ✅ (A안) 표준화
+      code: "MODE_MISMATCH",
+      suggested_mode: suggestedMode,
+      classifier,
+
       mode: safeMode,
       truthscore: "0.00%",
       truthscore_pct: 0,
@@ -4346,6 +4363,9 @@ if (
 
       partial_scores: {
         mode_mismatch: true,
+        expected: "code/dev query grounded on GitHub",
+        received: "gemini classified non-code query",
+
         github_classifier,
         github_queries: ghQueries,
         engine_queries: { github: [] },
@@ -4359,7 +4379,10 @@ if (
         JSON.stringify(
           {
             mode_mismatch: true,
+            code: "MODE_MISMATCH",
             mode: safeMode,
+            suggested_mode: suggestedMode,
+            classifier,
             github_classifier,
             note: "Non-code query rejected by Gemini classifier sentinel; no GitHub search executed.",
           },
@@ -4371,10 +4394,9 @@ if (
       gemini_verify_model: "gemini-2.5-flash", // 분류/쿼리빌더 호출 모델(참고용)
       engine_times: {},
       engine_metrics: {},
-      gemini_times: {},     // 원하면 여기도 채워도 되는데, 조기종료라 빈 값으로 둬도 OK
+      gemini_times: {},
       gemini_metrics: {},
 
-      // 항상 존재하게 해서 프론트가 기대하는 키 유지
       github_repos: [],
     },
     timestamp: new Date().toISOString(),
