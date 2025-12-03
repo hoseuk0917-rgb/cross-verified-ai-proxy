@@ -2669,11 +2669,32 @@ const q2s = String(q2 || "")
 
 if (!q2s) return [];
 
-const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q2s)}&per_page=5`;
+const perPage = Math.max(5, Math.min(30, Number(process.env.GITHUB_SEARCH_PER_PAGE || 25)));
+const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q2)}&per_page=${perPage}&page=1`;
 
 const resp = await axios.get(url, { headers, timeout: HTTP_TIMEOUT_MS, signal });
 
   data = resp.data;
+
+    // ✅ (DV/CV 품질) 상위 결과가 '대형 curated/awesome 리스트'로만 꽉 차면 2페이지를 1회 보강
+  // - 쿼터/시간 폭발 방지: page=2는 "1번만" 호출
+  try {
+    const items1 = Array.isArray(data?.items) ? data.items : [];
+    const onlyCurated = items1.length > 0 && items1.every(isBigCuratedListRepo);
+
+    if (onlyCurated) {
+      const url2 = url.includes("page=")
+        ? url.replace(/([?&])page=\d+/, "$1page=2")
+        : (url.includes("?") ? `${url}&page=2` : `${url}?page=2`);
+
+      const resp2 = await axios.get(url2, { headers, timeout: HTTP_TIMEOUT_MS, signal });
+      const items2 = Array.isArray(resp2?.data?.items) ? resp2.data.items : [];
+
+      if (items2.length) {
+        data = { ...data, items: [...items1, ...items2] };
+      }
+    }
+  } catch {}
 } catch (e) {
   const s = e?.response?.status;
 
