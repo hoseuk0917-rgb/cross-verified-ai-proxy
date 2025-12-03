@@ -4446,65 +4446,80 @@ for (const q of ghQueries.slice(0, 3)) {
 }
 
 external.github = (external.github || []).slice(0, 12);
-// ✅ DV/CV는 GitHub 근거가 0이면 여기서 종료(헛소리 방지)
-if ((safeMode === "dv" || safeMode === "cv") && (!Array.isArray(external.github) || external.github.length === 0)) {
+// ✅ DV/CV는 GitHub 근거가 0이면 여기서 종료(헛소리 방지) + (스키마 통일: code/suggested_mode/classifier)
+if (
+  (safeMode === "dv" || safeMode === "cv") &&
+  (!Array.isArray(external.github) || external.github.length === 0)
+) {
+  const suggestedMode = safeMode; // 모드는 맞는데 근거가 없음 → 모드 유지 + 입력을 더 구체화 유도
+
+  const classifier = {
+    type: "github_no_results",
+    method: "github/search",
+    confidence: null,
+    reason: "no_results",
+  };
+
   const msg =
     `DV/CV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
     `하지만 이번 요청은 GitHub 검색 결과가 0건이라 근거를 확보하지 못했습니다.\n\n` +
     `- 생성된 GitHub queries:\n  - ${(Array.isArray(ghQueries) ? ghQueries.join("\n  - ") : "")}\n\n` +
     `권장:\n` +
-    `- 레포 URL/패키지명(express-rate-limit)/에러 로그/코드 블록을 포함해서 다시 요청\n` +
-    `- 또는 QV/FV로 일반 사실검증 수행\n`;
+    `- 레포 URL/패키지명/에러 로그/코드 블록을 포함해서 다시 요청\n` +
+    `- 일반 사실/통계 검증이면 QV/FV로 보내기\n`;
 
   return res.status(200).json({
     success: true,
     data: {
+      code: "NO_EVIDENCE",
+      suggested_mode: suggestedMode,
+      classifier,
+
       mode: safeMode,
       truthscore: "0.00%",
       truthscore_pct: 0,
       truthscore_01: 0,
       elapsed: Date.now() - start,
+
       engines: [],
       engines_requested: ["github"],
+
       partial_scores: {
         no_evidence: true,
-        github_queries: ghQueries,
-        engine_queries: { github: uniqStrings(Array.isArray(ghQueries) ? ghQueries : [], 12) },
+        expected: "GitHub evidence (repo/code/issue/commit)",
+        received: "github search returned 0 results",
+        suggested_mode: suggestedMode,
+        classifier,
+
+        github_queries: Array.isArray(ghQueries) ? ghQueries : [],
+        engine_queries: {
+          github: Array.isArray(ghQueries) ? ghQueries.slice(0, 12) : [],
+        },
         engine_results: { github: 0 },
-        engine_times: engineTimes,
-        engine_metrics: engineMetrics,
-        gemini_times: geminiTimes,
-        gemini_metrics: geminiMetrics,
       },
+
       flash_summary: msg,
       verify_raw:
         "```json\n" +
         JSON.stringify(
           {
-            no_evidence: true,
+            code: "NO_EVIDENCE",
             mode: safeMode,
-            github_queries: ghQueries,
-            reason: "GitHub search returned 0 repositories; DV/CV requires GitHub-grounded evidence.",
+            suggested_mode: suggestedMode,
+            classifier,
+            github_queries: Array.isArray(ghQueries) ? ghQueries : [],
+            note: "No GitHub evidence found; DV/CV aborted before Gemini verify to avoid hallucination.",
           },
           null,
           2
         ) +
         "\n```",
-      gemini_verify_model: verifyModelUsed || "gemini-2.5-pro",
-      engine_times: engineTimes,
-      engine_metrics: engineMetrics,
-      effective_config: {
-        NAVER_RELEVANCE_MIN,
-        BLOCK_EVIDENCE_TOPK,
-        BLOCK_NAVER_EVIDENCE_TOPK,
-        NAVER_NUMERIC_FETCH,
-        NAVER_FETCH_TIMEOUT_MS,
-        EVIDENCE_EXCERPT_CHARS,
-        NAVER_NUMERIC_FETCH_MAX,
-        whitelist_version: wlVersion,
-        whitelist_lastUpdate: wlLastUpdate,
-        whitelist_has_kosis: wlHasKosis,
-      },
+
+      // 프론트/로그 안정용(있어도 되고 없어도 되지만, 통일 위해 유지)
+      engine_times,
+      engine_metrics,
+      gemini_times,
+      gemini_metrics,
       github_repos: [],
     },
     timestamp: new Date().toISOString(),
