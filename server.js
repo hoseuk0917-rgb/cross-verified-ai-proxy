@@ -4227,43 +4227,73 @@ partial_scores.recency_detail = rec.detail;
         ? user_answer
         : query;
 
-        // ✅ (B안 보강) Gemini가 sentinel을 놓쳐도, "명백한 비코드"는 DV/CV를 강제 종료
+// ✅ (B안 보강) Gemini가 sentinel을 놓쳐도, "명백한 비코드"는 DV/CV를 강제 종료
 if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(rawQuery)) {
   const startedAt = Date.now();
+
+  const suggestedMode =
+    userCoreText && userCoreText.trim().length > 0 ? "fv" : "qv";
+
+  const classifier = {
+    type: "obvious_non_code",
+    method: "server/looksObviouslyNonCode",
+    confidence: 0.99,
+    reason: "obvious non-code stats/policy/general query",
+  };
+
   const msg =
     `DV/CV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
     `현재 질의는 통계/정책/일반 사실 질문으로 보여 DV/CV를 종료합니다.\n\n` +
-    `- 권장: 동일 질의를 QV/FV로 보내 주세요.\n` +
+    `- 권장: 동일 질의를 ${suggestedMode.toUpperCase()}로 보내 주세요.\n` +
     `- DV/CV를 유지하려면: 코드/로그/레포 링크/에러 메시지 등 개발 근거를 포함해 주세요.\n`;
 
   return res.status(200).json({
     success: true,
     data: {
+      code: "MODE_MISMATCH",
+      suggested_mode: suggestedMode,
+      classifier,
+
       mode: safeMode,
       truthscore: "0.00%",
       truthscore_pct: 0,
       truthscore_01: 0,
       elapsed: Date.now() - startedAt,
+
       engines: [],
       engines_requested: ["github"],
+
       partial_scores: {
         mode_mismatch: true,
         expected: "code/dev query grounded on GitHub",
         received: "obvious non-code stats/policy/general query",
+        suggested_mode: suggestedMode,
+        classifier,
       },
+
       flash_summary: msg,
       verify_raw:
         "```json\n" +
         JSON.stringify(
           {
+            code: "MODE_MISMATCH",
             mode_mismatch: true,
             mode: safeMode,
+            suggested_mode: suggestedMode,
+            classifier,
             reason: "obvious non-code query blocked before GitHub search",
           },
           null,
           2
         ) +
         "\n```",
+
+      // 프론트/로그가 기대하면 유지(안 써도 되지만 안전)
+      engine_times: {},
+      engine_metrics: {},
+      gemini_times: {},
+      gemini_metrics: {},
+      github_repos: [],
     },
     timestamp: new Date().toISOString(),
   });
