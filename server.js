@@ -3951,6 +3951,11 @@ verifyModelUsed = verifyModel;
   // ✅ 엔진/LLM 시간·메트릭 누적용 객체
   const engineTimes = {};
   const engineMetrics = {};
+
+// ✅ snake_case alias (어딘가에 engine_times / engine_metrics 참조가 남아있어도 런타임 에러 방지)
+const engine_times = engineTimes;
+const engine_metrics = engineMetrics;
+
   const geminiTimes = {};
   const geminiMetrics = {};
 
@@ -4659,8 +4664,8 @@ external.github = (external.github || [])
   })
   .slice(0, 12);
 
-  // ✅ (DV/CV 품질) 대형 curated/awesome 리스트 레포 제거 (점수 왜곡 방지)
-const isBigCuratedListRepo = (r) => {
+// ✅ (DV/CV 품질) 대형 curated/awesome 리스트 레포 제거 (점수 왜곡 방지)
+function isBigCuratedListRepo(r) {
   const full = String(r?.full_name || "").toLowerCase();
   const desc = String(r?.description || "").toLowerCase();
   const topics = Array.isArray(r?.topics) ? r.topics.join(" ").toLowerCase() : "";
@@ -4695,9 +4700,9 @@ const isBigCuratedListRepo = (r) => {
   ) return true;
 
   return false;
-};
+}
 
-  // ✅ (DV/CV 품질 가드) "별 0~2짜리 잡음 repo"만 남았으면 근거로 인정하지 않음
+// ✅ (DV/CV 품질 가드) "별 0~2짜리 잡음 repo"만 남았으면 근거로 인정하지 않음
 // - 단, 사용자가 "명확한 레포"를 찍어준 경우(github.com/owner/repo 또는 owner/repo 형태)는 예외 허용
 const GH_MIN_STARS = 3;
 
