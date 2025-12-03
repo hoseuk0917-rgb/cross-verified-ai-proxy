@@ -2649,6 +2649,8 @@ async function fetchGitHub(q, token, ctx = {}) {
     throw new Error("GITHUB_TOKEN_REQUIRED");
   }
   headers.Authorization = `Bearer ${token}`;
+const page = Math.max(1, Number(ctx?.page || 1));
+const perPage = Math.min(100, Math.max(1, Number(ctx?.per_page || ctx?.perPage || 50)));
 
   let data;
 try {
@@ -2670,7 +2672,7 @@ const q2s = String(q2 || "")
 if (!q2s) return [];
 
 const perPage = Math.max(5, Math.min(30, Number(process.env.GITHUB_SEARCH_PER_PAGE || 25)));
-const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q2)}&per_page=${perPage}&page=1`;
+const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=${perPage}&page=${page}`;
 
 const resp = await axios.get(url, { headers, timeout: HTTP_TIMEOUT_MS, signal });
 
@@ -4685,16 +4687,35 @@ if (
       }
     } catch {}
 
-    const { result } = await safeFetchTimed(
-      "github",
-      (qq2, ctx) => fetchGitHub(qq2, githubTokenFinal, ctx),
-      qq,
-      engineTimes,
-      engineMetrics
-    );
+    const q1 = sanitizeGithubQuery(q, ghUserText);
 
-    if (Array.isArray(result) && result.length) {
-      external.github.push(...result);
+// 1) page 1
+const pack1 = await safeFetchTimed(
+  "github",
+  (qq, ctx) => fetchGitHub(qq, githubTokenFinal, { ...ctx, page: 1 }),
+  q1,
+  engineTimes,
+  engineMetrics
+);
+
+let r1 = Array.isArray(pack1?.result) ? pack1.result : [];
+r1 = r1.filter(isRelevantGithubRepo).filter(r => !isBigCuratedListRepo(r));
+
+// 2) page 2 (page1이 "필터 후 0"이면 한 번 더)
+if (!r1.length) {
+  const pack2 = await safeFetchTimed(
+    "github",
+    (qq, ctx) => fetchGitHub(qq, githubTokenFinal, { ...ctx, page: 2 }),
+    q1,
+    engineTimes,
+    engineMetrics
+  );
+  let r2 = Array.isArray(pack2?.result) ? pack2.result : [];
+  r2 = r2.filter(isRelevantGithubRepo).filter(r => !isBigCuratedListRepo(r));
+  if (r2.length) r1 = r2;
+}
+
+if (r1.length) external.github.push(...r1);
     }
   }
 }
@@ -4984,7 +5005,7 @@ partial_scores.engines_excluded = enginesExcluded;
     let lvSummary = null;
         if (gemini_key || geminiKeysCount > 0) {
       const prompt = `
-너는 대한민국 항공·교통 법령 및 판례를 요약해주는 엔진이다.
+너는 대한민국 법령 및 판례를 요약해주는 엔진이다.
 [사용자 질의]
 ${query}
 
@@ -4992,7 +5013,7 @@ ${query}
 이 JSON 안에 포함된 관련 법령·판례를 확인하고 질의에 답하는 데 중요한 내용만 요약해라.
 
 - 한국어로 3~7개의 bullet
-- 법령/조문 또는 사건명 + 핵심(의무/금지/절차) + UAM 연관성
+- 법령/조문 또는 사건명 + 핵심(의무/금지/절차)
 - 서론/결론 금지
 
 [K-Law JSON]
