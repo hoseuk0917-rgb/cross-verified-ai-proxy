@@ -3785,6 +3785,113 @@ const looksObviouslyNonCode = (s) => {
   return nonCode.test(t) && !codeHint.test(t);
 };
 
+// ✅ (DV/CV 보강) GitHub 결과 relevance 필터(헛다리 repo로 검증 진행되는 것 방지)
+const tokenizeGhQuery = (s) => {
+  const t = String(s || "").toLowerCase();
+  const tokens = (t.match(/[a-z0-9][a-z0-9._-]{1,}|[가-힣]{2,}/g) || [])
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  // GitHub 검색 qualifier/불용어 제거
+  const stop = new Set([
+    "in", "name", "description", "readme", "stars", "forks", "language",
+    "sort", "order", "repo", "repos", "repository", "repositories",
+    "example", "examples", "dataset", "data", "검증", "예시", "레포", "repo로"
+  ]);
+
+  const out = [];
+  for (const tok of tokens) {
+    if (stop.has(tok)) continue;
+    if (/^\d+$/.test(tok)) continue;
+    if (tok.length <= 1) continue;
+    out.push(tok);
+  }
+  // unique
+  return Array.from(new Set(out)).slice(0, 24);
+};
+
+const scoreGithubItem = (item, tokens) => {
+  const name =
+    String(item?.full_name || item?.name || item?.repo || item?.repository || "").toLowerCase();
+  const desc =
+    String(item?.description || item?.summary || item?.snippet || item?.text || "").toLowerCase();
+  const url =
+    String(item?.html_url || item?.url || "").toLowerCase();
+  const blob = `${name} ${desc} ${url}`.trim();
+
+  const isStrong = (tok) => tok.includes("-") || tok.includes(".") || tok.length >= 8;
+
+  let total = 0;
+  let strong = 0;
+
+  for (const tok of tokens) {
+    if (!tok) continue;
+    if (!blob.includes(tok)) continue;
+
+    total += 1;
+    if (isStrong(tok)) strong += 1;
+
+    // name에 직접 박혀있으면 가중
+    if (name && name.includes(tok)) total += 1;
+  }
+
+  const stars = Number(item?.stargazers_count ?? item?.stars ?? 0) || 0;
+  return { total, strong, stars };
+};
+
+const filterGithubEvidence = (items, rawQuery) => {
+  const list = Array.isArray(items) ? items : [];
+  const tokens = tokenizeGhQuery(rawQuery);
+
+  if (!tokens.length || !list.length) {
+    return { items: list, info: { in: list.length, out: list.length, reason: "no_tokens_or_items" } };
+  }
+
+  // dedupe by url/full_name
+  const seen = new Set();
+  const uniq = [];
+  for (const it of list) {
+    const key = String(it?.html_url || it?.url || it?.full_name || it?.name || "").toLowerCase();
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniq.push(it);
+  }
+
+  const scored = uniq.map(it => {
+    const s = scoreGithubItem(it, tokens);
+    return { it, ...s };
+  });
+
+  scored.sort((a, b) => {
+    if (b.strong !== a.strong) return b.strong - a.strong;
+    if (b.total !== a.total) return b.total - a.total;
+    if (b.stars !== a.stars) return b.stars - a.stars;
+    return 0;
+  });
+
+  // ✅ 기준: (strong>=1 && total>=2) OR total>=4
+  const kept = scored.filter(x => (x.strong >= 1 && x.total >= 2) || x.total >= 4);
+
+  // fallback: 전부 탈락이면, “가장 높은 점수 1개”만(단, total>=2) 유지
+  let final = kept;
+  if (final.length === 0 && scored.length > 0) {
+    const best = scored[0];
+    final = (best.total >= 2) ? [best] : [];
+  }
+
+  return {
+    items: final.map(x => x.it),
+    info: {
+      in: list.length,
+      uniq: uniq.length,
+      out: final.length,
+      top: scored[0] ? { total: scored[0].total, strong: scored[0].strong, stars: scored[0].stars } : null,
+      rule: "(strong>=1 && total>=2) OR total>=4; fallback best if total>=2",
+    },
+  };
+};
+
   // ✅ FV 검증 대상(사실 문장) 우선 입력값
   const userCoreText = (core_text || "").toString().trim();
 
@@ -4533,6 +4640,27 @@ external.github = (external.github || [])
     return tb - ta;
   })
   .slice(0, 12);
+
+  // ✅ (DV/CV 품질 가드) "별 0~2짜리 잡음 repo"만 남았으면 근거로 인정하지 않음
+// - 단, 사용자가 "명확한 레포"를 찍어준 경우(github.com/owner/repo 또는 owner/repo 형태)는 예외 허용
+const GH_MIN_STARS = 3;
+
+const ghUrlHit = /https?:\/\/github\.com\/[^\s/]+\/[^\s/]+/i.test(rawQuery);
+const ghOwnerRepoMatch = String(rawQuery || "").match(/\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/);
+// api/verify 같은 일반 경로 오탐 방지: owner/repo 토큰에 - _ . 중 하나라도 있을 때만 repo로 인정
+const ghOwnerRepoHit = !!(ghOwnerRepoMatch && /[-_.]/.test(ghOwnerRepoMatch[0]));
+const ghHardRepoHint = ghUrlHit || ghOwnerRepoHit;
+
+const ghMaxStars = Math.max(
+  0,
+  ...(Array.isArray(external.github) ? external.github : []).map(r =>
+    Number(r?.stars ?? r?.stargazers_count ?? 0)
+  )
+);
+
+if ((safeMode === "dv" || safeMode === "cv") && !ghHardRepoHint && ghMaxStars < GH_MIN_STARS) {
+  external.github = [];
+}
 
 // ✅ DV/CV는 GitHub 근거가 0이면 여기서 종료(헛소리 방지) + (스키마 통일: code/suggested_mode/classifier)
 if (
