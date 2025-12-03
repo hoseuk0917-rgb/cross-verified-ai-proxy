@@ -2659,7 +2659,7 @@ try {
 
 if (!q2) return [];
 
-  const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q2)}&per_page=5`;
+  const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q2)}&per_page=10&sort=stars&order=desc`;
 
   const resp = await axios.get(url, { headers, timeout: HTTP_TIMEOUT_MS, signal });
 
@@ -4443,6 +4443,71 @@ for (const q of ghQueries.slice(0, 3)) {
     engineMetrics
   );
   if (Array.isArray(result) && result.length) external.github.push(...result);
+}
+
+// ✅ (DV/CV 품질) GitHub repo relevance 필터 + 1회 fallback
+const githubRepoBlob = (r) => {
+  const topics = Array.isArray(r?.topics) ? r.topics.join(" ") : "";
+  return `${r?.full_name || ""}\n${r?.name || ""}\n${r?.description || ""}\n${topics}`.toLowerCase();
+};
+
+// 질의에 "강한 앵커"가 있으면 그게 repo 메타에 반드시 있어야 통과
+const needExpressRateLimit = /express-rate-limit/i.test(rawQuery);
+const needRedis = /\bredis\b/i.test(rawQuery);
+
+// 1차 relevance 판정
+const isRelevantGithubRepo = (r) => {
+  const blob = githubRepoBlob(r);
+
+  if (needExpressRateLimit) {
+    // express-rate-limit 관련이면 "express-rate-limit" 또는 공식 store 이름( rate-limit-redis )이 최소 1개는 있어야 함
+    if (!blob.includes("express-rate-limit") && !blob.includes("rate-limit-redis")) return false;
+  }
+  if (needRedis) {
+    // redis가 질의에 있으면 repo 메타에도 redis가 있어야 함 (Hono/Koa 같은 엉뚱한 레포 컷)
+    if (!blob.includes("redis")) return false;
+  }
+  return true;
+};
+
+// 🌟 필터링 전 raw 보관(디버깅/메시지용)
+const github_raw_before_filter = Array.isArray(external.github) ? [...external.github] : [];
+
+// 1차 필터
+external.github = (external.github || []).filter(isRelevantGithubRepo);
+
+// 0건이면(특히 express-rate-limit 케이스) GitHub에 1회 fallback 쿼리 추가로 더 찾아봄
+if (
+  (safeMode === "dv" || safeMode === "cv") &&
+  external.github.length === 0 &&
+  needExpressRateLimit
+) {
+  const extraQueries = [
+    // repositories search에서 유효한 qualifier 조합
+    `org:express-rate-limit rate-limit-redis`,
+    `"rate-limit-redis" "express-rate-limit" in:name,description,readme`,
+  ];
+
+  for (const q of extraQueries.slice(0, 2)) {
+    // engine_queries에도 남기기(있을 때만)
+    try {
+      if (typeof engineQueries === "object" && engineQueries && Array.isArray(engineQueries.github)) {
+        engineQueries.github.push(q);
+      }
+    } catch {}
+
+    const { result } = await safeFetchTimed(
+      "github",
+      (qq, ctx) => fetchGitHub(qq, githubTokenFinal, ctx),
+      q,
+      engineTimes,
+      engineMetrics
+    );
+    if (Array.isArray(result) && result.length) external.github.push(...result);
+  }
+
+  // fallback 후 재필터
+  external.github = (external.github || []).filter(isRelevantGithubRepo);
 }
 
 // ✅ GitHub 결과 정리: 중복 제거 + stars 우선 + 최신 업데이트 우선 (품질 개선)
