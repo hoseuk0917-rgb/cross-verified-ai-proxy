@@ -4501,9 +4501,12 @@ partial_scores.recency_detail = rec.detail;
     }
 
     const answerText =
-      (safeMode === "cv" && user_answer && user_answer.trim().length > 0)
-        ? user_answer
-        : query;
+  (safeMode === "cv" && user_answer && user_answer.trim().length > 0)
+    ? user_answer
+    : query;
+
+// ✅ GitHub 관련 로직에서 항상 쓰는 텍스트(= TDZ 방지)
+let ghUserText = String(query || "").trim();
 
 // ✅ (B안 보강) Gemini가 sentinel을 놓쳐도, "명백한 비코드"는 DV/CV를 강제 종료
 if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(rawQuery)) {
@@ -4582,7 +4585,7 @@ const t_q = Date.now();
 const ghQueriesRaw = await buildGithubQueriesFromGemini(
   safeMode, query, answerText, gemini_key, logUserId
 );
-const ghUserText = String(query || "").trim();
+ghUserText = String(query || "").trim();
 const ms_q = Date.now() - t_q;
 recordTime(geminiTimes, "github_query_builder_ms", ms_q);
 recordMetric(geminiMetrics, "github_query_builder", ms_q);
@@ -4749,7 +4752,7 @@ if (
 const wantsCuratedListsFromText = (t) =>
   /\b(awesome|curated|curation|list|directory|collection|resources|public[- ]?apis)\b/i.test(String(t || ""));
 
-const ghUserText = String(answerText || query || "");
+ghUserText = String(answerText || query || "").trim();
 const allowCuratedLists = wantsCuratedListsFromText(`${rawQuery || ""} ${answerText || ""} ${query || ""} ${ghUserText || ""}`);
 
 // ✅ (DV/CV 품질) GitHub repo relevance 필터 + 1회 fallback
