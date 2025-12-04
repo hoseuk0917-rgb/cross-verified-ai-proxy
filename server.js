@@ -2658,6 +2658,23 @@ function sanitizeGithubQuery(q, userText = "") {
   return s;
 }
 
+function buildGithubDebugInput({ mode, query, rawQuery, user_answer, answerText, ghUserText }) {
+  const parts = [
+    `mode=${String(mode || "").trim()}`,
+    `query=${String(query || "").trim()}`,
+    rawQuery != null ? `rawQuery=${String(rawQuery || "").trim()}` : null,
+    user_answer != null ? `user_answer=${String(user_answer || "").trim()}` : null,
+    answerText != null ? `answerText=${String(answerText || "").trim()}` : null,
+    ghUserText != null ? `ghUserText=${String(ghUserText || "").trim()}` : null,
+  ].filter(Boolean);
+
+  const joined = parts.join(" | ");
+  return {
+    github_debug_input: joined,
+    github_debug_len: joined.length,
+  };
+}
+
 // ✅ (DV/CV 품질) 대형 curated/awesome 리스트 레포 제거 (점수 왜곡 방지)
 // - TDZ 방지 위해 "function" 선언(hoist)으로 고정
 function isBigCuratedListRepo(r) {
@@ -3879,6 +3896,19 @@ function computeEngineCorrectionFactor(engines = [], statsMap = {}) {
 //   - LV: TruthScore 없이 K-Law 결과만 제공 (Ⅸ 명세 반영)
 // ─────────────────────────────
 app.post("/api/verify", verifyRateLimit, enforceVerifyPayloadLimits, requireVerifyAuth, guardProdKeyUuid, async (req, res) => {
+  // ✅ TDZ 방지: verify 핸들러 스코프에서 먼저 선언
+  let ghUserText = String(req.body?.query || "").trim();
+
+  // --- GitHub debug input (does NOT affect github_queries) ---
+  const __ghDebug = buildGithubDebugInput({
+    mode: req.body?.mode,
+    query: req.body?.query,
+    rawQuery: req.body?.rawQuery,
+    user_answer: req.body?.user_answer,
+    answerText: req.body?.user_answer ?? req.body?.answerText,
+    ghUserText,
+  });
+
   let logUserId = null;   // ✅ 요청마다 독립
   let authUser = null;    // ✅ 요청마다 독립
 
@@ -4506,7 +4536,7 @@ partial_scores.recency_detail = rec.detail;
     : query;
 
 // ✅ GitHub 관련 로직에서 항상 쓰는 텍스트(= TDZ 방지)
-let ghUserText = String(query || "").trim();
+ghUserText = String(query || "").trim();
 
 // ✅ (B안 보강) Gemini가 sentinel을 놓쳐도, "명백한 비코드"는 DV/CV를 강제 종료
 if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(rawQuery)) {
@@ -4545,12 +4575,13 @@ if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(rawQuery))
       engines_requested: ["github"],
 
       partial_scores: {
-        mode_mismatch: true,
-        expected: "code/dev query grounded on GitHub",
-        received: "obvious non-code stats/policy/general query",
-        suggested_mode: suggestedMode,
-        classifier,
-      },
+  ...__ghDebug,
+  mode_mismatch: true,
+  expected: "code/dev query grounded on GitHub",
+  received: "obvious non-code stats/policy/general query",
+  suggested_mode: suggestedMode,
+  classifier,
+},
 
       flash_summary: msg,
       verify_raw:
@@ -4706,15 +4737,16 @@ if (
       engines_requested: ["github"],
 
       partial_scores: {
-        mode_mismatch: true,
-        expected: "code/dev query grounded on GitHub",
-        received: "gemini classified non-code query",
+  ...__ghDebug,
+  mode_mismatch: true,
+  expected: "code/dev query grounded on GitHub",
+  received: "gemini classified non-code query",
 
-        github_classifier,
-        github_queries: ghQueries,
-        engine_queries: { github: [] },
-        engine_results: { github: 0 },
-      },
+  github_classifier,
+  github_queries: ghQueries,
+  engine_queries: { github: [] },
+  engine_results: { github: 0 },
+},
 
       // DV/CV 응답 포맷 유지(프론트/로그 안정)
       flash_summary: msg,
@@ -5049,6 +5081,7 @@ if (
       engines_requested: ["github"],
 
       partial_scores: {
+       ...__ghDebug,
         no_evidence: true,
         expected: "GitHub evidence (repo/code/issue/commit)",
         received: "github search returned 0 results",
