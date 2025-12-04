@@ -2701,39 +2701,6 @@ function isBigCuratedListRepo(r) {
   return false;
 }
 
-// ✅ GitHub 결과 relevance 필터(awesome/curated/list 레포 제거 포함)
-function isRelevantGithubRepo(r) {
-  if (!r || typeof r !== "object") return false;
-
-  const full = String(r?.full_name || "").toLowerCase().trim();
-  const name = String(r?.name || "").toLowerCase().trim();
-  if (!full && !name) return false;
-
-  if (isBigCuratedListRepo(r)) return false;
-
-  const desc = String(r?.description || "").toLowerCase();
-  const topics = Array.isArray(r?.topics) ? r.topics.join(" ").toLowerCase() : "";
-  const blob = `${full} ${name} ${desc} ${topics}`;
-
-  if (
-    blob.includes("awesome") ||
-    blob.includes("curated") ||
-    blob.includes("list of") ||
-    blob.includes("collection") ||
-    blob.includes("resources") ||
-    blob.includes("directory")
-  ) {
-    const stars = Number(r?.stars ?? r?.stargazers_count ?? 0);
-    if (stars >= 5000) return false;
-  }
-
-  const size = Number(r?.size ?? 0);
-  const language = String(r?.language || "").trim();
-  if (!language && size > 0 && size < 20) return false;
-
-  return true;
-}
-
 async function fetchGitHub(q, token, ctx = {}) {
   const signal = ctx?.signal;
 
@@ -2746,11 +2713,18 @@ async function fetchGitHub(q, token, ctx = {}) {
   };
 
   const userText = String(ctx?.userText || ctx?.user_text || "").trim();
-  const page = Math.max(1, Number(ctx?.page || 1));
-  const perPage = Math.min(100, Math.max(1, Number(ctx?.per_page || ctx?.perPage || 50)));
 
-  const q2 = sanitizeGithubQuery(q, userText);
-  if (!q2) return [];
+  // page/per_page: ctx 우선, 없으면 ENV 기본
+  const page = Math.max(1, Number(ctx?.page || 1));
+  const perPage = Math.min(
+    100,
+    Math.max(1, Number(ctx?.per_page || ctx?.perPage || process.env.GITHUB_SEARCH_PER_PAGE || 50))
+  );
+
+// DV/CV ... sanitize (caller에서 이미 sanitize 했으면 skip 가능)
+const rawQ = String(q ?? "").trim();
+const q2 = ctx?.skipSanitize ? rawQ : sanitizeGithubQuery(rawQ, userText);
+if (!q2) return [];
 
   const url = "https://api.github.com/search/repositories";
 
@@ -2764,12 +2738,45 @@ async function fetchGitHub(q, token, ctx = {}) {
     return Array.isArray(resp?.data?.items) ? resp.data.items : [];
   };
 
-  let items = await run(page);
+  let items = [];
+  try {
+    items = await run(page);
 
-  // ✅ 패치2) per_page 늘렸는데도 0이면 “2페이지” 한 번 더 가져오기
-  // (1페이지가 curated/awesome으로 꽉 차서 필터 후 실사용 repo가 안 잡히는 경우 대비)
-  if (!items.length && page === 1) {
-    items = await run(2);
+    // ✅ 1) 1페이지가 curated/awesome으로만 꽉 찼으면 2페이지 1회 보강(정확히 1번)
+    if (page === 1 && items.length > 0) {
+      const onlyCurated = items.every((r) => {
+        try {
+          return typeof isBigCuratedListRepo === "function" && isBigCuratedListRepo(r);
+        } catch {
+          return false;
+        }
+      });
+
+      if (onlyCurated) {
+        const items2 = await run(2);
+        if (items2.length) items = [...items, ...items2];
+      }
+    }
+
+    // ✅ 2) 아예 0개면(일시/검색특이) 2페이지 1회 보강
+    if (page === 1 && items.length === 0) {
+      items = await run(2);
+    }
+  } catch (e) {
+    const s = e?.response?.status;
+
+    // ✅ 토큰 불량/만료/권한없음 → 치명 오류로 중단
+    if (s === 401 || s === 403) {
+      const err = new Error("GITHUB_AUTH_ERROR");
+      err.code = "GITHUB_AUTH_ERROR";
+      err.httpStatus = 401;
+      err.detail = { status: s };
+      err.publicMessage = "GitHub token 인증에 실패했습니다. (토큰 만료/권한/형식 확인)";
+      err._fatal = true;
+      throw err;
+    }
+
+    throw e;
   }
 
   return (items || []).map((it) => ({
@@ -2823,91 +2830,6 @@ function isRelevantGithubRepo(r) {
   if (!language && size > 0 && size < 20) return false;
 
   return true;
-}
-
-async function fetchGitHub(q, token, ctx = {}) {
-  const signal = ctx?.signal;
-  const headers = {
-    "User-Agent": "CrossVerifiedAI",
-  };
-
-  if (!token) {
-    throw new Error("GITHUB_TOKEN_REQUIRED");
-  }
-  headers.Authorization = `Bearer ${token}`;
-const page = Math.max(1, Number(ctx?.page || 1));
-const perPage = Math.min(100, Math.max(1, Number(ctx?.per_page || ctx?.perPage || 50)));
-
-  let data;
-try {
-  const q2 = String(q || "")
-  .replace(/["']/g, "")
-  .replace(/\s+/g, " ")
-  .trim();
-
-// ✅ GitHub query sanitize (quotes/commas/whitespace) — malformed/0-result 방지
-const q2s = String(q2 || "")
-  .replace(/[“”]/g, '"')
-  .replace(/[‘’]/g, "'")
-  .replace(/["']/g, "")            // 따옴표 제거
-  .replace(/\s+/g, " ")            // 공백 정리
-  .replace(/^[,\s]+|[,\s]+$/g, "") // 앞/뒤 쉼표 제거
-  .trim()
-  .slice(0, 220);
-
-if (!q2s) return [];
-
-const perPage = Math.max(5, Math.min(30, Number(process.env.GITHUB_SEARCH_PER_PAGE || 25)));
-const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=${perPage}&page=${page}`;
-
-const resp = await axios.get(url, { headers, timeout: HTTP_TIMEOUT_MS, signal });
-
-  data = resp.data;
-
-    // ✅ (DV/CV 품질) 상위 결과가 '대형 curated/awesome 리스트'로만 꽉 차면 2페이지를 1회 보강
-  // - 쿼터/시간 폭발 방지: page=2는 "1번만" 호출
-  try {
-    const items1 = Array.isArray(data?.items) ? data.items : [];
-    const onlyCurated = items1.length > 0 && items1.every(isBigCuratedListRepo);
-
-    if (onlyCurated) {
-      const url2 = url.includes("page=")
-        ? url.replace(/([?&])page=\d+/, "$1page=2")
-        : (url.includes("?") ? `${url}&page=2` : `${url}?page=2`);
-
-      const resp2 = await axios.get(url2, { headers, timeout: HTTP_TIMEOUT_MS, signal });
-      const items2 = Array.isArray(resp2?.data?.items) ? resp2.data.items : [];
-
-      if (items2.length) {
-        data = { ...data, items: [...items1, ...items2] };
-      }
-    }
-  } catch {}
-} catch (e) {
-  const s = e?.response?.status;
-
-  // ✅ GitHub 토큰 불량/만료/권한없음 → 즉시 치명 오류로 중단
-  if (s === 401 || s === 403) {
-    const err = new Error("GITHUB_AUTH_ERROR");
-    err.code = "GITHUB_AUTH_ERROR";
-    err.httpStatus = 401;
-    err.detail = { status: s };
-    err.publicMessage = "GitHub token 인증에 실패했습니다. (토큰 만료/권한/형식 확인)";
-    err._fatal = true;
-    throw err;
-  }
-
-  throw e;
-}
-
-return (
-  data?.items?.map((i) => ({
-    name: i.full_name,
-    stars: i.stargazers_count,
-    forks: i.forks_count,
-    updated: i.updated_at,
-  })) || []
-);
 }
 
 // ─────────────────────────────
@@ -4550,8 +4472,33 @@ partial_scores.recency_detail = rec.detail;
 
   case "dv":
   case "cv": {
-    engines.push("github");
+        engines.push("github");
     external.github = [];
+
+    // ✅ GitHub 결과 누적: 중복 방지 + 상한(cap)
+    const GH_CAP = Math.max(1, Number(process.env.GITHUB_MAX_REPOS || 30));
+    const ghSeen = new Set(
+      (Array.isArray(external.github) ? external.github : [])
+        .map(r => String(r?.full_name || r?.html_url || r?.url || r?.name || "").toLowerCase().trim())
+        .filter(Boolean)
+    );
+
+    function pushGithubRepos(repos) {
+      if (!Array.isArray(repos) || repos.length === 0) return;
+      if (!Array.isArray(external.github)) external.github = [];
+
+      for (const r of repos) {
+        if (!r) continue;
+        if (external.github.length >= GH_CAP) break;
+
+        const k = String(r?.full_name || r?.html_url || r?.url || r?.name || "").toLowerCase().trim();
+        if (!k) continue;
+        if (ghSeen.has(k)) continue;
+
+        ghSeen.add(k);
+        external.github.push(r);
+      }
+    }
 
     const answerText =
       (safeMode === "cv" && user_answer && user_answer.trim().length > 0)
@@ -4803,30 +4750,7 @@ const wantsCuratedListsFromText = (t) =>
   /\b(awesome|curated|curation|list|directory|collection|resources|public[- ]?apis)\b/i.test(String(t || ""));
 
 const ghUserText = String(answerText || query || "");
-function sanitizeGithubQuery(q, userText = "") {
-  let s = String(q || "").replace(/\s+/g, " ").trim();
-  if (!s) return "";
-
-  // 컨트롤 문자 제거 + 따옴표 제거(검색 0건 방지)
-  s = s.replace(/[\u0000-\u001f]/g, "").replace(/["']/g, "").trim();
-  if (!s) return "";
-
-  // ✅ 사용자가 “awesome/리스트”를 원하면(명시) 차단 토큰 붙이지 않음
-  const wantsCurated = /(?:awesome|curated|list|public-apis|free-for-dev|awesome-selfhosted)/i.test(
-    `${s} ${userText}`
-  );
-
-  // ✅ 기본은 curated/awesome 도배 방지
-  if (!wantsCurated) {
-    // 너무 과하게 -list 를 넣으면 정상 repo readme에 "list"가 있어도 걸려서 제외될 수 있어 빼고,
-    // “awesome/public-apis 계열”만 확실히 죽이는 토큰 위주로 간다.
-    s += " -awesome -curated -public-apis -awesome-selfhosted -free-for-dev -project-based-learning";
-  }
-
-  // 너무 긴 쿼리 방지
-  if (s.length > 256) s = s.slice(0, 256).trim();
-  return s;
-}
+const allowCuratedLists = wantsCuratedListsFromText(`${rawQuery || ""} ${answerText || ""} ${query || ""} ${ghUserText || ""}`);
 
 // ✅ (DV/CV 품질) GitHub repo relevance 필터 + 1회 fallback
 const githubRepoBlob = (r) => {
@@ -4859,50 +4783,89 @@ if (
   Array.isArray(ghQueries) &&
   ghQueries.length > 0
 ) {
-  for (const q of ghQueries) {
-    const qq = sanitizeGithubQuery(q, ghUserText);
-    if (!qq) continue;
+  const githubSeen = new Set(); // ghQueries 전체에 대해 중복 제거
+const githubCapTotal = Math.max(1, Number(process.env.GITHUB_DV_CV_MAX_REPOS || 18));
+const githubCapPerQuery = Math.max(1, Number(process.env.GITHUB_DV_CV_MAX_PER_QUERY || 8));
 
-    // engine_queries.github 에도 남기기(있을 때만)
-    try {
-      if (
-        typeof engineQueries === "object" &&
-        engineQueries &&
-        Array.isArray(engineQueries.github)
-      ) {
-        engineQueries.github.push(qq);
-      }
-    } catch {}
+// ✅ curated 의도는 요청당 1번만 계산
+const wantCurated =
+  wantsCuratedListsFromText(rawQuery) || wantsCuratedListsFromText(ghUserText);
 
-    const q1 = sanitizeGithubQuery(q, ghUserText);
+// curated 허용 조건: 전역 allowCuratedLists 이거나, 질문/텍스트가 curated를 원할 때
+const allowCurated = Boolean(allowCuratedLists || wantCurated);
 
-// 1) page 1
-const pack1 = await safeFetchTimed(
+// ✅ gh repo 중복 제거(여러 query/page에서 같은 repo 나오는 것 방지)
+const ghSeen = new Set();
+
+for (const q of ghQueries) {
+  const q1 = sanitizeGithubQuery(q, ghUserText);
+  if (!q1) continue;
+
+  // engine_queries.github (있을 때만 push + 중복 방지)
+  try {
+    if (
+      typeof engineQueries === "object" &&
+      engineQueries &&
+      Array.isArray(engineQueries.github)
+    ) {
+      const exists = engineQueries.github.some(
+        (x) => String(x || "").toLowerCase().trim() === String(q1 || "").toLowerCase().trim()
+      );
+      if (!exists) engineQueries.github.push(q1);
+    }
+  } catch {}
+
+  // 1) page 1
+  const pack1 = await safeFetchTimed(
   "github",
-  (qq, ctx) => fetchGitHub(qq, githubTokenFinal, { ...ctx, page: 1 }),
+  (qq, ctx) => fetchGitHub(qq, githubTokenFinal, { ...ctx, page: 1, skipSanitize: true }),
   q1,
   engineTimes,
   engineMetrics
 );
 
 let r1 = Array.isArray(pack1?.result) ? pack1.result : [];
-r1 = r1.filter(isRelevantGithubRepo).filter(r => !isBigCuratedListRepo(r));
+r1 = r1.filter(isRelevantGithubRepo);
+
+if (!allowCurated) r1 = r1.filter(r => !isBigCuratedListRepo(r));
 
 // 2) page 2 (page1이 "필터 후 0"이면 한 번 더)
 if (!r1.length) {
   const pack2 = await safeFetchTimed(
-    "github",
-    (qq, ctx) => fetchGitHub(qq, githubTokenFinal, { ...ctx, page: 2 }),
-    q1,
-    engineTimes,
-    engineMetrics
-  );
+  "github",
+  (qq, ctx) => fetchGitHub(qq, githubTokenFinal, { ...ctx, page: 2, skipSanitize: true }),
+  q1,
+  engineTimes,
+  engineMetrics
+);
+
   let r2 = Array.isArray(pack2?.result) ? pack2.result : [];
-  r2 = r2.filter(isRelevantGithubRepo).filter(r => !isBigCuratedListRepo(r));
+  r2 = r2.filter(isRelevantGithubRepo);
+  if (!allowCurated) r2 = r2.filter(r => !isBigCuratedListRepo(r));
+
   if (r2.length) r1 = r2;
 }
 
-if (r1.length) external.github.push(...r1);
+if (r1.length) {
+  // per-query cap
+  if (r1.length > githubCapPerQuery) r1 = r1.slice(0, githubCapPerQuery);
+
+  // dedupe across all ghQueries/pages
+  const uniq = [];
+  for (const it of r1) {
+    const k = String(it?.full_name || it?.html_url || it?.url || it?.name || "").toLowerCase().trim();
+    if (!k) continue;
+    if (githubSeen.has(k)) continue;
+    githubSeen.add(k);
+    uniq.push(it);
+    if (external.github.length + uniq.length >= githubCapTotal) break;
+  }
+
+  if (uniq.length) pushGithubRepos(uniq);
+}
+
+// total cap reached? stop further ghQueries loop
+if (external.github.length >= githubCapTotal) break;
     }
   }
 }
@@ -4962,7 +4925,7 @@ if (
       engineTimes,
       engineMetrics
     );
-    if (Array.isArray(result) && result.length) external.github.push(...result);
+    if (Array.isArray(result) && result.length) pushGithubRepos(result);
   }
 
   // fallback 후 재필터
@@ -4995,64 +4958,25 @@ external.github = (external.github || [])
   })
   .slice(0, 12);
 
-// ✅ (DV/CV 품질) 대형 curated/awesome 리스트 레포 제거 (점수 왜곡 방지)
-// ✅ (DV/CV 품질) 대형 curated/awesome 리스트 레포 제거 (점수 왜곡 방지)
-function isBigCuratedListRepo(r) {
-  // ⚠️ 너의 현재 결과 객체는 full_name이 아니라 name(= "owner/repo")로 들어오는 케이스가 있음
-  const full = String(r?.full_name || r?.name || r?.repo || "").toLowerCase();
-  const desc = String(r?.description || r?.desc || "").toLowerCase();
-  const topics = Array.isArray(r?.topics)
-    ? r.topics.join(" ").toLowerCase()
-    : String(r?.topic || "").toLowerCase();
+  // ✅ GitHub results dedupe (multi-query/page overlap) + cap
+if (Array.isArray(external.github) && external.github.length > 1) {
+  const seen = new Set();
+  const uniq = [];
 
-  const stars = Number(r?.stars ?? r?.stargazers_count ?? r?.stargazers ?? 0);
+  for (const r of external.github) {
+    const key = String(r?.full_name || r?.html_url || r?.url || "").toLowerCase().trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    uniq.push(r);
+  }
 
-  // 1) 정확히 박멸할 것들(네 로그에 뜬 애들 포함)
-  const blocked = new Set([
-    "public-apis/public-apis",
-    "awesome-selfhosted/awesome-selfhosted",
-    "practical-tutorials/project-based-learning",
-    "ripienaar/free-for-dev",
-    "jaywcjlove/awesome-mac",
-    "avelino/awesome-go",
-    "vuejs/awesome-vue",
-    "f/awesome-chatgpt-prompts",
-    "punkpeye/awesome-mcp-servers",
-    "modelcontextprotocol/servers",
-    "rust-unofficial/awesome-rust",
-    "vsouza/awesome-ios",
-    "alebcay/awesome-shell",
-    "jondot/awesome-react-native",
-    "matteocrippa/awesome-swift",
-    "serhii-londar/open-source-mac-os-apps",
-  ]);
-  if (blocked.has(full)) return true;
-
-  // 2) “awesome/curated/list/resources” 시그널 + 별폭탄이면 거의 다 목록 레포
-  const blob = `${full} ${desc} ${topics}`;
-
-  const hasCuratedSignals =
-    blob.includes("awesome") ||
-    blob.includes("curated") ||
-    blob.includes("public apis") ||
-    blob.includes("public api") ||
-    blob.includes("free-for-dev") ||
-    blob.includes("free for dev") ||
-    blob.includes("list of") ||
-    blob.includes("resources") ||
-    blob.includes("directory") ||
-    blob.includes("collection");
-
-  if (stars >= 20000 && hasCuratedSignals) return true;
-
-  // 3) 이름 자체가 awesome 계열이면(중간 규모 이상도) 제거
-  if ((full.includes("/awesome-") || full.startsWith("awesome-")) && stars >= 2000) return true;
-
-  return false;
+  const cap = Math.max(
+    1,
+    parseInt(process.env.GITHUB_MAX_RESULTS_KEEP || "40", 10) || 40
+  );
+  external.github = uniq.slice(0, cap);
 }
 
-// ✅ (DV/CV 품질 가드) "별 0~2짜리 잡음 repo"만 남았으면 근거로 인정하지 않음
-// - 단, 사용자가 "명확한 레포"를 찍어준 경우(github.com/owner/repo 또는 owner/repo 형태)는 예외 허용
 const GH_MIN_STARS = 3;
 
 const ghUrlHit = /https?:\/\/github\.com\/[^\s/]+\/[^\s/]+/i.test(rawQuery);
@@ -5086,10 +5010,21 @@ if (
     reason: "no_results",
   };
 
+    // ✅ 실제로 기록된 github queries 우선 (sanitize된 q1이 engineQueries.github에 들어감)
+  const usedGhQueries =
+    (typeof engineQueries === "object" &&
+      engineQueries &&
+      Array.isArray(engineQueries.github) &&
+      engineQueries.github.length > 0)
+      ? engineQueries.github
+      : (Array.isArray(ghQueries) ? ghQueries : []);
+
+  const githubCount = Array.isArray(external?.github) ? external.github.length : 0;
+
   const msg =
     `DV/CV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
     `하지만 이번 요청은 GitHub 검색 결과가 0건이라 근거를 확보하지 못했습니다.\n\n` +
-    `- 생성된 GitHub queries:\n  - ${(Array.isArray(ghQueries) ? ghQueries.join("\n  - ") : "")}\n\n` +
+    `- 생성/사용된 GitHub queries:\n  - ${(Array.isArray(usedGhQueries) ? usedGhQueries.join("\n  - ") : "")}\n\n` +
     `권장:\n` +
     `- 레포 URL/패키지명/에러 로그/코드 블록을 포함해서 다시 요청\n` +
     `- 일반 사실/통계 검증이면 QV/FV로 보내기\n`;
@@ -5117,11 +5052,11 @@ if (
         suggested_mode: suggestedMode,
         classifier,
 
-        github_queries: Array.isArray(ghQueries) ? ghQueries : [],
+        github_queries: Array.isArray(usedGhQueries) ? usedGhQueries : [],
         engine_queries: {
-          github: Array.isArray(ghQueries) ? ghQueries.slice(0, 12) : [],
+          github: Array.isArray(usedGhQueries) ? usedGhQueries.slice(0, 12) : [],
         },
-        engine_results: { github: 0 },
+        engine_results: { github: githubCount },
       },
 
       flash_summary: msg,
@@ -5133,7 +5068,7 @@ if (
             mode: safeMode,
             suggested_mode: suggestedMode,
             classifier,
-            github_queries: Array.isArray(ghQueries) ? ghQueries : [],
+            github_queries: Array.isArray(usedGhQueries) ? usedGhQueries : [],
             note: "No GitHub evidence found; DV/CV aborted before Gemini verify to avoid hallucination.",
           },
           null,
@@ -5163,9 +5098,18 @@ partial_scores.recency_detail = rec.detail;
       (Array.isArray(external.github) && external.github.length > 0)
         ? calcValidityScore(external.github)
         : null;
-    partial_scores.github_queries = ghQueries;
+    // ✅ 실제로 사용된 github queries 우선 (sanitize된 q1이 engineQueries.github에 들어감)
+const usedGhQueriesMain =
+  (typeof engineQueries === "object" &&
+    engineQueries &&
+    Array.isArray(engineQueries.github) &&
+    engineQueries.github.length > 0)
+    ? engineQueries.github
+    : (Array.isArray(ghQueries) ? ghQueries : []);
+
+partial_scores.github_queries = usedGhQueriesMain;
 partial_scores.engine_queries = {
-  github: uniqStrings(Array.isArray(ghQueries) ? ghQueries : [], 12),
+  github: uniqStrings(usedGhQueriesMain, 12),
 };
 
 // ✅ DV/CV도 engines_used 계산(쿼리/calls/results 기준)
