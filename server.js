@@ -4735,16 +4735,21 @@ if (naverPool.length > 0) {
 ghUserText = String(query || "").trim();
 
 // ✅ S-17: cache hit (QV/FV heavy path)
-const __cacheKey = makeVerifyCacheKey({
-  mode: safeMode,
-  query,
-  rawQuery,
-  user_answer,
-  answerText,
-  key_uuid: req.body?.key_uuid,
-});
+let __cacheKey = null;
 
-const __cachedPayload = (safeMode === "qv" || safeMode === "fv") ? verifyCacheGet(__cacheKey) : null;
+if (safeMode === "qv" || safeMode === "fv") {
+  __cacheKey = makeVerifyCacheKey({
+    mode: safeMode,
+    query,
+    rawQuery,
+    user_answer,
+    // answerText는 QV/FV에서 사실상 query라 필수 아님. 넣고 싶으면 유지해도 OK.
+    answerText,
+    key_uuid: req.body?.key_uuid,
+  });
+}
+
+const __cachedPayload = __cacheKey ? verifyCacheGet(__cacheKey) : null;
 if (__cachedPayload) {
   const elapsedMs = Date.now() - start;
 
@@ -6520,7 +6525,7 @@ if (safeMode === "dv" || safeMode === "cv") {
 // ✅ S-17: cache set (only QV/FV)
 if (safeMode === "qv" || safeMode === "fv") {
   payload.cached = false;
-  verifyCacheSet(__cacheKey, payload);
+  if (__cacheKey) verifyCacheSet(__cacheKey, payload);
 }
 
 // 🔹 QV/FV 모드에서는 Naver 검색 결과도 같이 내려줌
