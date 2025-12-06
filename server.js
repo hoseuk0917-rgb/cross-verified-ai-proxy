@@ -2466,6 +2466,7 @@ function recordMetric(metricsObj, name, ms) {
 
 async function safeFetchTimed(name, fn, q, engineTimes, engineMetrics) {
   const start = Date.now();
+  let __cacheKey = null;
   const result = await safeFetch(name, fn, q);
   const ms = Date.now() - start;
 
@@ -4735,8 +4736,6 @@ if (naverPool.length > 0) {
 ghUserText = String(query || "").trim();
 
 // ✅ S-17: cache hit (QV/FV heavy path)
-let __cacheKey = null;
-
 if (safeMode === "qv" || safeMode === "fv") {
   __cacheKey = makeVerifyCacheKey({
     mode: safeMode,
@@ -6525,7 +6524,9 @@ if (safeMode === "dv" || safeMode === "cv") {
 // ✅ S-17: cache set (only QV/FV)
 if (safeMode === "qv" || safeMode === "fv") {
   payload.cached = false;
-  if (__cacheKey) verifyCacheSet(__cacheKey, payload);
+  if (__cacheKey && (safeMode === "qv" || safeMode === "fv")) {
+  verifyCacheSet(__cacheKey, payload);
+}
 }
 
 // 🔹 QV/FV 모드에서는 Naver 검색 결과도 같이 내려줌
