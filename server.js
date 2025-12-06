@@ -5849,13 +5849,34 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
   };
 
   const extractNumericTokens = (text = "") => {
-    const t = String(text || "");
-    const years = Array.from(new Set((t.match(/\b(19\d{2}|20\d{2}|2100)\b/g) || [])));
-    const numsRaw = (t.match(/\b\d+(?:\.\d+)?\b/g) || []);
-    // 작은 숫자 잡음 제외(3자리 이상 or 소수)
-    const nums = Array.from(new Set(numsRaw.filter(x => x.includes(".") || x.length >= 3)));
-    return { years, nums };
-  };
+  const t = String(text || "");
+
+  // years: 4자리 연도만
+  const years = Array.from(new Set((t.match(/\b(19\d{2}|20\d{2}|2100)\b/g) || [])));
+
+  // nums: 콤마/소수 포함 숫자 토큰 추출 후 정규화(콤마 제거)
+  const rawNums = t.match(/\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\b/g) || [];
+  const nums = Array.from(
+    new Set(
+      rawNums
+        .map((x) => normalizeNumToken(x))          // "5,156" -> "5156"
+        .filter((n) => {
+          if (!n) return false;
+
+          // 연도(YYYY)는 nums에서 제외 (years에서만 체크)
+          if (/^(19\d{2}|20\d{2}|2100)$/.test(n)) return false;
+
+          // 너무 약한 숫자(한 자리)는 제외
+          if (/^\d$/.test(n)) return false;
+
+          // 최소 3자리 이상 or 소수는 유지
+          return n.includes(".") || n.length >= 3;
+        })
+    )
+  );
+
+  return { years, nums };
+};
 
   const isLikelyClaimText = (text = "") => {
     const t = String(text || "").trim();
@@ -5867,18 +5888,23 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
   };
 
   const numericPassForEvidence = (claimTokens, evidenceText) => {
-    const ev = String(evidenceText || "");
-    const needYear = claimTokens.years.length > 0;
-    const needNum = claimTokens.nums.length > 0;
+  const evRaw = String(evidenceText || "");
+  const evNorm = evRaw.replace(/,/g, ""); // "5,156" -> "5156"
 
-    const yearsHit = needYear ? claimTokens.years.some(y => ev.includes(y)) : false;
-    const numsHit = needNum ? claimTokens.nums.some(n => ev.includes(n)) : false;
+  const years = (claimTokens && Array.isArray(claimTokens.years)) ? claimTokens.years : [];
+  const nums  = (claimTokens && Array.isArray(claimTokens.nums))  ? claimTokens.nums  : [];
 
-    if (needYear && needNum) return yearsHit && numsHit;
-    if (needYear) return yearsHit;
-    if (needNum) return numsHit;
-    return true;
-  };
+  const needYear = years.length > 0;
+  const needNum  = nums.length > 0;
+
+  const yearsHit = needYear ? years.some(y => evRaw.includes(String(y))) : false;
+  const numsHit  = needNum  ? nums.some(n => evNorm.includes(String(n).replace(/,/g, ""))) : false;
+
+  if (needYear && needNum) return yearsHit && numsHit;
+  if (needYear) return yearsHit;
+  if (needNum) return numsHit;
+  return true;
+};
 
   const countTotalBlockEvidence = (block) => {
     const ev = block?.evidence;
@@ -5905,7 +5931,7 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
 
   for (const b of blocksForVerify) {
     const claimText = String(b?.text || "");
-    const tokens = extractNumericTokens(claimText);
+    const tokens = extractNumericTokens(`${claimText} ${query || ""}`);
 
     if (b?.evidence && typeof b.evidence === "object") {
       for (const eng of Object.keys(b.evidence)) {
