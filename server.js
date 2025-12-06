@@ -2466,7 +2466,6 @@ function recordMetric(metricsObj, name, ms) {
 
 async function safeFetchTimed(name, fn, q, engineTimes, engineMetrics) {
   const start = Date.now();
-  let __cacheKey = null;
   const result = await safeFetch(name, fn, q);
   const ms = Date.now() - start;
 
@@ -4101,6 +4100,7 @@ app.post("/api/verify", verifyRateLimit, enforceVerifyPayloadLimits, requireVeri
 
   // ✅ DV/CV(=GitHub-only)에서 비코드 질의가 들어오는 걸 조기에 차단하기 위한 휴리스틱
 const rawQuery = (typeof query === "string" ? query : "").trim();
+let __cacheKey = null;
 
 // ✅ (B안 보강) Gemini sentinel이 가끔 뚫려도 "명백한 비코드(통계/정책/일반사실)"는 DV/CV에서 차단
 const looksObviouslyNonCode = (s) => {
