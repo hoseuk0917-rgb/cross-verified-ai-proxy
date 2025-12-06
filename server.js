@@ -51,6 +51,10 @@ const GEMINI_TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS || "45000", 10)
 
 const ENGINE_RETRY_MAX = parseInt(process.env.ENGINE_RETRY_MAX || "1", 10); // 0~1 권장
 const ENGINE_RETRY_BASE_MS = parseInt(process.env.ENGINE_RETRY_BASE_MS || "350", 10);
+const ENABLE_VERIFY_CACHE = String(process.env.ENABLE_VERIFY_CACHE || "0") === "1";
+const VERIFY_CACHE_TTL_MS = parseInt(process.env.VERIFY_CACHE_TTL_MS || "120000", 10); // 2분
+const VERIFY_CACHE_MAX = parseInt(process.env.VERIFY_CACHE_MAX || "50", 10);
+const ENABLE_WIKIDATA_QVFV = String(process.env.ENABLE_WIKIDATA_QVFV || "0") === "1"; // 기본 OFF
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -401,6 +405,15 @@ const FLASH_REF_CHARS = parseInt(process.env.FLASH_REF_CHARS || "4000", 10);
 
 // 🔹 (옵션) Pro(verify) 입력 JSON 길이 (기본 6000 → 넉넉히 12000 권장)
 const VERIFY_INPUT_CHARS = parseInt(process.env.VERIFY_INPUT_CHARS || "12000", 10);
+// ✅ S-14: naver non-whitelist / inferred-official factors (single source of truth)
+const NAVER_NON_WHITELIST_FACTOR = parseFloat(
+  process.env.NAVER_NON_WHITELIST_FACTOR || process.env.NAVER_NONWHITELIST_WEIGHT || "0.55"
+); // 비화이트리스트 기본 감점(권장 0.5~0.7)
+
+const NAVER_INFERRED_OFFICIAL_FACTOR = parseFloat(
+  process.env.NAVER_INFERRED_OFFICIAL_FACTOR || process.env.NAVER_INFERRED_OFFICIAL_WEIGHT || "0.85"
+); // "공식처럼 보임" 소프트 가중치(권장 0.75~0.9)
+
 
 // 🔹 (옵션) DB에 저장할 Gemini 원문 텍스트 제한 (미설정이면 “무제한”)
 const MAX_LOG_TEXT_CHARS = process.env.MAX_LOG_TEXT_CHARS
@@ -596,6 +609,55 @@ function hash16(s) {
   } catch {
     return "";
   }
+}
+
+// =======================================================
+// ✅ S-17: short TTL in-memory cache (for repeated QV/FV tests)
+// =======================================================
+const __verifyCache = new Map(); // key -> { t:number, v:payload }
+
+function makeVerifyCacheKey({ mode, query, rawQuery, user_answer, answerText, key_uuid }) {
+  const obj = {
+    v: 1,
+    mode: String(mode || ""),
+    query: String(query || ""),
+    rawQuery: String(rawQuery || ""),
+    user_answer: String(user_answer || ""),
+    answerText: String(answerText || ""),
+    key_uuid: String(key_uuid || ""),
+  };
+  const s = JSON.stringify(obj);
+  return `vc:${hash16(s)}`;
+}
+
+function verifyCacheGet(key) {
+  if (!ENABLE_VERIFY_CACHE) return null;
+  if (!key) return null;
+
+  const ent = __verifyCache.get(key);
+  if (!ent) return null;
+
+  const ttl = Math.max(0, VERIFY_CACHE_TTL_MS | 0);
+  if (ttl > 0 && (Date.now() - ent.t) > ttl) {
+    __verifyCache.delete(key);
+    return null;
+  }
+  return ent.v || null;
+}
+
+function verifyCacheSet(key, payload) {
+  if (!ENABLE_VERIFY_CACHE) return;
+  if (!key) return;
+
+  // 오래된 것부터 밀어내기(Map은 insertion order 유지)
+  const max = Math.max(1, VERIFY_CACHE_MAX | 0);
+  while (__verifyCache.size >= max) {
+    const oldestKey = __verifyCache.keys().next().value;
+    if (!oldestKey) break;
+    __verifyCache.delete(oldestKey);
+  }
+
+  __verifyCache.set(key, { t: Date.now(), v: payload });
 }
 
 function makeFixedWindowLimiter({ windowMs, max, keyFn, name }) {
@@ -905,16 +967,27 @@ function safeVerifyInputForGemini(input, maxLen) {
     blocks: slimBlocks,
     external: { truncated: true },
     partial_scores: input?.partial_scores
-      ? {
-          recency: input.partial_scores.recency ?? null,
-          validity: input.partial_scores.validity ?? null,
-          consistency: input.partial_scores.consistency ?? null,
-          engine_factor: input.partial_scores.engine_factor ?? null,
-          naver_tier_factor: input.partial_scores.naver_tier_factor ?? null,
-          engines_used: input.partial_scores.engines_used ?? null,
-          engine_results: input.partial_scores.engine_results ?? null,
-        }
-      : {},
+  ? {
+      recency: input.partial_scores.recency ?? null,
+      validity: input.partial_scores.validity ?? null,
+      consistency: input.partial_scores.consistency ?? null,
+      engine_factor: input.partial_scores.engine_factor ?? null,
+      naver_tier_factor: input.partial_scores.naver_tier_factor ?? null,
+
+      engines_requested: input.partial_scores.engines_requested ?? null,
+      engines_used: input.partial_scores.engines_used ?? null,
+      engines_excluded: input.partial_scores.engines_excluded ?? null,
+
+      engine_exclusion_reasons: input.partial_scores.engine_exclusion_reasons ?? null,
+      engine_explain: input.partial_scores.engine_explain ?? null,
+
+      engines_used_pre: input.partial_scores.engines_used_pre ?? null,
+engines_excluded_pre: input.partial_scores.engines_excluded_pre ?? null,
+engine_exclusion_reasons_pre: input.partial_scores.engine_exclusion_reasons_pre ?? null,
+
+      engine_results: input.partial_scores.engine_results ?? null,
+    }
+  : {},
   };
 
   let s1 = tryStr(slim1);
@@ -2262,6 +2335,7 @@ function dedupeByLink(items = []) {
   return out;
 }
 
+// ✅ S-15: engines_used 자동 산출
 // ✅ “쿼리 없으면 제외” + “calls 없으면 제외” + “results 0이면 제외”
 function computeEnginesUsed({ enginesRequested, partial_scores, engineMetrics }) {
   const q = partial_scores?.engine_queries || {};
@@ -2488,16 +2562,26 @@ async function callNaver(query, clientId, clientSecret, ctx = {}) {
 
           // ✅ (패치) 화이트리스트에 없더라도 "공식 성격" 도메인이면 소프트 폴백으로 티어 부여
           let tier = tierInfo.tier;
-          let tier_weight = tierInfo.weight;
-          let whitelisted = !!tier;
-          let inferred = false;
 
-          if (!tier && hostLooksOfficial(tierInfo.host)) {
-            tier = "tier2";
-            tier_weight = 0.9;
-            whitelisted = true;
-            inferred = true;
-          }
+let tier_weight =
+  (typeof tierInfo.weight === "number" && Number.isFinite(tierInfo.weight))
+    ? tierInfo.weight
+    : 1;
+
+let whitelisted = !!tier;
+let inferred = false;
+
+// ✅ 비화이트리스트 기본 감점(= 1.0 방지)
+if (!whitelisted) {
+  tier_weight = NAVER_NON_WHITELIST_FACTOR;
+}
+
+// ✅ "공식처럼 보임"은 표시용 tier만 주고, whitelisted는 올리지 않는다(핵심)
+if (!tier && hostLooksOfficial(tierInfo.host)) {
+  tier = "tier2"; // 표시용 라벨
+  tier_weight = NAVER_INFERRED_OFFICIAL_FACTOR; // 소프트 가중치
+  inferred = true;
+}
 
           return {
             title: cleanTitle,
@@ -2506,6 +2590,10 @@ async function callNaver(query, clientId, clientSecret, ctx = {}) {
             source_url,
             origin: "naver",
             naver_type: ep.type,
+            tier,
+            tier_weight,
+            whitelisted,
+            inferred,
 
             // ✅ news만 pubDate가 옴
             pubDate: ep.type === "news" ? (i.pubDate || null) : null,
@@ -3464,6 +3552,15 @@ function topArr(arr, k) {
 //   - 선택된 TOPK URL만, 숫자 블록일 때만 fetch
 // ─────────────────────────────
 const NAVER_NUMERIC_FETCH = (process.env.NAVER_NUMERIC_FETCH ?? "true").toLowerCase() !== "false";
+
+// ✅ S-14: naver non-whitelist / inferred-official weights
+// - single source of truth는 상단의 FACTOR(환경변수 포함)이고,
+// - 아래 WEIGHT는 “호환(alias)” 용도로만 유지한다.
+const NAVER_NONWHITELIST_WEIGHT = NAVER_NON_WHITELIST_FACTOR;
+const NAVER_INFERRED_OFFICIAL_WEIGHT = NAVER_INFERRED_OFFICIAL_FACTOR;
+const NAVER_STRICT_YEAR_MATCH = (process.env.NAVER_STRICT_YEAR_MATCH ?? "true").toLowerCase() !== "false";
+const NAVER_NUM_MATCH_BOOST = parseFloat(process.env.NAVER_NUM_MATCH_BOOST || "1.25"); // 숫자 매칭 있으면 보너스
+
 // ✅ 숫자/단위 감지 (숫자 발췌 패치용)
 function hasNumberLike(text) {
   const s = String(text || "");
@@ -3471,6 +3568,51 @@ function hasNumberLike(text) {
     /\d/.test(s) ||
     /%|퍼센트|만\s*명|명|대|원|달러|억원|조원|km|m\/s|GHz|MHz/.test(s)
   );
+}
+
+function normalizeNumToken(t) {
+  return String(t || "").trim().replace(/,/g, "");
+}
+
+function extractYearTokens(text) {
+  const s = String(text || "");
+  const years = new Set();
+  const m = s.match(/\b(19\d{2}|20\d{2})\b/g);
+  if (m) for (const y of m) years.add(y);
+  return [...years];
+}
+
+// 연도(4자리)는 제외하고 “수치 주장”에 가까운 숫자(소수/2자리 이상)만 뽑음
+function extractQuantNumberTokens(text) {
+  const s = String(text || "");
+  const raw = s.match(/\d[\d,]*(?:\.\d+)?/g) || [];
+  const out = new Set();
+
+  for (const tok of raw) {
+    const t = normalizeNumToken(tok);
+    if (!t) continue;
+
+    // 4자리 연도는 제외
+    if (/^(19\d{2}|20\d{2})$/.test(t)) continue;
+
+    // 너무 짧은 숫자(1자리)는 제외 (노이즈 방지)
+    if (/^\d$/.test(t)) continue;
+
+    out.add(t);
+  }
+  return [...out];
+}
+
+function countTokenHits(tokens, hayText) {
+  if (!Array.isArray(tokens) || tokens.length === 0) return 0;
+  const hay = normalizeNumToken(hayText);
+  let hits = 0;
+  for (const tok of tokens) {
+    const t = normalizeNumToken(tok);
+    if (!t) continue;
+    if (hay.includes(t)) hits += 1;
+  }
+  return hits;
 }
 
 const NAVER_FETCH_TIMEOUT_MS = parseInt(process.env.NAVER_FETCH_TIMEOUT_MS || "5000", 10);
@@ -3637,36 +3779,59 @@ function pickTopNaverEvidenceForVerify({
   const K = Number.isFinite(topK) && topK > 0 ? topK : 3;
   const minRel = Number.isFinite(minRelevance) ? minRelevance : 0.15;
 
-  const kw = extractKeywords([query, blockText, ...(naverQueries || [])].join(" "), 14);
+    const kw = extractKeywords([query, blockText, ...(naverQueries || [])].join(" "), 14);
   const needNum = hasNumberLike(blockText) || hasNumberLike(query);
+
+  const needle = `${String(blockText || "")} ${String(query || "")}`;
+  const yearTokens = Array.from(needle.matchAll(/\b(19\d{2}|20\d{2})\b/g)).map(m => m[1]);
+  const numTokens = Array.from(needle.matchAll(/(\d+(?:\.\d+)?)/g)).map(m => m[1]).filter(x => x && x.length <= 10);
 
   const scored = [];
   for (const it of list) {
-    const isWhitelisted = !!it?.tier; // ✅ 화이트리스트 밖은 evidence 제외(표시는 OK)
-    if (!isWhitelisted) continue;
-
     if (!allowNews && it?.naver_type === "news") continue; // ✅ 시사성 질문에서만 news 허용
 
     const text = `${it?.title || ""} ${it?.desc || ""}`;
     const rel = keywordHitRatio(text, kw);
+    if (rel < minRel) continue; // ✅ 무관한 결과 evidence 제외
 
-    if (rel < minRel) continue; // ✅ 무관한 결과(의대/비트코인 등) evidence에서 제외
+    const isWhitelisted = (it?.whitelisted === true) || !!it?.tier;
+    const isInferred = (it?.inferred === true);
 
-    const baseW =
+    const hasAnyNum = hasNumberLike(text);
+    const hasYear = yearTokens.length ? yearTokens.some(y => text.includes(y)) : false;
+    const hasExactNum = numTokens.length ? numTokens.some(n => text.includes(n)) : false;
+
+    // ✅ inferred는 관련도 충분할 때만 통과
+    const allowInferred = isInferred && rel >= Math.max(minRel + 0.10, 0.25);
+
+    // ✅ 숫자/연도형 질의에서만 비화이트리스트 예외 허용(수치/연도 매칭 + 높은 관련도)
+    const allowNonWhitelist =
+      !isWhitelisted && !isInferred &&
+      (needNum || yearTokens.length > 0) &&
+      (hasExactNum || hasYear || (hasAnyNum && rel >= 0.35)) &&
+      rel >= Math.max(minRel + 0.15, 0.35);
+
+    if (!isWhitelisted && !allowInferred && !allowNonWhitelist) continue;
+
+    let baseW =
       (typeof it?.tier_weight === "number" && Number.isFinite(it.tier_weight) ? it.tier_weight : 1) *
       (typeof it?.type_weight === "number" && Number.isFinite(it.type_weight) ? it.type_weight : 1);
 
-    const hasNum = hasNumberLike(text);
-    const numFactor = needNum ? (hasNum ? 1.15 : 0.8) : 1.0;
+// ✅ (중복 감점 방지)
+// - 비화이트리스트/인퍼드 감점은 item.tier_weight(또는 생성 단계)에서 이미 반영되는 구조이므로
+//   여기서 추가로 곱하지 않음
 
-    // 최종 점수: (도메인/타입 가중치) × 관련도 × (수치근거 우선)
-    const score = baseW * (0.6 + 0.4 * rel) * numFactor;
+    // ✅ 숫자/연도 매칭 가산
+    let bonus = 1.0;
+    if (needNum) bonus *= (hasAnyNum ? 1.15 : 0.8);
+    if (NAVER_STRICT_YEAR_MATCH && yearTokens.length) bonus *= (hasYear ? 1.10 : 0.85);
+    if (numTokens.length && hasExactNum) bonus *= NAVER_NUM_MATCH_BOOST;
 
+    const score = baseW * (0.6 + 0.4 * rel) * bonus;
     scored.push({ it, score });
   }
 
   scored.sort((a, b) => b.score - a.score);
-
   return scored.slice(0, K).map((x) => x.it);
 }
 
@@ -4219,7 +4384,11 @@ if (safeMode !== "lv") {
 switch (safeMode) {
   case "qv":
   case "fv": {
-    engines.push("crossref", "openalex", "wikidata", "gdelt", "naver");
+    if (ENABLE_WIKIDATA_QVFV) {
+  engines.push("crossref", "openalex", "wikidata", "gdelt", "naver");
+} else {
+  engines.push("crossref", "openalex", "gdelt", "naver");
+}
 
     const preprocessModel =
       geminiModelRaw === "flash" ? "gemini-2.5-flash" : "gemini-2.5-pro";
@@ -4448,15 +4617,23 @@ partial_scores.engine_metrics = engineMetrics;
 
 // ✅ “쿼리 없으면 제외” + “calls 없으면 제외” + “results 0이면 제외”
 const enginesRequested = [...engines];
-const { used: enginesUsed, excluded: enginesExcluded } = computeEnginesUsed({
+
+// ✅ PRE-FINALIZE(호출단계) used/excluded 계산: 쿼리/calls/results 기준
+const { used: enginesUsedPre, excluded: enginesExcludedPre } = computeEnginesUsed({
   enginesRequested,
   partial_scores,
   engineMetrics,
 });
 
 partial_scores.engines_requested = enginesRequested;
-partial_scores.engines_used = enginesUsed;
-partial_scores.engines_excluded = enginesExcluded;
+
+// ⚠️ engines_used / engines_excluded 는 FINALIZE(프루닝 이후)에서만 확정한다.
+// 여기서는 디버그용 pre 정보를 별도 필드로만 저장.
+partial_scores.engines_used_pre = enginesUsedPre;
+partial_scores.engines_excluded_pre = enginesExcludedPre;
+partial_scores.engine_exclusion_reasons_pre = Object.fromEntries(
+  Object.entries(enginesExcludedPre || {}).map(([k, v]) => [k, v?.reason || "excluded"])
+);
 
     partial_scores.blocks_for_verify = blocksForVerify.map((x) => ({
       id: x.id,
@@ -4481,22 +4658,41 @@ partial_scores.engines_excluded = enginesExcluded;
 partial_scores.recency = rec.overall;
 partial_scores.recency_detail = rec.detail;
 
-    // naver tier × type factor
-    if (Array.isArray(external.naver) && external.naver.length > 0) {
-      const weights = external.naver
-        .map((item) => {
-          const tw = (typeof item.tier_weight === "number" && Number.isFinite(item.tier_weight)) ? item.tier_weight : 1;
-          const vw = (typeof item.type_weight === "number" && Number.isFinite(item.type_weight)) ? item.type_weight : 1;
-          return tw * vw;
-        })
-        .filter((w) => Number.isFinite(w) && w > 0);
+    // naver tier × type factor (✅ 실제 blocks evidence에 붙은 naver 우선)
+// blocksForVerify가 스코프에 없을 수도 있으니 안전하게 처리
+const naverUsed = (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
+  ? blocksForVerify.flatMap((b) => (Array.isArray(b?.evidence?.naver) ? b.evidence.naver : []))
+  : [];
 
-      if (weights.length > 0) {
-        const avg = weights.reduce((s, v) => s + v, 0) / weights.length;
-        partial_scores.naver_tier_factor = Math.max(0.9, Math.min(1.05, avg));
-      }
-    }
+const naverPool = (naverUsed.length > 0)
+  ? naverUsed
+  : (Array.isArray(external.naver) ? external.naver : []);
 
+if (naverPool.length > 0) {
+  const weights = naverPool
+    .map((item) => {
+      const tw =
+        (typeof item?.tier_weight === "number" && Number.isFinite(item.tier_weight))
+          ? item.tier_weight
+          : (item?.whitelisted === true ? 1 : NAVER_NON_WHITELIST_FACTOR);
+
+      const vw =
+        (typeof item?.type_weight === "number" && Number.isFinite(item.type_weight))
+          ? item.type_weight
+          : 1;
+
+      return tw * vw;
+    })
+    .filter((w) => Number.isFinite(w) && w > 0);
+
+  partial_scores.naver_used_count = naverUsed.length;
+  partial_scores.naver_pool_count = naverPool.length;
+
+  if (weights.length > 0) {
+    const avg = weights.reduce((s, v) => s + v, 0) / weights.length;
+    partial_scores.naver_tier_factor = Math.max(0.9, Math.min(1.05, avg));
+  }
+}
     break;
   }
 
@@ -4538,8 +4734,37 @@ partial_scores.recency_detail = rec.detail;
 // ✅ GitHub 관련 로직에서 항상 쓰는 텍스트(= TDZ 방지)
 ghUserText = String(query || "").trim();
 
+// ✅ S-17: cache hit (QV/FV heavy path)
+const __cacheKey = makeVerifyCacheKey({
+  mode: safeMode,
+  query,
+  rawQuery,
+  user_answer,
+  answerText,
+  key_uuid: req.body?.key_uuid,
+});
+
+const __cachedPayload = (safeMode === "qv" || safeMode === "fv") ? verifyCacheGet(__cacheKey) : null;
+if (__cachedPayload) {
+  const elapsedMs = Date.now() - start;
+
+  const out = {
+    ...__cachedPayload,
+    elapsed: elapsedMs,
+    cached: true,
+  };
+
+  if (out.partial_scores && typeof out.partial_scores === "object") {
+    out.partial_scores = { ...out.partial_scores, cache_hit: true };
+  } else {
+    out.partial_scores = { cache_hit: true };
+  }
+
+  return res.json(buildSuccess(out));
+}
+
 // ✅ (B안 보강) Gemini가 sentinel을 놓쳐도, "명백한 비코드"는 DV/CV를 강제 종료
-if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(rawQuery)) {
+if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(rawQuery || query)) {
   const elapsedMs = Date.now() - start;
 
   const suggestedMode =
@@ -5158,15 +5383,21 @@ partial_scores.engine_times = engineTimes;
 partial_scores.engine_metrics = engineMetrics;
 
 const enginesRequested = [...engines];
-const { used: enginesUsed, excluded: enginesExcluded } = computeEnginesUsed({
+
+const { used: enginesUsedPre, excluded: enginesExcludedPre } = computeEnginesUsed({
   enginesRequested,
   partial_scores,
   engineMetrics,
 });
 
 partial_scores.engines_requested = enginesRequested;
-partial_scores.engines_used = enginesUsed;
-partial_scores.engines_excluded = enginesExcluded;
+
+// FINALIZE에서 engines_used 확정(여긴 pre만)
+partial_scores.engines_used_pre = enginesUsedPre;
+partial_scores.engines_excluded_pre = enginesExcludedPre;
+partial_scores.engine_exclusion_reasons_pre = Object.fromEntries(
+  Object.entries(enginesExcludedPre || {}).map(([k, v]) => [k, v?.reason || "excluded"])
+);
 
     // ✅ consistency (Gemini Pro)
     const t_cons = Date.now();
@@ -5296,24 +5527,10 @@ await supabase.from("verification_logs").insert([
   );
 }
 
-    // ─────────────────────────────
-    // ③ 엔진 보정계수 조회 (서버 통계 기반)
-    // ─────────────────────────────
-    const enginesForCorrection = Array.isArray(partial_scores.engines_used)
-  ? partial_scores.engines_used.filter((x) => x !== "klaw")
-  : engines.filter((x) => x !== "klaw");
-
-if (enginesForCorrection.length > 0) {
-  engineStatsMap = await fetchEngineStatsMap(enginesForCorrection);
-  engineFactor = computeEngineCorrectionFactor(enginesForCorrection, engineStatsMap); // 0.9~1.1
-  partial_scores.engine_factor = engineFactor;
-  partial_scores.engine_factor_engines = enginesForCorrection;
-} else {
-  engineFactor = 1.0;
-  partial_scores.engine_factor = 1.0;
-  partial_scores.engine_factor_engines = [];
-}
-
+// ③ 엔진 보정계수는 engines_used(E_eff) FINALIZE 이후 계산하도록 아래로 이동
+engineFactor = 1.0;
+partial_scores.engine_factor = 1.0;
+partial_scores.engine_factor_engines = [];
 
     // ─────────────────────────────
     // ④ Gemini 요청 단계 (Flash → Pro)
@@ -5386,49 +5603,435 @@ let answerModelUsed = "gemini-2.5-flash";
       // ✅ (패치) 숫자 블록이면: 선택된 Naver evidence URL을 열어 "숫자 포함 발췌(evidence_text)"를 채움
       // - 특정 사이트 고정 없이 동작
       // - 숫자 블록일 때만, TOPK URL만, 총 fetch 수 제한
-      if (NAVER_NUMERIC_FETCH && (safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
+            // ✅ (패치) 숫자/연도 블록이면: 블록별로 "가장 맞는" Naver URL을 골라 evidence_text를 채움
+            if (NAVER_NUMERIC_FETCH && (safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
         let budget = NAVER_NUMERIC_FETCH_MAX;
+
+        // ✅ 같은 URL 중복 fetch 방지(요청 단위)
+        const __nfSeen = new Set();
 
         for (const b of blocksForVerify) {
           if (budget <= 0) break;
           if (!hasNumberLike(b?.text) && !hasNumberLike(query)) continue;
 
-          const naverEvs = Array.isArray(b?.evidence?.naver) ? b.evidence.naver.slice(0, 3) : [];
-          for (const ev of naverEvs) {
+          const evsAll = Array.isArray(b?.evidence?.naver) ? b.evidence.naver : [];
+          if (evsAll.length === 0) continue;
+
+          const needle = `${String(b?.text || "")} ${String(query || "")}`.trim();
+          const years = Array.from(needle.matchAll(/\b(19\d{2}|20\d{2})\b/g)).map(m => m[1]);
+          const nums  = Array.from(needle.matchAll(/(\d+(?:\.\d+)?)/g)).map(m => m[1]).filter(x => x && x.length <= 10);
+          const kw = extractKeywords(needle, 12);
+
+          // ✅ fetch 후보 3개를 "연도/숫자 매칭 + 관련도"로 랭킹
+          const scored = [];
+          for (const ev of evsAll) {
+            const urlCand = String(ev?.source_url || ev?.link || "").trim();
+            if (!urlCand) continue;
+            if (!isSafeExternalHttpUrl(urlCand)) continue;
+
+            const text = `${String(ev?.title || "")} ${String(ev?.desc || "")}`;
+            const rel = keywordHitRatio(text, kw);
+
+            const isWhitelisted = (ev?.whitelisted === true) || !!ev?.tier;
+            const isInferred = (ev?.inferred === true);
+
+            const hasYear = years.length ? years.some(y => text.includes(y)) : false;
+            const hasExactNum = nums.length ? nums.some(n => text.includes(n)) : false;
+            const hasAnyNum = hasNumberLike(text);
+
+            const allowInferred = isInferred && rel >= 0.25;
+            const allowNonWhitelist =
+              !isWhitelisted && !isInferred &&
+              (hasYear || hasExactNum || (hasAnyNum && rel >= 0.35));
+
+            if (!isWhitelisted && !allowInferred && !allowNonWhitelist) continue;
+
+            let baseW = 1.0;
+            if (typeof ev?.tier_weight === "number" && Number.isFinite(ev.tier_weight)) baseW *= ev.tier_weight;
+            if (typeof ev?.type_weight === "number" && Number.isFinite(ev.type_weight)) baseW *= ev.type_weight;
+// ✅ (중복 감점 방지) selection 단계와 동일: 여기서는 baseW 추가 곱셈을 하지 않음
+
+            let bonus = 1.0;
+            if (years.length || nums.length) {
+              if (hasYear) bonus *= 1.10;
+              if (hasExactNum) bonus *= NAVER_NUM_MATCH_BOOST;
+              if (!hasYear && !hasExactNum) bonus *= 0.85;
+            }
+            if (hasAnyNum) bonus *= 1.10;
+
+            const score = baseW * (0.55 + 0.45 * rel) * bonus;
+            scored.push({ ev, score });
+          }
+
+          scored.sort((a, b) => b.score - a.score);
+          const candidates = scored.slice(0, 3).map(x => x.ev);
+
+          for (const ev of candidates) {
             if (budget <= 0) break;
             if (ev?.evidence_text) continue;
 
-            const url = ev?.source_url || ev?.link;
+            // ✅ url은 여기서 "한 번만" 선언
+            const url = String(ev?.source_url || ev?.link || "").trim();
             if (!url) continue;
-            if (!isSafeExternalHttpUrl(url)) continue;
 
-            const pageText = await withTimebox(
-  ({ signal }) => fetchReadableText(url, NAVER_FETCH_TIMEOUT_MS, { signal }),
-  NAVER_FETCH_TIMEOUT_MS,
-  "naver_numeric_fetch"
-);
+            // ✅ dedupe는 url 선언 "다음" + 루프 안에서만
+            if (__nfSeen.has(url)) continue;
+            __nfSeen.add(url);
 
-const excerpt = extractExcerptContainingNumbers(pageText, b?.text || "", EVIDENCE_EXCERPT_CHARS);
-
-            if (excerpt) {
-              ev.evidence_text = excerpt;
-              budget -= 1;
+            let pageText = null;
+            try {
+              pageText = await withTimebox(
+                ({ signal }) => fetchReadableText(url, NAVER_FETCH_TIMEOUT_MS, { signal }),
+                NAVER_FETCH_TIMEOUT_MS,
+                "naver_numeric_fetch"
+              );
+            } catch {
+              continue;
             }
+            if (!pageText) continue;
+
+            // ✅ blockText만 말고 (block+query) needle로 발췌하면 매칭률↑
+            const excerpt = extractExcerptContainingNumbers(pageText, needle, EVIDENCE_EXCERPT_CHARS);
+            if (!excerpt) continue;
+
+            if (NAVER_STRICT_YEAR_MATCH && years.length) {
+              if (!years.some(y => excerpt.includes(y))) continue;
+            }
+
+            ev.evidence_text = excerpt;
+            budget -= 1;
           }
         }
       }
 
+// ✅ S-12: evidence-aware block pruning (no-evidence blocks removed BEFORE Gemini verify)
+// - blocksForVerify는 "검증 입력"이므로 여기서 잘라내면 (1) 환각 블록 방지 (2) verify 시간 단축
+if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
+  const dropped = [];
+  const kept = [];
 
-      const coreText =
-        safeMode === "qv"
-          ? flash && flash.trim().length > 0
-            ? flash
-            : qvfvPre?.korean_core || query
-          : safeMode === "fv"
-          ? userCoreText || query
-          : safeMode === "cv" && user_answer && user_answer.trim().length > 0
-          ? user_answer
-          : query;
+  for (const b of blocksForVerify) {
+    const ev = b?.evidence || {};
+
+    // 엔진 evidence가 1개라도 있으면 통과
+    const hasAnyEvidence = Object.values(ev).some((v) => Array.isArray(v) && v.length > 0);
+    if (!hasAnyEvidence) {
+      dropped.push({
+        id: b?.id,
+        text: String(b?.text || "").slice(0, 220),
+        reason: "no_engine_evidence",
+      });
+      continue;
+    }
+
+    // 숫자/연도 주장 블록이면: excerpt/title/desc 어디든 숫자 흔적이 있는 evidence가 최소 1개는 있어야 통과
+    // (숫자근거 없이 숫자블록이 붙으면 QV2에서 '근거 있는데도 무근거' / '중간구간 환각' 둘 다 악화)
+    const isNumericClaim = hasNumberLike(b?.text) || hasNumberLike(query);
+
+    if (isNumericClaim) {
+      const evTextBlob = Object.values(ev)
+        .filter(Array.isArray)
+        .flat()
+        .map((x) => `${x?.evidence_text || ""} ${x?.title || ""} ${x?.desc || ""}`)
+        .join(" ");
+
+      if (!hasNumberLike(evTextBlob)) {
+        dropped.push({
+          id: b?.id,
+          text: String(b?.text || "").slice(0, 220),
+          reason: "numeric_claim_no_numeric_evidence",
+        });
+        continue;
+      }
+    }
+
+    kept.push(b);
+  }
+
+  // blocksForVerify가 const여도 안전하게(배열 in-place 교체)
+  blocksForVerify.splice(0, blocksForVerify.length, ...kept);
+
+  partial_scores.evidence_prune = {
+    before: kept.length + dropped.length,
+    after: kept.length,
+    dropped,
+  };
+}
+
+// ✅ S-13/S-12: numeric/year strict evidence match + drop no-evidence claim blocks (QV/FV)
+// (insert here: AFTER evidence_prune block, BEFORE FINALIZE block)
+if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
+  const cleanEvidenceText = (raw = "") => {
+    let s = String(raw || "");
+    s = s.replace(/<script[\s\S]*?<\/script>/gi, " ");
+    s = s.replace(/<style[\s\S]*?<\/style>/gi, " ");
+    s = s.replace(/<[^>]+>/g, " ");
+    s = s.replace(/&nbsp;|&amp;|&quot;|&#39;|&lt;|&gt;/g, " ");
+    s = s.replace(/\s+/g, " ").trim();
+    s = s.replace(/\b(복사|공유|인쇄|댓글|신고|추천|구독)\b/g, " ").replace(/\s+/g, " ").trim();
+    return s;
+  };
+
+  const extractNumericTokens = (text = "") => {
+    const t = String(text || "");
+    const years = Array.from(new Set((t.match(/\b(19\d{2}|20\d{2}|2100)\b/g) || [])));
+    const numsRaw = (t.match(/\b\d+(?:\.\d+)?\b/g) || []);
+    const nums = Array.from(new Set(numsRaw.filter(x => x.includes(".") || x.length >= 3)));
+    return { years, nums };
+  };
+
+  const isLikelyClaimText = (text = "") => {
+    const t = String(text || "").trim();
+    if (t.length < 12) return false;
+    if (/\b(이다|입니다|한다|했다|예정|계획|완료|도입|시행)\b/.test(t)) return true;
+    if (/(19\d{2}|20\d{2})/.test(t)) return true;
+    if (/\b\d+(?:\.\d+)?\b/.test(t)) return true;
+    return false;
+  };
+
+  const numericPassForEvidence = (claimTokens, evidenceText) => {
+    const ev = String(evidenceText || "");
+    const needYear = claimTokens.years.length > 0;
+    const needNum = claimTokens.nums.length > 0;
+
+    const yearsHit = needYear ? claimTokens.years.some(y => ev.includes(y)) : false;
+    const numsHit = needNum ? claimTokens.nums.some(n => ev.includes(n)) : false;
+
+    if (needYear && needNum) return yearsHit && numsHit;
+    if (needYear) return yearsHit;
+    if (needNum) return numsHit;
+    return true;
+  };
+
+  const countTotalBlockEvidence = (block) => {
+    const ev = block?.evidence;
+    if (!ev || typeof ev !== "object") return 0;
+    let n = 0;
+    for (const k of Object.keys(ev)) {
+      const arr = ev?.[k];
+      if (Array.isArray(arr)) n += arr.length;
+    }
+    return n;
+  };
+
+  const beforeBlocks = blocksForVerify.length;
+  const droppedBlocks = [];
+  const touched = [];
+  let itemsBefore = 0;
+  let itemsAfter = 0;
+
+  const keptBlocks = [];
+
+  for (const b of blocksForVerify) {
+    const claimText = String(b?.text || "");
+    const tokens = extractNumericTokens(claimText);
+
+    if (b?.evidence && typeof b.evidence === "object") {
+      for (const eng of Object.keys(b.evidence)) {
+        const arr = b.evidence?.[eng];
+        if (!Array.isArray(arr) || arr.length === 0) continue;
+
+        itemsBefore += arr.length;
+
+        const cleaned = arr.map((it) => {
+          const merged =
+            it?.evidence_text ||
+            it?.excerpt ||
+            it?.snippet ||
+            it?.description ||
+            it?.title ||
+            "";
+          return { ...it, evidence_text: cleanEvidenceText(merged) };
+        });
+
+        const filtered =
+          (tokens.years.length > 0 || tokens.nums.length > 0)
+            ? cleaned.filter((it) => numericPassForEvidence(tokens, it?.evidence_text))
+            : cleaned;
+
+        b.evidence[eng] = filtered;
+
+        itemsAfter += filtered.length;
+
+        if (filtered.length !== arr.length) {
+          touched.push({
+            text: claimText.slice(0, 180),
+            engine: eng,
+            before: arr.length,
+            after: filtered.length,
+            years: tokens.years,
+            nums: tokens.nums,
+          });
+        }
+      }
+    }
+
+    const totalEv = countTotalBlockEvidence(b);
+    if (totalEv <= 0 && isLikelyClaimText(claimText)) {
+      droppedBlocks.push({ text: claimText.slice(0, 220), reason: "no_evidence_block" });
+      continue;
+    }
+
+    keptBlocks.push(b);
+  }
+
+  if (keptBlocks.length > 0) {
+    blocksForVerify.splice(0, blocksForVerify.length, ...keptBlocks);
+    partial_scores.block_prune = { before: beforeBlocks, after: keptBlocks.length, dropped: droppedBlocks };
+  } else {
+    partial_scores.block_prune = {
+      before: beforeBlocks,
+      after: beforeBlocks,
+      dropped: droppedBlocks,
+      note: "all_blocks_dropped_but_kept_original_to_avoid_empty_answer",
+    };
+  }
+
+  partial_scores.numeric_evidence_match = {
+    items_before: itemsBefore,
+    items_after: itemsAfter,
+    touched: touched.slice(0, 30),
+  };
+}
+
+// ✅ FINALIZE: engines_requested / engines_used(E_eff) / engine_explain / engine_exclusion_reasons
+{
+  // requested 확정
+  if (!Array.isArray(partial_scores.engines_requested) || partial_scores.engines_requested.length === 0) {
+    partial_scores.engines_requested = Array.isArray(engines) ? engines.slice() : [];
+  }
+
+  const __requested = partial_scores.engines_requested.slice();
+  const __used = [];
+  const __reasons = {};
+  const __explain = {};
+
+  const __countBlockEvidence = (engineKey) => {
+    if (!Array.isArray(blocksForVerify)) return 0;
+    let n = 0;
+    for (const b of blocksForVerify) {
+      const arr = b?.evidence?.[engineKey];
+      if (Array.isArray(arr)) n += arr.length;
+    }
+    return n;
+  };
+
+  for (const name of __requested) {
+    if (!name) continue;
+
+    const extArr = external?.[name];
+    const extCount = Array.isArray(extArr) ? extArr.length : 0;
+
+    const blockCount =
+      (safeMode === "qv" || safeMode === "fv") ? __countBlockEvidence(name) : 0;
+
+    const ms =
+      (typeof engineTimes?.[name] === "number" && Number.isFinite(engineTimes[name]))
+        ? engineTimes[name]
+        : null;
+
+    let used = false;
+
+    // ✅ used 판정(모드별)
+    if (name === "klaw") {
+      // lv는 위에서 return 하니까 사실상 여기까지 오면 제외 취급
+      used = (safeMode === "lv") && extCount > 0;
+      if (!used) __reasons[name] = "excluded_policy";
+    } else if (safeMode === "qv" || safeMode === "fv") {
+  // QV/FV: prune 이후 blocks evidence 기준이 “정답”
+  used = blockCount > 0;
+
+  if (!used) {
+    const preReason =
+      (partial_scores?.engine_exclusion_reasons_pre &&
+        typeof partial_scores.engine_exclusion_reasons_pre[name] === "string")
+        ? partial_scores.engine_exclusion_reasons_pre[name]
+        : null;
+
+    // pre에서 no_query/no_calls/no_results가 잡혔으면 그걸 우선 반영
+    __reasons[name] = preReason || "no_block_evidence";
+  }
+} else {
+  // DV/CV(+기타): external 결과 기준
+  used = extCount > 0;
+
+  if (!used) {
+    const preReason =
+      (partial_scores?.engine_exclusion_reasons_pre &&
+        typeof partial_scores.engine_exclusion_reasons_pre[name] === "string")
+        ? partial_scores.engine_exclusion_reasons_pre[name]
+        : null;
+
+    __reasons[name] = preReason || "no_results";
+  }
+}
+
+    if (used) __used.push(name);
+
+    __explain[name] = {
+      used,
+      ext_count: extCount,
+      block_evidence_count: blockCount,
+      ms,
+    };
+  }
+
+  // ✅ 핵심: fallback으로 채우지 말 것(증거 0이면 engines_used = [])
+  partial_scores.engines_used = __used;
+
+  // (옵션) excluded도 같이 남기고 싶으면
+  partial_scores.engines_excluded = __requested.filter((x) => x && !__used.includes(x));
+
+  partial_scores.engine_explain = __explain;
+
+  // 기존 exclusion reason이 있으면 merge
+  const __prev =
+    (partial_scores.engine_exclusion_reasons && typeof partial_scores.engine_exclusion_reasons === "object")
+      ? partial_scores.engine_exclusion_reasons
+      : {};
+
+  partial_scores.engine_exclusion_reasons = {
+    ...__prev,
+    ...__reasons,
+    ...(__used.length ? {} : { _all: "all_pruned_or_no_evidence" }),
+  };
+}
+
+// ─────────────────────────────
+// ③ 엔진 보정계수 조회 (서버 통계 기반) — FINALIZE 이후(E_eff 기준)
+// ─────────────────────────────
+const enginesForCorrection = Array.isArray(partial_scores.engines_used)
+  ? partial_scores.engines_used.filter((x) => x !== "klaw")
+  : engines.filter((x) => x !== "klaw");
+
+if (enginesForCorrection.length > 0) {
+  engineStatsMap = await fetchEngineStatsMap(enginesForCorrection);
+  engineFactor = computeEngineCorrectionFactor(enginesForCorrection, engineStatsMap); // 0.9~1.1
+  partial_scores.engine_factor = engineFactor;
+  partial_scores.engine_factor_engines = enginesForCorrection;
+} else {
+  engineFactor = 1.0;
+  partial_scores.engine_factor = 1.0;
+  partial_scores.engine_factor_engines = [];
+}
+
+      const __blocksText =
+  (safeMode === "qv" || safeMode === "fv") &&
+  Array.isArray(blocksForVerify) &&
+  blocksForVerify.length > 0
+    ? blocksForVerify.map((b) => String(b?.text || "").trim()).filter(Boolean).join("\n")
+    : "";
+
+const coreText =
+  safeMode === "qv"
+    ? (flash && flash.trim().length > 0
+        ? flash
+        : (__blocksText || qvfvPre?.korean_core || query))
+    : safeMode === "fv"
+    ? (userCoreText || __blocksText || query)
+    : safeMode === "cv" && user_answer && user_answer.trim().length > 0
+    ? user_answer
+    : query;
 
       const verifyInput = {
         mode: safeMode,
@@ -5467,6 +6070,8 @@ ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
 - external: crossref / openalex / wikidata / gdelt / naver / github / klaw 등 외부 엔진 결과
 - partial_scores: 서버에서 미리 계산된 전역 스코어
     (예: recency, validity, consistency, engine_factor, naver_tier_factor 등)
+- partial_scores.engines_used: (QV/FV) 실제로 evidence가 남아있는 엔진 목록(E_eff)입니다.
+  engines_used에 없는 엔진은 "근거 없음"이므로 support/conflict 판단에 포함하지 말고, engine_adjust도 1.0 근처로 두세요.
 
 [작업 지침]
 
@@ -5476,6 +6081,11 @@ ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
      - 각 blocks[i].text가 이미 의미 단위로 분리된 상태입니다.
       - 각 blocks[i].evidence 안의 엔진별 결과를 근거로 block_truthscore를 계산하세요.
          - (중요) evidence 항목에 evidence_text가 있으면, 해당 URL에서 추출한 짧은 본문 발췌입니다. 수치/팩트 검증에 우선 사용하세요.
+                  - (필수) comment에는 실제 근거 조각을 1~2개 반드시 명시하세요.
+           형식 예:
+             - [host] "핵심 문장/구절/숫자" (url)
+         - (필수) 숫자/연도 주장(예: 2022=0.78)은 evidence_text/desc/snippet 어디에도 해당 숫자/연도가 실제로 없으면
+           support로 두지 말고 block_truthscore를 0.55 이하로 낮추고 "근거 미확인"을 comment에 쓰세요.
    - blocks 배열이 "비어있는 경우"(주로 DV/CV):
      - core_text를 의미적으로 자연스러운 2~8개 블록으로 직접 분할해도 좋습니다.
      - 이때 evidence는 external 전체를 참고하여 간접적으로 판단합니다.
@@ -5631,8 +6241,56 @@ const enginesUsedSet = new Set(
   Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines
 );
 
+// ✅ E_eff(Effective engines): 실제로 evidence가 남아있는 엔진 개수 기반 coverage factor
+const effEngines = Array.from(enginesUsedSet).filter((e) => e && e !== "klaw");
+const E_eff = effEngines.length;
+
+// ✅ coverage factor (QV/FV에만 의미있게 적용, DV/CV는 1.0 유지)
+const E_cov = (() => {
+  if (!(safeMode === "qv" || safeMode === "fv")) return 1.0;
+
+  let f = 1.0;
+  if (E_eff >= 3) f = 1.0;
+  else if (E_eff === 2) f = 0.96;
+  else if (E_eff === 1) f = 0.90;
+  else f = 0.85;
+
+  // ✅ 예외: 엔진이 1개여도 “강한 공식/통계/정부급” 근거면 감점 완화
+  const hasStrongOfficial = (() => {
+    if (!enginesUsedSet.has("naver")) return false;
+    const nv = Array.isArray(external?.naver) ? external.naver : [];
+    return nv.some((x) => {
+      const host = String(x?.source_host || x?.host || "").toLowerCase();
+      const tw =
+        typeof x?.tier_weight === "number" && Number.isFinite(x.tier_weight)
+          ? x.tier_weight
+          : null;
+      const tier = String(x?.tier || "").toLowerCase();
+      const wl = (x?.whitelisted === true) || !!x?.tier;
+      const inferred = x?.inferred === true;
+
+      if (tw != null && tw >= 0.95) return true;
+      if (tier === "tier1") return true;
+      if (host.includes("kosis.kr")) return true;
+      if (host.endsWith(".go.kr")) return true;
+      if (wl && !inferred && (typeof hostLooksOfficial === "function") && hostLooksOfficial(host)) return true;
+
+      return false;
+    });
+  })();
+
+  if (E_eff <= 1 && hasStrongOfficial) f = Math.max(f, 0.97);
+  return f;
+})();
+
+// (로그용) partial_scores에 남겨두면 디버깅 편함
+partial_scores.effective_engines = effEngines;
+partial_scores.effective_engines_count = E_eff;
+partial_scores.coverage_factor = E_cov;
+
 const useGdelt = enginesUsedSet.has("gdelt");
 const useNaver = enginesUsedSet.has("naver");
+const useGithub = enginesUsedSet.has("github");
 
 const R_t =
   (safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "cv") &&
@@ -5647,40 +6305,32 @@ const N =
     ? Math.max(0.9, Math.min(1.05, partial_scores.naver_tier_factor))
     : 1.0;
 
-    // DV/CV: GitHub 유효성 Vᵣ, 없으면 0.7 중립값
-        const useGithub = enginesUsedSet.has("github");
+// DV/CV: GitHub 유효성 Vᵣ, 없으면 0.7 중립값
+const V_r =
+  (safeMode === "dv" || safeMode === "cv") &&
+  useGithub &&
+  typeof partial_scores.validity === "number"
+    ? Math.max(0, Math.min(1, partial_scores.validity))
+    : 0.7;
 
-    const V_r =
-      (safeMode === "dv" || safeMode === "cv") &&
-      useGithub &&
-      typeof partial_scores.validity === "number"
-        ? Math.max(0, Math.min(1, partial_scores.validity))
-        : 0.7;
+// 엔진 전역 보정계수 C (0.9~1.1)
+const C =
+  typeof engineFactor === "number" && Number.isFinite(engineFactor)
+    ? Math.max(0.9, Math.min(1.1, engineFactor))
+    : 1.0;
 
-    // 엔진 전역 보정계수 C (0.9~1.1)
-    const C =
-      typeof engineFactor === "number" && Number.isFinite(engineFactor)
-        ? Math.max(0.9, Math.min(1.1, engineFactor))
-        : 1.0;
+let hybrid;
 
-        let hybrid;
-
-    if (safeMode === "dv" || safeMode === "cv") {
-      // DV/CV:
-      // - G (Gemini 종합 스코어)가 주 신뢰도
-      // - Vᵣ(GitHub 유효성)는 보조 신뢰도
-      const combined = 0.7 * G + 0.3 * V_r; // 0~1 범위
-      const rawHybrid = R_t * combined * C;
-      hybrid = Math.max(0, Math.min(1, rawHybrid));
-    } else {
-      // QV/FV:
-      // - GDELT 시의성 Rₜ
-      // - Naver 티어 팩터 N
-      // - 엔진 보정 C
-      // - Gemini 종합 스코어 G
-      const rawHybrid = R_t * N * G * C;
-      hybrid = Math.max(0, Math.min(1, rawHybrid));
-    }
+if (safeMode === "dv" || safeMode === "cv") {
+  // DV/CV:
+  const combined = 0.7 * G + 0.3 * V_r;
+  const rawHybrid = R_t * combined * C; // DV/CV는 E_cov 적용 안 함(위에서 1.0)
+  hybrid = Math.max(0, Math.min(1, rawHybrid));
+} else {
+  // QV/FV:
+  const rawHybrid = R_t * N * G * C * E_cov;
+  hybrid = Math.max(0, Math.min(1, rawHybrid));
+}
 
     // 최종 TruthScore (0.6 ~ 0.97 범위)
     truthscore = hybrid; // 0~1
@@ -5819,10 +6469,16 @@ const payload = {
   truthscore: truthscore_text,
   truthscore_pct,
   truthscore_01: Number(truthscore.toFixed(4)),
-  elapsed,
- engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
-engines_requested: partial_scores.engines_requested || engines,
+    elapsed,
+
+  // ✅ S-15: engines_used 자동 산출(명시 노출)
+  engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
+  engines_requested: (partial_scores.engines_requested || engines),
+  engines_used: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : null),
+  engines_excluded: (partial_scores.engines_excluded ?? null),
+
   partial_scores: normalizedPartial,
+
   flash_summary: flash,
   verify_raw: verify,
   gemini_verify_model: verifyModelUsed, // ✅ 실제로 성공한 모델
@@ -5859,6 +6515,12 @@ if (process.env.DEBUG_EFFECTIVE_CONFIG === "1") {
 // 🔹 DV/CV 모드에서는 GitHub 검색 결과도 같이 내려줌
 if (safeMode === "dv" || safeMode === "cv") {
   payload.github_repos = external.github ?? [];
+}
+
+// ✅ S-17: cache set (only QV/FV)
+if (safeMode === "qv" || safeMode === "fv") {
+  payload.cached = false;
+  verifyCacheSet(__cacheKey, payload);
 }
 
 // 🔹 QV/FV 모드에서는 Naver 검색 결과도 같이 내려줌
