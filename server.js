@@ -3209,19 +3209,15 @@ const freshness = isNaN(upd.getTime())
 // ✅ fetchGeminiSmart: direct gemini_key가 있어도 "rotating(=hint 1회 + DB fallback)" 경로를 타게 함
 async function fetchGeminiSmart({ userId, gemini_key, keyHint, model, payload, opts = {} }) {
   const directKey = (gemini_key ?? "").toString().trim();
-  const hintKey = (keyHint ?? "").toString().trim();
+  const hint = (keyHint ?? "").toString().trim() || null;
 
-  // 우선순위: gemini_key(요청 direct) > keyHint > null
-  const hint = directKey || hintKey || null;
+  // directKey가 있으면 그걸 hint로 1회 시도하고(401/403/429면) DB 키링으로 fallback
+  if (directKey) {
+    return await fetchGeminiRotating({ userId, keyHint: directKey, model, payload, opts });
+  }
 
-  // ✅ 핵심: Smart는 Rotating으로만 보낸다 (무한재귀 금지)
-  return await fetchGeminiRotating({
-    userId,
-    keyHint: hint,
-    model,
-    payload,
-    opts,
-  });
+  // directKey가 없으면 keyHint(있으면)로 1회 시도 후 fallback, 아니면 바로 DB 키링
+  return await fetchGeminiRotating({ userId, keyHint: hint, model, payload, opts });
 }
 
 // ─────────────────────────────
