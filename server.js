@@ -3024,10 +3024,24 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
 
       return text;
     } catch (e) {
-      const status = e?.response?.status;
+      const status = e?.response?.status ?? e?.status ?? e?.statusCode ?? null;
       const code = e?.code || e?.name;
 
-      // ✅ 인증/권한/요청형식 오류는 retry 금지 (rotating wrapper가 처리)
+      // ✅ INVALID_GEMINI_KEY는 여기서 명확히 변환해서 throw (상위에서 401 매핑)
+      // geminiErrMessage(e) 형태: "[status=400] API key not valid...."
+      const msg = geminiErrMessage(e);
+      if (
+        status === 400 &&
+        /API key not valid|API_KEY_INVALID|invalid api key/i.test(String(msg || ""))
+      ) {
+        const err2 = new Error("INVALID_GEMINI_KEY");
+        err2.code = "INVALID_GEMINI_KEY";
+        err2.httpStatus = 401;
+        err2.detail = { stage: "raw", model, label, status };
+        throw err2;
+      }
+
+      // 인증/권한/요청형식 오류는 retry 금지 (rotating wrapper가 처리)
       if (status === 400 || status === 401 || status === 403 || status === 404) throw e;
       if (e?._gemini_empty) throw e;
 
@@ -3061,7 +3075,7 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
   const hint = String(keyHint || "").trim();
 
   // 0) hint key 1회 시도(옵션)
-  if (hint) {
+    if (hint) {
     try {
       return await fetchGeminiRaw({
         model,
@@ -3070,21 +3084,23 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         opts,
       });
     } catch (e) {
-      const status = e?.response?.status;
+      // fetchGeminiRaw에서 이미 INVALID_GEMINI_KEY로 정규화해 던진 경우: 그대로 위로 올림
+      if (e?.code === "INVALID_GEMINI_KEY") throw e;
 
-      // ✅ hint 키가 불량(401/403) OR quota(429)면 DB 키링으로 넘어간다
+      const status = e?.response?.status ?? e?.status ?? e?.statusCode ?? null;
+
+      // ✅ hint 키가 quota/auth로 실패하면 DB 키링으로 계속 진행
       if (status === 429 || status === 401 || status === 403) {
         // 계속 진행(키링 시도)
       } else {
-        console.error(
-          "❌ Gemini call failed:",
-          opts.label || `gemini:${model}`,
-          geminiErrMessage(e)
-        );
+        const msg2 = geminiErrMessage(e);
+        const label2 = opts.label || `gemini:${model}`;
+        console.error("Gemini call failed:", label2, `[status=${status ?? "?"}]`, msg2);
         throw e;
       }
     }
   }
+
 
   // hint가 없거나, hint가 quota/auth로 실패했는데 userId도 없으면 로테이션 불가
   if (!userId) {
@@ -3113,11 +3129,14 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
       });
       return out;
     } catch (e) {
-      lastErr = e;
-      const status = e?.response?.status;
+            lastErr = e;
+      const status = e?.response?.status ?? e?.status ?? e?.statusCode ?? null;
+      const msg = geminiErrMessage(e);
+      const invalidKey =
+        status === 400 && /API key not valid|API_KEY_INVALID|invalid api key/i.test(String(msg || ""));
 
-      // ✅ 429(쿼터) 뿐 아니라 401/403(키 무효)도 해당 키를 탈락 처리하고 다음 키로
-      if (status === 429 || status === 401 || status === 403) {
+      // ✅ 429 quota / 401-403 auth / 400 invalid key => 해당 키를 exhausted 처리하고 다음 키로
+      if (status === 429 || status === 401 || status === 403 || invalidKey) {
         try {
           const row = await loadUserSecretsRow(userId);
           const secrets = _ensureGeminiSecretsShape(row.secrets);
@@ -3126,11 +3145,7 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         continue;
       }
 
-      console.error(
-        "❌ Gemini call failed:",
-        opts.label || `gemini:${model}`,
-        geminiErrMessage(e)
-      );
+      console.error("Gemini call failed:", opts.label || `gemini:${model}`, `[status=${status ?? "?"}]`, msg);
       throw e;
     }
   }
@@ -6775,6 +6790,28 @@ if (e?.code === "NAVER_AUTH_ERROR") {
       e?.detail || e?.message
     )
   );
+}
+
+// ✅ Gemini invalid key는 401로 명확히 반환 (안전망)
+{
+  const rawMsg =
+    e?.response?.data?.error?.message ||
+    e?.response?.data?.message ||
+    e?.message ||
+    "";
+  const isInvalidGeminiKey =
+    e?.code === "INVALID_GEMINI_KEY" ||
+    /API key not valid|API_KEY_INVALID|invalid api key/i.test(String(rawMsg));
+
+  if (isInvalidGeminiKey) {
+    return res.status(401).json(
+      buildError(
+        "INVALID_GEMINI_KEY",
+        "Gemini API 키가 유효하지 않습니다. 키를 다시 저장/교체하세요.",
+        e?.detail ?? rawMsg
+      )
+    );
+  }
 }
 
 // ✅ httpStatus/publicMessage/detail 있으면 그대로 반환 (최상위 catch)
