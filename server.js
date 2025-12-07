@@ -6145,6 +6145,8 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
 
   // ✅ 핵심: fallback으로 채우지 말 것(증거 0이면 engines_used = [])
   partial_scores.engines_used = __used;
+  partial_scores.effective_engines = __used.slice();
+  partial_scores.effective_engines_count = __used.length;
 
   // (옵션) excluded도 같이 남기고 싶으면
   partial_scores.engines_excluded = __requested.filter((x) => x && !__used.includes(x));
@@ -6641,8 +6643,17 @@ const payload = {
   // ✅ S-15: engines_used 자동 산출(명시 노출)
   engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
   engines_requested: (partial_scores.engines_requested || engines),
-  engines_used: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : null),
-  engines_excluded: (partial_scores.engines_excluded ?? null),
+  engines_used: (Array.isArray(partial_scores.engines_used)
+  ? partial_scores.engines_used
+  : (Array.isArray(partial_scores.engines_used_pre) ? partial_scores.engines_used_pre : [])),
+
+engines_excluded: (Array.isArray(partial_scores.engines_excluded)
+  ? partial_scores.engines_excluded
+  : (Array.isArray(partial_scores.engines_requested)
+      ? partial_scores.engines_requested.filter(x => x && !(Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : []).includes(x))
+      : (partial_scores.engines_excluded_pre && typeof partial_scores.engines_excluded_pre === "object"
+          ? Object.keys(partial_scores.engines_excluded_pre)
+          : []))),
 
   partial_scores: normalizedPartial,
 
@@ -6652,6 +6663,27 @@ const payload = {
   engine_times: engineTimes,
   engine_metrics: engineMetrics,
 };
+
+// ✅ (필수) QV/FV/DV/CV에서 Gemini가 0ms 스킵인데 success:true로 나가는 것 방지
+const NEED_GEMINI =
+  safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "cv";
+
+if (NEED_GEMINI) {
+  const gemMs = Number(payload?.partial_scores?.gemini_total_ms || 0);
+  const flLen = String(flash || "").trim().length;
+  const vrLen = String(verify || "").trim().length;
+
+  // gemini_total_ms=0 AND flash/verify 둘 다 비면 "스킵"으로 판단하고 실패 처리
+  if (!(gemMs > 0 || flLen > 0 || vrLen > 0)) {
+    return res.status(500).json({
+      success: false,
+      code: "GEMINI_SKIPPED",
+      message:
+        "Gemini stage was skipped unexpectedly (gemini_total_ms=0, flash/verify empty). Check gemini key resolution and skip/early-return logic.",
+      timestamp: new Date().toISOString(),
+    });
+  }
+}
 
 // ✅ debug: effective config & whitelist meta (Render env: DEBUG_EFFECTIVE_CONFIG=1)
 if (process.env.DEBUG_EFFECTIVE_CONFIG === "1") {
