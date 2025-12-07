@@ -5887,24 +5887,34 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
     return false;
   };
 
-  const numericPassForEvidence = (claimTokens, evidenceText) => {
-  const evRaw = String(evidenceText || "");
-  const evNorm = evRaw.replace(/,/g, ""); // "5,156" -> "5156"
+    const numericPassForEvidence = (claimTokens, evidenceText) => {
+    const evRaw = String(evidenceText || "");
+    const evCompact = evRaw.replace(/[,\s]/g, ""); // "5,156" -> "5156" (+ 공백도 제거)
 
-  const years = (claimTokens && Array.isArray(claimTokens.years)) ? claimTokens.years : [];
-  const nums  = (claimTokens && Array.isArray(claimTokens.nums))  ? claimTokens.nums  : [];
+    const years = Array.isArray(claimTokens?.years) ? claimTokens.years : [];
+    const nums  = Array.isArray(claimTokens?.nums)  ? claimTokens.nums  : [];
 
-  const needYear = years.length > 0;
-  const needNum  = nums.length > 0;
+    const needYear = years.length > 0;
+    const needNum  = nums.length > 0;
 
-  const yearsHit = needYear ? years.some(y => evRaw.includes(String(y))) : false;
-  const numsHit  = needNum  ? nums.some(n => evNorm.includes(String(n).replace(/,/g, ""))) : false;
+    const yearsHit = needYear
+      ? years.some(y => evRaw.includes(String(y)) || evCompact.includes(String(y)))
+      : false;
 
-  if (needYear && needNum) return yearsHit && numsHit;
-  if (needYear) return yearsHit;
-  if (needNum) return numsHit;
-  return true;
-};
+    const numsHit = needNum
+      ? nums.some(n => {
+          const s = String(n);
+          const sCompact = s.replace(/[,\s]/g, "");
+          return evRaw.includes(s) || evCompact.includes(sCompact);
+        })
+      : false;
+
+    // ✅ STRICT=true면 강하게(year && num), STRICT=false면 약하게(year || num)
+    if (needYear && needNum) return STRICT_NUMERIC_PRUNE ? (yearsHit && numsHit) : (yearsHit || numsHit);
+    if (needYear) return yearsHit;
+    if (needNum) return numsHit;
+    return true;
+  };
 
   const countTotalBlockEvidence = (block) => {
     const ev = block?.evidence;
