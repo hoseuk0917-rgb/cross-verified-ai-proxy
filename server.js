@@ -2947,11 +2947,15 @@ function extractGeminiText(data) {
 }
 
 function geminiErrMessage(e) {
-  const status = e?.response?.status;
+  const status =
+    e?.response?.status ?? e?.httpStatus ?? e?.status ?? e?.statusCode ?? null;
+
   const apiMsg =
     e?.response?.data?.error?.message ||
     e?.response?.data?.message ||
+    e?.publicMessage ||
     null;
+
   return `[status=${status ?? "?"}] ${apiMsg || e?.message || "Unknown Gemini error"}`;
 }
 
@@ -2988,6 +2992,7 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
     const err = new Error(`${label}: GEMINI_KEY_MISSING`);
     err.code = "GEMINI_KEY_MISSING";
     err.httpStatus = 401;
+    err.publicMessage = "Gemini API 키가 필요합니다.";
     err.detail = { stage: "raw", model, label };
     throw err;
   }
@@ -3016,20 +3021,24 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
       if ((text || "").trim().length < minChars) {
         const finishReason = data?.candidates?.[0]?.finishReason;
         const blockReason = data?.promptFeedback?.blockReason;
+
         const err = new Error(
           `${label}: GEMINI_EMPTY_TEXT (finish=${finishReason || "?"}, block=${blockReason || "?"})`
         );
+        err.code = "GEMINI_EMPTY_TEXT";
         err._gemini_empty = true;
+        err.httpStatus = 502;
+        err.detail = { stage: "raw", model, label, finishReason, blockReason };
         throw err; // ✅ 빈 텍스트는 retry하지 않음
       }
 
       return text;
     } catch (e) {
-      const status = e?.response?.status;
+      const status = e?.response?.status ?? e?.httpStatus ?? e?.status ?? e?.statusCode ?? null;
       const code = e?.code || e?.name;
-
-      // ✅ INVALID_GEMINI_KEY는 여기서 명확히 변환해서 throw (상위에서 401 매핑)
       const msg = geminiErrMessage(e);
+
+      // ✅ INVALID_GEMINI_KEY (보통 400 + "API key not valid")
       if (
         status === 400 &&
         /API key not valid|API_KEY_INVALID|invalid api key/i.test(String(msg || ""))
@@ -3037,11 +3046,12 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
         const err2 = new Error("INVALID_GEMINI_KEY");
         err2.code = "INVALID_GEMINI_KEY";
         err2.httpStatus = 401;
-        err2.detail = { stage: "raw", model, label, status };
+        err2.publicMessage = "Gemini API 키가 유효하지 않습니다. 키를 다시 확인해 주세요.";
+        err2.detail = { stage: "raw", model, label, status, message: msg };
         throw err2;
       }
 
-      // 인증/권한/요청형식 오류는 retry 금지 (rotating wrapper가 처리)
+      // ✅ 인증/권한/요청형식 오류는 retry 금지 (rotating wrapper가 처리)
       if (status === 400 || status === 401 || status === 403 || status === 404) throw e;
       if (e?._gemini_empty) throw e;
 
@@ -3056,10 +3066,10 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
         if (DEBUG) {
           console.warn(
             `⚠️ retryable error in ${label} (attempt=${attempt + 1}/${maxRetries + 1}):`,
-            e?.message || e
+            msg
           );
         }
-        await sleep(baseMs * Math.pow(2, attempt)); // 간단 백오프
+        await sleep(baseMs * Math.pow(2, attempt));
         continue;
       }
 
@@ -3070,31 +3080,36 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
 
 // ✅ ADD: Rotation wrapper
 // - 우선순위: (1) 요청에서 gemini_key(keyHint) 왔으면 1회 시도 → (401/403/429)면 DB 키링으로
-// - DB 키링은 (429/401/403/INVALID)면 해당 key_id를 exhausted로 기록하고 다음 키로 자동교체
+// - DB 키링은 (429/401/403/INVALID_KEY)이면 해당 key_id를 exhausted로 기록하고 다음 키로 자동교체
 async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} }) {
   const hint = String(keyHint || "").trim();
 
   // 0) hint key 1회 시도(옵션)
   if (hint) {
     try {
-      return await fetchGeminiRaw({ model, gemini_key: hint, payload, opts });
+      return await fetchGeminiRaw({
+        model,
+        gemini_key: hint,
+        payload,
+        opts,
+      });
     } catch (e) {
-      // ✅ fetchGeminiRaw가 만든 명시 에러는 그대로 올린다(삼키지 않음)
+      // ✅ hint가 "진짜로" invalid/missing면 즉시 401로 종료
       if (e?.code === "INVALID_GEMINI_KEY" || e?.code === "GEMINI_KEY_MISSING") throw e;
 
-      const status = e?.response?.status;
+      const status = e?.response?.status ?? e?.httpStatus ?? e?.status ?? e?.statusCode ?? null;
 
-      // hint 키가 auth/quota로 실패하면 DB 키링으로
+      // ✅ hint 키가 quota/auth면 DB 키링으로 넘어감
       if (status === 429 || status === 401 || status === 403) {
         // 계속 진행(키링 시도)
       } else {
-        console.error("❌ Gemini call failed:", opts.label || `gemini:${model}`, geminiErrMessage(e));
+        console.error("Gemini call failed:", opts.label || `gemini:${model}`, geminiErrMessage(e));
         throw e;
       }
     }
   }
 
-  // hint가 없거나, hint가 auth/quota로 실패했는데 userId도 없으면 로테이션 불가
+  // hint가 없거나, hint가 quota/auth로 실패했는데 userId도 없으면 로테이션 불가
   if (!userId) {
     const err = new Error("GEMINI_USERID_REQUIRED_FOR_ROTATION");
     err.code = "GEMINI_KEY_EXHAUSTED";
@@ -3105,17 +3120,12 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
 
   // 1) DB 키링에서 키를 뽑아가며 시도
   let lastErr = null;
+  let sawQuota = false;
+  let sawAuth = false;
+  let sawInvalid = false;
 
   for (let attempt = 0; attempt < GEMINI_KEYRING_MAX; attempt++) {
     const kctx = await getGeminiKeyFromDB(userId); // {gemini_key, key_id, pt_date, next_reset_utc}
-        // ✅ DB에서 뽑힌 키가 비어있으면: 스킵/폴백으로 넘어가지 말고 즉시 401로 종료
-    if (!kctx?.gemini_key || !String(kctx.gemini_key).trim()) {
-      const err0 = new Error("GEMINI_KEY_MISSING");
-      err0.code = "GEMINI_KEY_MISSING";
-      err0.httpStatus = 401;
-      err0.detail = { stage: "db", reason: "empty_or_missing_keyring" };
-      throw err0;
-    }
 
     try {
       const out = await fetchGeminiRaw({
@@ -3131,16 +3141,15 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
     } catch (e) {
       lastErr = e;
 
-      const status = e?.response?.status;
-      const invalidKeyByCode = e?.code === "INVALID_GEMINI_KEY";
-      const invalidKeyByMsg =
-        status === 400 &&
-        /API key not valid|API_KEY_INVALID|invalid api key/i.test(String(geminiErrMessage(e) || ""));
+      const status = e?.response?.status ?? e?.httpStatus ?? e?.status ?? e?.statusCode ?? null;
+      const code = e?.code || null;
 
-      const shouldExhaust = status === 429 || status === 401 || status === 403 || invalidKeyByCode || invalidKeyByMsg;
+      if (code === "INVALID_GEMINI_KEY") sawInvalid = true;
+      if (status === 429) sawQuota = true;
+      if (status === 401 || status === 403) sawAuth = true;
 
-      // quota/auth/invalid이면 exhausted 처리 후 다음 키로
-      if (shouldExhaust) {
+      // ✅ 429 quota / 401-403 auth / INVALID key => exhausted 처리하고 다음 키로
+      if (status === 429 || status === 401 || status === 403 || code === "INVALID_GEMINI_KEY") {
         try {
           const row = await loadUserSecretsRow(userId);
           const secrets = _ensureGeminiSecretsShape(row.secrets);
@@ -3149,12 +3158,22 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         continue;
       }
 
-      console.error("❌ Gemini call failed:", opts.label || `gemini:${model}`, geminiErrMessage(e));
+      console.error("Gemini call failed:", opts.label || `gemini:${model}`, geminiErrMessage(e));
       throw e;
     }
   }
 
-  // 2) 여기까지 오면 키를 다 써버림
+  // 2) 키링이 전부 invalid라면 401로 명확히
+  if (sawInvalid && !sawQuota && !sawAuth) {
+    const err = new Error("INVALID_GEMINI_KEYRING");
+    err.code = "INVALID_GEMINI_KEY";
+    err.httpStatus = 401;
+    err.publicMessage = "저장된 Gemini API 키가 모두 유효하지 않습니다. 설정에서 키를 교체해 주세요.";
+    err.detail = { last_error: lastErr ? geminiErrMessage(lastErr) : null };
+    throw err;
+  }
+
+  // 3) 여기까지 오면 키를 다 써버림(쿼터/권한 등)
   const pac = await getPacificResetInfoCached();
   const err = new Error("GEMINI_ALL_KEYS_EXHAUSTED");
   err.code = "GEMINI_KEY_EXHAUSTED";
@@ -3185,6 +3204,24 @@ const freshness = isNaN(upd.getTime())
   });
 
   return norm.reduce((a, b) => a + b, 0) / norm.length;
+}
+
+// ✅ fetchGeminiSmart: direct gemini_key가 있어도 "rotating(=hint 1회 + DB fallback)" 경로를 타게 함
+async function fetchGeminiSmart({ userId, gemini_key, keyHint, model, payload, opts = {} }) {
+  const directKey = (gemini_key ?? "").toString().trim();
+  const hintKey = (keyHint ?? "").toString().trim();
+
+  // 우선순위: gemini_key(요청 direct) > keyHint > null
+  const hint = directKey || hintKey || null;
+
+  // ✅ 핵심: Smart는 Rotating으로만 보낸다 (무한재귀 금지)
+  return await fetchGeminiRotating({
+    userId,
+    keyHint: hint,
+    model,
+    payload,
+    opts,
+  });
 }
 
 // ─────────────────────────────
@@ -3226,8 +3263,9 @@ ${JSON.stringify(githubData).slice(0, 2500)}
 {"consistency":0.0}
 `;
 
-    const text = await fetchGeminiRotating({
+    const text = await fetchGeminiSmart({
   userId,                 // ✅ 아래에서 함수 시그니처를 userId 받게 바꿀 거라 여기선 임시
+  gemini_key,
   keyHint: gemini_key,
   model: "gemini-2.5-pro",
   payload: { contents: [{ parts: [{ text: prompt }] }] },
@@ -3307,8 +3345,9 @@ async function buildGithubQueriesFromGemini(
 ${baseText}
 `.trim();
 
-    const text = await fetchGeminiRotating({
+    const text = await fetchGeminiSmart({
       userId,
+      gemini_key,
       keyHint: gemini_key,
       model: "gemini-2.5-flash",
       payload: { contents: [{ parts: [{ text: prompt }] }] },
@@ -3972,8 +4011,9 @@ async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, model
 }
 `.trim();
 
-  const text = await fetchGeminiRotating({
+  const text = await fetchGeminiSmart({
     userId,
+    gemini_key,
     keyHint: gemini_key,
     model: modelName || "gemini-2.5-flash",
     payload: { contents: [{ parts: [{ text: prompt }] }] },
@@ -5518,7 +5558,7 @@ ${JSON.stringify(external.klaw).slice(0, 6000)}
 
       try {
         const t_lv = Date.now();
-        lvSummary = await fetchGeminiRotating({
+        lvSummary = await fetchGeminiSmart({
   userId: logUserId,
   keyHint: gemini_key,
   model: "gemini-2.5-flash-lite",
@@ -5641,7 +5681,7 @@ let answerModelUsed = "gemini-2.5-flash";
   if (!flash.trim()) {
     const flashPrompt = `[QV] ${query}\n한국어로 6~10문장으로 답변만 작성하세요.`;
     const t_flash = Date.now();
-    flash = await fetchGeminiRotating({
+    flash = await fetchGeminiSmart({
   userId: logUserId,
   keyHint: gemini_key,
   model: answerModelUsed,
@@ -5662,7 +5702,7 @@ let answerModelUsed = "gemini-2.5-flash";
           `참조자료:\n${JSON.stringify(external).slice(0, FLASH_REF_CHARS)}`;
 
         const t_flash = Date.now();
-        flash = await fetchGeminiRotating({
+        flash = await fetchGeminiSmart({
   userId: logUserId,
   keyHint: gemini_key,
   model: answerModelUsed,
@@ -6358,7 +6398,7 @@ const t_verify = Date.now();
 try {
   for (const m of verifyModelCandidates) {
     try {
-      verify = await fetchGeminiRotating({
+      verify = await fetchGeminiSmart({
   userId: logUserId,
   keyHint: gemini_key,
   model: m,
@@ -6943,15 +6983,15 @@ const userId = await resolveLogUserId({
       deeplKeyFinal = (v.deepl_key || "").toString().trim() || null;
     }
 
-    // Gemini 키가 body에 없으면 keyring에서
-    if (!geminiKeyFinal && userId) {
-      const kctx = await getGeminiKeyFromDB(userId); // { gemini_key, key_id, pt_date, next_reset_utc }
-      geminiKeyFinal = (kctx.gemini_key || "").toString().trim() || null;
-    }
+    // ✅ Gemini 키 선택/키링 fallback은 fetchGeminiSmart가 처리한다.
+    // - body gemini_key가 있으면: 그 키로 1회 시도 후(401/403/429) keyring fallback
+    // - body gemini_key가 없고 userId가 있으면: keyring 사용
+    // 여기서는 “Gemini를 쓸 수 있는지”만 판단(검증용)
+      const canUseGemini = !!geminiKeyFinal || !!userId;
 
     // ✅ 3) 최소 하나는 필요(DeepL 또는 Gemini)
     // - deeplKeyFinal이 있으면 DeepL 우선으로 돌아가고, 실패 시 Gemini fallback에만 geminiKeyFinal이 쓰임
-    if (!deeplKeyFinal && !geminiKeyFinal) {
+    if (!deeplKeyFinal && !canUseGemini) {
       return sendError(
         res,
         400,
@@ -7129,7 +7169,7 @@ app.post("/api/docs/analyze", async (req, res) => {
     }
 
     // 요약 요청인데 Gemini 키 없음
-    if (wantsSummary && !gemini_key) {
+    if (wantsSummary && !canUseGemini) {
       return sendError(
         res,
         400,
@@ -7139,7 +7179,7 @@ app.post("/api/docs/analyze", async (req, res) => {
     }
 
     // 번역 요청인데 DeepL/Gemini 둘 다 없음
-    if (wantsTranslate && !deepl_key && !gemini_key) {
+    if (wantsTranslate && !deepl_key && !canUseGemini) {
       return sendError(
         res,
         400,
@@ -7186,9 +7226,10 @@ app.post("/api/docs/analyze", async (req, res) => {
 ${safeText}
       `.trim();
 
-      const summaryText = await fetchGeminiRotating({
-  userId: null,            // ✅ docs는 지금 auth/userId 흐름이 없어서: (아래 9번에서 userId 연결 추천)
-  keyHint: gemini_key,
+      const summaryText = await fetchGeminiSmart({
+  userId: userId || null,
+  gemini_key: geminiKeyFinal ?? null,
+  keyHint: geminiKeyFinal ?? null,
   model: "gemini-2.5-flash",
   payload: { contents: [{ parts: [{ text: prompt }] }] },
 });
