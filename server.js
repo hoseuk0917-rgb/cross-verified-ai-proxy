@@ -6999,12 +6999,14 @@ const auth_user = await getSupabaseAuthUser(req);
 const bearer_token = getBearerToken(req);
 
 const logUserId = await resolveLogUserId({
-  user_id,
+  user_id: user_id ?? null,
   user_email: null,
   user_name: null,
   auth_user,
   bearer_token,
 });
+
+const userId = logUserId; // ✅ /api/translate: keyring/vault lookup용
 
     // 1) 필수값 검증
     if (!text || !text.trim()) {
