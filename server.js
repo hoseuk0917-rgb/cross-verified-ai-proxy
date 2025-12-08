@@ -1126,16 +1126,54 @@ function encryptSecret(plaintext) {
 
 function decryptSecret(enc) {
   if (!enc || typeof enc !== "object") return null;
+
   const key = _getEncKey();
 
-  const iv = Buffer.from(enc.iv || "", "base64");
-  const tag = Buffer.from(enc.tag || "", "base64");
-  const ct = Buffer.from(enc.ct || "", "base64");
+  const ivB64 = String(enc.iv || "");
+  const tagB64 = String(enc.tag || "");
+  const ctB64 = String(enc.ct || "");
+
+  const iv = Buffer.from(ivB64, "base64");
+  const tag = Buffer.from(tagB64, "base64");
+  const ct = Buffer.from(ctB64, "base64");
+
+  // ✅ 최소 무결성 체크(깨진 blob / 잘못된 저장 형태)
+  if (!iv.length || !tag.length || !ct.length) {
+    const err = new Error("USER_SECRETS_ENC_BLOB_INVALID");
+    err.code = "USER_SECRETS_ENC_BLOB_INVALID";
+    err._fatal = true;
+    err.httpStatus = 500;
+    err.publicMessage =
+      "저장된 키링/볼트 데이터 형식이 올바르지 않습니다. (iv/tag/ct 누락 또는 손상)";
+    err.detail = { iv_len: iv.length, tag_len: tag.length, ct_len: ct.length };
+    throw err;
+  }
 
   const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(tag);
-  const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
-  return pt.toString("utf8");
+
+  try {
+    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+    return pt.toString("utf8");
+  } catch (e) {
+    // ✅ 여기서 나는 대표 에러가: "Unsupported state or unable to authenticate data"
+    //    = (1) 서버 암호화키가 바뀜/불일치 OR (2) tag/ct가 손상됨
+    const err = new Error("USER_SECRETS_DECRYPT_FAILED");
+    err.code = "USER_SECRETS_DECRYPT_FAILED";
+    err._fatal = true;
+    err.httpStatus = 500;
+    err.publicMessage =
+      "서버 암호화 키(env)가 DB에 저장된 키링/볼트 데이터와 일치하지 않거나, 저장된 암호문이 손상되었습니다. (USER_SECRETS_ENC_KEY_B64 등 암호화키 환경변수 확인 필요)";
+    err.detail = {
+      cause: e?.message || String(e),
+      alg: "aes-256-gcm",
+      key_len: key?.length || 0,
+      iv_len: iv.length,
+      tag_len: tag.length,
+      ct_len: ct.length,
+    };
+    throw err;
+  }
 }
 
 // ─────────────────────────────
@@ -7089,6 +7127,7 @@ ${text}
     );
   } catch (e) {
     console.error("❌ /api/translate Error:", e.message);
+    console.error("❌ /api/translate stack:", e?.stack || e);
 
     // ✅ 키링 소진은 /api/verify와 동일하게 200 + 코드로 내려주기
     if (e?.code === "GEMINI_KEY_EXHAUSTED") {
