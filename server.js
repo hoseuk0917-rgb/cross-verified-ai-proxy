@@ -7268,21 +7268,12 @@ if (!deeplKeyFinal && !canUseGemini) {
   );
 }
 
-// 4) 간단 번역: DeepL 우선, 없으면 Gemini(keyring 가능)
+// 4) 간단 번역: DeepL 우선, 실패/none이면 Gemini로 fallback (keyring 가능)
 let result = null;
 
-if (deeplKeyFinal) {
-  // DeepL 우선 (기존 동작 유지)
-  result = await translateText(
-    text,
-    targetLang ?? null,
-    deeplKeyFinal ?? null,
-    geminiKeyFinal ?? null
-  );
-} else {
-  // ✅ DeepL 없으면 Gemini로 번역 (keyHint=body gemini_key, 없으면 keyring)
-  const tgt = targetLang ? String(targetLang).toUpperCase() : null;
+const tgt = targetLang ? String(targetLang).toUpperCase() : null;
 
+const geminiTranslate = async () => {
   const prompt = `
 You are a professional translator.
 Translate the following text into ${tgt || "EN"}.
@@ -7293,14 +7284,44 @@ ${text}
   `.trim();
 
   const out = await fetchGeminiSmart({
-    userId: userId,                 // ✅ keyring 사용 가능
-    keyHint: geminiKeyFinal ?? null, // ✅ body 키가 있으면 hint 1회, 없으면 keyring
+    userId: userId,                  // ✅ keyring 사용 가능
+    keyHint: geminiKeyFinal ?? null,  // ✅ body 키가 있으면 hint 1회, 없으면 keyring
     model: "gemini-2.5-flash",
     payload: { contents: [{ parts: [{ text: prompt }] }] },
     opts: { label: "translate:simple" },
   });
 
-  result = { text: (out || "").trim(), engine: "gemini", target: tgt };
+  return { text: (out || "").trim(), engine: "gemini", target: tgt };
+};
+
+if (deeplKeyFinal) {
+  // DeepL 우선
+  result = await translateText(
+    text,
+    tgt || null,
+    deeplKeyFinal ?? null,
+    geminiKeyFinal ?? null
+  );
+
+  // ✅ DeepL이 “none/원문그대로”로 떨어지면 Gemini로 fallback
+  const eng = String(result?.engine || "").toLowerCase();
+  const sameAsInput = String(result?.text || "").trim() === String(text || "").trim();
+
+  if ((eng === "none" || !result?.text || sameAsInput) && canUseGemini) {
+    result = await geminiTranslate();
+  }
+
+  // ✅ 그래도 none이면 성공으로 보내지 말고 에러로 처리
+  const eng2 = String(result?.engine || "").toLowerCase();
+  const same2 = String(result?.text || "").trim() === String(text || "").trim();
+  if (eng2 === "none" || !result?.text || same2) {
+    const e = new Error("TRANSLATION_NO_ENGINE_EXECUTED");
+    e.code = "TRANSLATION_NO_ENGINE_EXECUTED";
+    throw e;
+  }
+} else {
+  // DeepL 없으면 Gemini
+  result = await geminiTranslate();
 }
 
     // 5) 성공 응답 (ⅩⅤ 규약: buildSuccess 사용)
