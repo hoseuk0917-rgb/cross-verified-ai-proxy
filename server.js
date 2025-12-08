@@ -7237,16 +7237,25 @@ const userId = logUserId; // ✅ /api/translate: keyring/vault lookup용
     let deeplKeyFinal = (deepl_key || "").toString().trim() || null;
 let geminiKeyFinal = (gemini_key || "").toString().trim() || null;
 
-// DeepL 키가 body에 없으면 vault에서
-if (!deeplKeyFinal && userId) {
+// ✅ userId가 있을 때만 DB에서 vault/keyring 상태를 확인
+let geminiKeysCount = 0;
+
+if (userId) {
   const row = await loadUserSecretsRow(userId);
   const s = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
-  const v = decryptIntegrationsSecrets(s);
-  deeplKeyFinal = (v.deepl_key || "").toString().trim() || null;
+
+  // DeepL 키가 body에 없으면 vault에서
+  if (!deeplKeyFinal) {
+    const v = decryptIntegrationsSecrets(s);
+    deeplKeyFinal = (v.deepl_key || "").toString().trim() || null;
+  }
+
+  // ✅ keyring에 실제 Gemini 키가 “존재”할 때만 keyring 사용 가능
+  geminiKeysCount = (s?.gemini?.keyring?.keys || []).length;
 }
 
-// ✅ Gemini는 fetchGeminiSmart가 "hint 1회 + keyring fallback" 처리
-const canUseGemini = !!geminiKeyFinal || !!userId;
+// ✅ Gemini 사용 가능 조건을 “userId 존재”가 아니라 “(body gemini_key) 또는 (keyring keysCount>0)”로 엄격화
+const canUseGemini = !!geminiKeyFinal || geminiKeysCount > 0;
 
 // ✅ 최소 하나 필요(DeepL or Gemini)
 if (!deeplKeyFinal && !canUseGemini) {
@@ -7254,8 +7263,8 @@ if (!deeplKeyFinal && !canUseGemini) {
     res,
     400,
     "VALIDATION_ERROR",
-    "deepl_key 또는 gemini_key(또는 로그인/DB keyring 기반 Gemini 키)가 필요합니다.",
-    "Need deepl_key or gemini key (body or keyring)"
+    "deepl_key 또는 gemini_key(또는 DB keyring에 Gemini 키 저장)가 필요합니다.",
+    { userId: userId || null, geminiKeysCount }
   );
 }
 
@@ -7415,18 +7424,24 @@ app.post("/api/docs/analyze", async (req, res) => {
 const userId = logUserId; // ✅ docs/analyze: keyring/vault 용 userId (1회 resolve 결과)
 
     // ✅ body gemini_key는 "힌트(1회)" 용도. 없으면 DB keyring 사용
-    let geminiKeyFinal = (gemini_key || "").toString().trim() || null;
+let geminiKeyFinal = (gemini_key || "").toString().trim() || null;
 let deeplKeyFinal = (deepl_key || "").toString().trim() || null;
 
-// ✅ DeepL 키가 body에 없으면 vault에서(로그인 사용자 한정)
-if (!deeplKeyFinal && logUserId) {
+let geminiKeysCount = 0;
+
+if (logUserId) {
   const row = await loadUserSecretsRow(logUserId);
   const s = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
-  const v = decryptIntegrationsSecrets(s);
-  deeplKeyFinal = (v.deepl_key || "").toString().trim() || null;
+
+  if (!deeplKeyFinal) {
+    const v = decryptIntegrationsSecrets(s);
+    deeplKeyFinal = (v.deepl_key || "").toString().trim() || null;
+  }
+
+  geminiKeysCount = (s?.gemini?.keyring?.keys || []).length;
 }
 
-const canUseGemini = !!geminiKeyFinal || !!logUserId;
+    const canUseGemini = !!geminiKeyFinal || geminiKeysCount > 0;
 
     const safeMode = (mode || "chunk").toString().toLowerCase();
     if (!["chunk", "final"].includes(safeMode)) {
