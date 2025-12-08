@@ -54,10 +54,17 @@ function _normTargetLang(t) {
 }
 
 function _deeplBaseForKey(key) {
-  const k = String(key || "").trim();
+  let k = String(key || "").trim();
   if (!k) return null;
-  // DeepL Free 키는 보통 ":fx"로 끝남
-  return k.endsWith(":fx") ? "https://api-free.deepl.com" : "https://api.deepl.com";
+
+  // 따옴표로 감싸진 채 저장된 경우 대비
+  if ((k.startsWith('"') && k.endsWith('"')) || (k.startsWith("'") && k.endsWith("'"))) {
+    k = k.slice(1, -1).trim();
+  }
+
+  // Free 키는 보통 ":fx" (대소문자 무시)
+  const lower = k.toLowerCase();
+  return lower.endsWith(":fx") ? "https://api-free.deepl.com" : "https://api.deepl.com";
 }
 
 // ✅ 기존 호출부 호환용 시그니처 유지: (text, targetLang, deepl_key, gemini_key)
@@ -7743,54 +7750,126 @@ ${safeText}
       summaryResult = (summaryText || "").trim();
     }
 
-    // ─────────────────────────────
-    // 2) 번역 (DeepL 우선, 없으면 Gemini)
-    // ─────────────────────────────
-        if (wantsTranslate && (deeplKeyFinal || canUseGemini)) {
-      const baseForTranslate =
-        safeMode === "final" && wantsSummary && summaryResult
-          ? summaryResult
-          : safeText;
+// 2) 번역 (DeepL 우선 → none/원문이면 Gemini fallback)
+let tr = null;
 
-      let tr = null;
+// docs/analyze용 타겟 언어(normalize)
+const __docTgtLang = (() => {
+  const raw =
+    (req.body?.target_lang ?? req.body?.targetLang ?? "EN");
+  return String(raw).trim().toUpperCase() || "EN";
+})();
 
-      if (deeplKeyFinal) {
-  tr = await translateText(
-    baseForTranslate,
-    target_lang ?? null,
-    deeplKeyFinal ?? null,
-    geminiKeyFinal ?? null
-  );
-} else {
-        // ✅ DeepL 키가 없으면 Gemini(키링 포함)로 번역
-        const tgt = target_lang ? String(target_lang).toUpperCase() : null;
-
-        const prompt = `
+// Gemini 번역 헬퍼
+const __geminiTranslateDoc = async (srcText) => {
+  const prompt = `
 You are a professional translator.
-Translate the following text into ${tgt || "EN"}.
+Translate the following text into ${__docTgtLang}.
 Return ONLY the translated text (no quotes, no markdown).
 
 TEXT:
-${baseForTranslate}
-        `.trim();
+${srcText}
+  `.trim();
 
-        const out = await fetchGeminiSmart({
-          userId: logUserId,
-          keyHint: geminiKeyFinal ?? null,
-          model: "gemini-2.5-flash",
-          payload: { contents: [{ parts: [{ text: prompt }] }] },
-        });
+  const out = await fetchGeminiSmart({
+    userId,
+    keyHint: geminiKeyFinal ?? null,  // body에 있으면 힌트, 없으면 keyring
+    model: "gemini-2.5-flash",
+    payload: { contents: [{ parts: [{ text: prompt }] }] },
+    opts: { label: "docs:translate" },
+  });
 
-        tr = { text: (out || "").trim(), engine: "gemini", target: tgt };
-      }
+  return {
+    text: (out || "").trim(),
+    engine: "gemini",
+    targetLang: __docTgtLang,
+  };
+};
 
-      translateResult = {
-        text: tr.text,
-        engine: tr.engine,
-        targetLang:
-          tr.target || (target_lang ? String(target_lang).toUpperCase() : null),
+if (wantsTranslate) {
+  const _in = String(text ?? "").trim();
+
+  // 1) DeepL 먼저 시도
+  if (deeplKeyFinal) {
+    try {
+      tr = await translateText(
+        text,
+        __docTgtLang,
+        deeplKeyFinal ?? null,
+        geminiKeyFinal ?? null
+      );
+    } catch (e) {
+      // DeepL이 예외 던지면 "none + 원문"으로 두고 아래에서 평가
+      tr = {
+        text: _in,
+        engine: "none",
+        targetLang: __docTgtLang,
+        error: `DEEPL_EXCEPTION:${e?.message || String(e)}`,
       };
     }
+  }
+
+  // 2) DeepL 결과 평가
+  const _out0 =
+    typeof tr === "string"
+      ? String(tr).trim()
+      : String(tr?.text ?? tr?.translated ?? tr?.translation ?? "").trim();
+
+  const _eng0 =
+    typeof tr === "object" && tr
+      ? String(tr?.engine ?? "").toLowerCase()
+      : "";
+
+  const _looksNone0 = (_eng0 === "none" || !_out0 || _out0 === _in);
+
+  // 3) none/원문 + Gemini 사용 가능하면 fallback
+  if (_looksNone0 && canUseGemini) {
+    tr = await __geminiTranslateDoc(text);
+  }
+
+  // 4) 최종 평가
+  const _out1 =
+    typeof tr === "string"
+      ? String(tr).trim()
+      : String(tr?.text ?? tr?.translated ?? tr?.translation ?? "").trim();
+
+  const _eng1 =
+    typeof tr === "object" && tr
+      ? String(tr?.engine ?? "").toLowerCase()
+      : "";
+
+  const _looksNone1 = (_eng1 === "none" || !_out1 || _out1 === _in);
+
+  if (_looksNone1) {
+    const e = new Error("TRANSLATION_NO_ENGINE_EXECUTED");
+    e.code = "TRANSLATION_NO_ENGINE_EXECUTED";
+    e.detail = {
+      has_deepl: !!deeplKeyFinal,
+      can_use_gemini: !!canUseGemini,
+      target: __docTgtLang,
+    };
+    throw e;
+  }
+
+  // 5) tr 정규화 (응답에서 tr.text / tr.engine / tr.targetLang 쓰기 편하게)
+  if (typeof tr === "string") {
+    tr = {
+      text: _out1,
+      engine: deeplKeyFinal ? "deepl" : "gemini",
+      targetLang: __docTgtLang,
+    };
+  } else if (!tr || typeof tr !== "object") {
+    tr = {
+      text: _out1,
+      engine: deeplKeyFinal ? "deepl" : "gemini",
+      targetLang: __docTgtLang,
+    };
+  } else {
+    if (tr.text == null) tr.text = _out1;
+    if (!tr.engine) tr.engine = deeplKeyFinal ? "deepl" : "gemini";
+    if (!tr.targetLang) tr.targetLang = __docTgtLang;
+  }
+}
 
     // ─────────────────────────────
     // 3) 응답 페이로드 구성
