@@ -1052,64 +1052,138 @@ async function getPacificResetInfoCached() {
   return { pt_date, next_reset_utc };
 }
 
-// ─────────────────────────────
-// ✅ ADD: Secret Encrypt/Decrypt (AES-256-GCM)
-// ─────────────────────────────
-function _getEncKey() {
-  // ✅ 여기 env 이름은 네 기존 코드에서 쓰던 걸 "그대로" 유지해야 함.
-  // 아래는 안전한 예시: 네 _getEncKey가 원래 읽던 env 하나만 남기고 나머지는 지워도 됨.
-  const raw =
-    (process.env.USER_SECRETS_ENC_KEY ||
-      process.env.USER_SECRETS_MASTER_KEY ||
-      process.env.APP_ENC_KEY ||
-      process.env.ENCRYPTION_KEY ||
-      "").toString().trim();
+/// ✅ ADD: Secret Encrypt/Decrypt (AES-256-GCM)
+// - encrypt: "첫 번째로 잡힌" 키로 암호화
+// - decrypt: env에 있는 "여러 키 후보"를 순서대로 시도 (키 마이그레이션/중복 대비)
 
-  if (!raw) {
+function _sha256_16(buf) {
+  try {
+    return crypto.createHash("sha256").update(buf).digest("hex").slice(0, 16);
+  } catch {
+    return null;
+  }
+}
+
+function _parseEncKeyRaw(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+
+  // 1) base64(32 bytes) 시도
+  try {
+    const b = Buffer.from(s, "base64");
+    if (b.length === 32) return b;
+  } catch {}
+
+  // 2) hex(64 chars => 32 bytes) 시도
+  if (/^[0-9a-fA-F]{64}$/.test(s)) {
+    try {
+      const b = Buffer.from(s, "hex");
+      if (b.length === 32) return b;
+    } catch {}
+  }
+
+  // 3) utf8(정확히 32 bytes) 시도
+  try {
+    const b = Buffer.from(s, "utf8");
+    if (b.length === 32) return b;
+  } catch {}
+
+  return null;
+}
+
+function _collectEncKeyCandidates() {
+  // ✅ 우선순위: "DB를 암호화할 때 쓰던 키"가 먼저 오게 해야 함
+  // - Render에 SETTINGS_ENC_KEY_B64가 있는 경우가 많아서 상단 배치
+  const envNames = [
+    "USER_SECRETS_ENC_KEY_B64",
+    "SETTINGS_ENC_KEY_B64",
+    "USER_SECRETS_ENC_KEY",
+    "USER_SECRETS_MASTER_KEY",
+    "APP_ENC_KEY",
+    "ENCRYPTION_KEY",
+    "SETTINGS_ENCRYPTION_KEY",
+  ];
+
+  const all = [];
+
+  for (const env of envNames) {
+    const raw = String(process.env[env] || "").trim();
+    if (!raw) continue;
+
+    let key = null;
+    let fmt = null;
+
+    // 1) base64 → 32 bytes
+    try {
+      const b = Buffer.from(raw, "base64");
+      if (b.length === 32) {
+        key = b;
+        fmt = "base64";
+      }
+    } catch {}
+
+    // 2) hex(64 chars) → 32 bytes
+    if (!key && /^[0-9a-fA-F]{64}$/.test(raw)) {
+      key = Buffer.from(raw, "hex");
+      fmt = "hex";
+    }
+
+    // 3) utf8(정확히 32 bytes)
+    if (!key) {
+      const b = Buffer.from(raw, "utf8");
+      if (b.length === 32) {
+        key = b;
+        fmt = "utf8";
+      }
+    }
+
+    all.push({
+      env,
+      parsed: !!key,
+      fmt,
+      raw_len: raw.length,
+      key_len: key ? key.length : 0,
+      sha256_16: key ? crypto.createHash("sha256").update(key).digest("hex").slice(0, 16) : null,
+      key, // ✅ _getEncKey()가 cands[0].key로 쓰는 값
+    });
+  }
+
+  const cands = all.filter((x) => x.parsed && x.key && x.key.length === 32);
+
+  if (!cands.length) {
     const e = new Error("USER_SECRETS_ENC_KEY_MISSING");
     e.code = "USER_SECRETS_ENC_KEY_MISSING";
     e.httpStatus = 500;
     e._fatal = true;
     e.publicMessage =
-      "서버 암호화 키(env)가 없습니다. (USER_SECRETS_ENC_KEY 등) Render/로컬 환경변수를 확인하세요.";
+      "서버 암호화 키(env)가 없습니다. (USER_SECRETS_ENC_KEY_B64/SETTINGS_ENC_KEY_B64/ENCRYPTION_KEY 등 확인 필요)";
+    e.detail = {
+      candidates: all.map(({ env, parsed, fmt, raw_len, key_len, sha256_16 }) => ({
+        env,
+        parsed,
+        fmt,
+        raw_len,
+        key_len,
+        sha256_16,
+      })),
+    };
     throw e;
   }
 
-  let key = null;
+  // ✅ 첫 번째 후보가 곧 실제 사용 키가 됨 ( _getEncKey()가 cands[0].key )
+  return cands;
+}
 
-  // 1) base64 시도
-  try {
-    const b = Buffer.from(raw, "base64");
-    if (b.length === 32) key = b;
-  } catch {}
-
-  // 2) hex(64 chars) 시도
-  if (!key && /^[0-9a-fA-F]{64}$/.test(raw)) {
-    key = Buffer.from(raw, "hex");
-  }
-
-  // 3) utf8(정확히 32바이트 문자열) 시도
-  if (!key) {
-    const b = Buffer.from(raw, "utf8");
-    if (b.length === 32) key = b;
-  }
-
-  if (!key || key.length !== 32) {
-    const e = new Error("USER_SECRETS_ENC_KEY_INVALID_LENGTH");
-    e.code = "USER_SECRETS_ENC_KEY_INVALID_LENGTH";
-    e.httpStatus = 500;
-    e._fatal = true;
-    e.publicMessage =
-      "서버 암호화 키 길이가 잘못되었습니다. (AES-256-GCM은 32 bytes 필요) env 값을 확인하세요.";
-    e.detail = { bytes: key ? key.length : 0 };
-    throw e;
-  }
-
-  return key;
+function _getEncKey() {
+  // 기존 호출부 호환 유지: "대표 키(첫 후보)"만 반환
+  const cands = _collectEncKeyCandidates();
+  return cands[0].key;
 }
 
 function encryptSecret(plaintext) {
-  const key = _getEncKey();
+  const cands = _collectEncKeyCandidates();
+  const key = cands[0].key;
+
   const iv = crypto.randomBytes(12); // GCM 권장 12 bytes
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const ct = Buffer.concat([cipher.update(String(plaintext), "utf8"), cipher.final()]);
@@ -1126,8 +1200,6 @@ function encryptSecret(plaintext) {
 
 function decryptSecret(enc) {
   if (!enc || typeof enc !== "object") return null;
-
-  const key = _getEncKey();
 
   const ivB64 = String(enc.iv || "");
   const tagB64 = String(enc.tag || "");
@@ -1148,29 +1220,137 @@ function decryptSecret(enc) {
     throw err;
   }
 
-  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
-  decipher.setAuthTag(tag);
+  const cands = _collectEncKeyCandidates();
 
-  try {
-    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
-    return pt.toString("utf8");
-  } catch (e) {
-    const err = new Error("USER_SECRETS_DECRYPT_FAILED");
-    err.code = "USER_SECRETS_DECRYPT_FAILED";
-    err._fatal = true;
-    err.httpStatus = 500;
-    err.publicMessage =
-      "서버 암호화 키(env)가 DB에 저장된 키링/볼트 데이터와 일치하지 않거나, 저장된 암호문이 손상되었습니다. (USER_SECRETS_ENC_KEY_B64 등 암호화키 환경변수 확인 필요)";
-    err.detail = {
-      cause: e?.message || String(e),
-      alg: "aes-256-gcm",
-      key_len: key?.length || 0,
-      iv_len: iv.length,
-      tag_len: tag.length,
-      ct_len: ct.length,
-    };
-    throw err;
+  // ✅ 여러 키 후보로 복호화 시도 (키 변경/이중 세팅 대비)
+  for (const cand of cands) {
+    try {
+      const decipher = crypto.createDecipheriv("aes-256-gcm", cand.key, iv);
+      decipher.setAuthTag(tag);
+      const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+      return pt.toString("utf8");
+    } catch (_) {
+      // 다음 후보로 계속
+    }
   }
+
+  // 전부 실패
+  const err = new Error("USER_SECRETS_DECRYPT_FAILED");
+  err.code = "USER_SECRETS_DECRYPT_FAILED";
+  err._fatal = true;
+  err.httpStatus = 500;
+  err.publicMessage =
+    "서버 암호화 키(env)가 DB에 저장된 키링/볼트 데이터와 일치하지 않거나, 저장된 암호문이 손상되었습니다. (SETTINGS_ENC_KEY_B64 / USER_SECRETS_ENC_KEY / ENCRYPTION_KEY 값 확인 필요)";
+  err.detail = {
+    cause: "Unsupported state or unable to authenticate data",
+    alg: "aes-256-gcm",
+    key_candidates: cands.map((x) => ({ source: x.source, sha256_16: x.sha16 })),
+    iv_len: iv.length,
+    tag_len: tag.length,
+    ct_len: ct.length,
+  };
+  throw err;
+}
+
+// ─────────────────────────────
+// ✅ ADD: Enc key diagnostics (for /health diag only)
+// - 절대 "키 값"은 노출하지 않고 sha256 일부만 노출
+// ─────────────────────────────
+function getEncKeyDiagInfo() {
+  const ENV_NAMES = [
+    "USER_SECRETS_ENC_KEY_B64",
+    "SETTINGS_ENC_KEY_B64",
+    "USER_SECRETS_ENC_KEY",
+    "USER_SECRETS_MASTER_KEY",
+    "APP_ENC_KEY",
+    "ENCRYPTION_KEY",
+    "SETTINGS_ENCRYPTION_KEY",
+  ];
+
+  const sha16 = (buf) => {
+    try {
+      return crypto.createHash("sha256").update(buf).digest("hex").slice(0, 16);
+    } catch {
+      return null;
+    }
+  };
+
+  const parseKey = (raw) => {
+    const s = String(raw || "").trim();
+    if (!s) return null;
+
+    // 1) base64(32 bytes)
+    try {
+      const b = Buffer.from(s, "base64");
+      if (b.length === 32) return b;
+    } catch {}
+
+    // 2) hex(64 chars => 32 bytes)
+    if (/^[0-9a-fA-F]{64}$/.test(s)) {
+      try {
+        const b = Buffer.from(s, "hex");
+        if (b.length === 32) return b;
+      } catch {}
+    }
+
+    // 3) utf8(정확히 32 bytes)
+    try {
+      const b = Buffer.from(s, "utf8");
+      if (b.length === 32) return b;
+    } catch {}
+
+    return null;
+  };
+
+  const candidates = [];
+  for (const name of ENV_NAMES) {
+    const raw = String(process.env[name] || "").trim();
+    if (!raw) continue;
+
+    const k = parseKey(raw);
+    if (k && k.length === 32) {
+      candidates.push({
+        env: name,
+        parsed: true,
+        key_len: k.length,
+        sha256_16: sha16(k),
+      });
+    } else {
+      candidates.push({
+        env: name,
+        parsed: false,
+        reason: "present_but_not_32bytes",
+      });
+    }
+  }
+
+  // ✅ 실제 서버가 쓰는 "선택된 키"(_getEncKey 기준)도 같이 표시
+  let selected = null;
+  try {
+    const k0 = _getEncKey(); // Buffer(32) or throw
+    const s0 = sha16(k0);
+    const matched = candidates.find((c) => c.parsed && c.sha256_16 === s0) || null;
+
+    selected = {
+      key_len: k0?.length || 0,
+      sha256_16: s0,
+      matched_env: matched?.env || null,
+    };
+  } catch (e) {
+    selected = {
+      error: true,
+      code: e?.code || "ENC_KEY_ERROR",
+      message: e?.publicMessage || e?.message || String(e),
+    };
+  }
+
+  return {
+    ok: true,
+    provider: process.env.USER_SECRETS_PROVIDER || "supabase",
+    enc_ver_env: process.env.USER_SECRETS_ENC_VER || null,
+    selected,
+    candidates,
+  };
 }
 
 // ─────────────────────────────
@@ -7777,8 +7957,17 @@ app.get("/health", async (req, res) => {
   const diag = process.env.NODE_ENV !== "production" || isDiagAuthorized(req);
 
   let pac = { pt_date: null, next_reset_utc: null };
+  let enc_diag = null;
+
   if (diag) {
     try { pac = await getPacificResetInfoCached(); } catch {}
+    try { enc_diag = getEncKeyDiagInfo(); } catch (e) {
+      enc_diag = {
+        ok: false,
+        code: e?.code || "ENC_DIAG_ERROR",
+        message: e?.publicMessage || e?.message || String(e),
+      };
+    }
   }
 
   return res.status(200).json({
@@ -7790,6 +7979,7 @@ app.get("/health", async (req, res) => {
       region: REGION,
       pacific_pt_date: pac.pt_date,
       pacific_next_reset_utc: pac.next_reset_utc,
+      enc_diag, // ✅ 여기!
     } : {}),
   });
 });
