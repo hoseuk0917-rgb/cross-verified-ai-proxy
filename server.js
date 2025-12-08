@@ -1137,14 +1137,13 @@ function decryptSecret(enc) {
   const tag = Buffer.from(tagB64, "base64");
   const ct = Buffer.from(ctB64, "base64");
 
-  // ✅ 최소 무결성 체크(깨진 blob / 잘못된 저장 형태)
+  // ✅ 최소 무결성 체크
   if (!iv.length || !tag.length || !ct.length) {
     const err = new Error("USER_SECRETS_ENC_BLOB_INVALID");
     err.code = "USER_SECRETS_ENC_BLOB_INVALID";
     err._fatal = true;
     err.httpStatus = 500;
-    err.publicMessage =
-      "저장된 키링/볼트 데이터 형식이 올바르지 않습니다. (iv/tag/ct 누락 또는 손상)";
+    err.publicMessage = "저장된 키링/볼트 데이터 형식이 올바르지 않습니다. (iv/tag/ct 누락 또는 손상)";
     err.detail = { iv_len: iv.length, tag_len: tag.length, ct_len: ct.length };
     throw err;
   }
@@ -1156,8 +1155,6 @@ function decryptSecret(enc) {
     const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
     return pt.toString("utf8");
   } catch (e) {
-    // ✅ 여기서 나는 대표 에러가: "Unsupported state or unable to authenticate data"
-    //    = (1) 서버 암호화키가 바뀜/불일치 OR (2) tag/ct가 손상됨
     const err = new Error("USER_SECRETS_DECRYPT_FAILED");
     err.code = "USER_SECRETS_DECRYPT_FAILED";
     err._fatal = true;
