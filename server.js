@@ -39,8 +39,98 @@ import "express-async-errors";
 // ✅ LV (법령검증) 모듈 외부화
 import { fetchKLawAll } from "./src/modules/klaw_module.js";
 
-// ✅ 번역모듈 (DeepL + Gemini Flash-Lite fallback)
-import { translateText } from "./src/modules/translateText.js";
+// ─────────────────────────────
+// ✅ Translation Module (DeepL v2 + safe return)
+//   - DeepL key가 :fx 면 api-free, 아니면 api
+//   - 실패하면 throw 하지 않고 engine:"none"으로 돌려서 상위에서 Gemini fallback 가능하게 함
+// ─────────────────────────────
+
+const DEEPL_TIMEOUT_MS = parseInt(process.env.DEEPL_TIMEOUT_MS || "25000", 10);
+
+function _normTargetLang(t) {
+  const s = String(t || "").trim().toUpperCase();
+  // DeepL은 보통 EN/KO/JA/DE/FR 등, 지역코드(EN-US)도 지원
+  return s || "EN";
+}
+
+function _deeplBaseForKey(key) {
+  const k = String(key || "").trim();
+  if (!k) return null;
+  // DeepL Free 키는 보통 ":fx"로 끝남
+  return k.endsWith(":fx") ? "https://api-free.deepl.com" : "https://api.deepl.com";
+}
+
+// ✅ 기존 호출부 호환용 시그니처 유지: (text, targetLang, deepl_key, gemini_key)
+//   - gemini_key는 여기서는 사용 안 함 (상위에서 fallback 처리)
+async function translateText(text, targetLang, deepl_key, _gemini_key_unused) {
+  const input = String(text ?? "");
+  const key = String(deepl_key || "").trim();
+  const tgt = _normTargetLang(targetLang);
+
+  if (!key) {
+    return { text: input, engine: "none", target: tgt, error: "DEEPL_KEY_MISSING" };
+  }
+
+  const base = _deeplBaseForKey(key);
+  if (!base) {
+    return { text: input, engine: "none", target: tgt, error: "DEEPL_BASE_RESOLVE_FAILED" };
+  }
+
+  const url = `${base}/v2/translate`;
+
+  try {
+    const params = new URLSearchParams();
+    params.append("text", input);
+    params.append("target_lang", tgt);
+
+    const resp = await axios.post(url, params, {
+      timeout: DEEPL_TIMEOUT_MS,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        // DeepL 공식 권장: Authorization: DeepL-Auth-Key <key>
+        Authorization: `DeepL-Auth-Key ${key}`,
+        // 일부 구현 호환용(있어도 무해)
+        "DeepL-Auth-Key": key,
+      },
+      validateStatus: () => true,
+    });
+
+    const ok = resp.status >= 200 && resp.status < 300;
+    const out = resp?.data?.translations?.[0]?.text;
+
+    if (ok && out && String(out).trim()) {
+      return {
+        text: String(out),
+        engine: "deepl",
+        target: tgt,
+        meta: {
+          detected_source_language: resp?.data?.translations?.[0]?.detected_source_language ?? null,
+          status: resp.status,
+          base,
+        },
+      };
+    }
+
+    const msg =
+      (typeof resp?.data === "string" ? resp.data :
+        resp?.data?.message || resp?.data?.error || JSON.stringify(resp?.data || {}));
+
+    return {
+      text: input,
+      engine: "none",
+      target: tgt,
+      error: `DEEPL_HTTP_${resp.status}:${String(msg).slice(0, 200)}`,
+      meta: { status: resp.status, base },
+    };
+  } catch (e) {
+    return {
+      text: input,
+      engine: "none",
+      target: tgt,
+      error: `DEEPL_EXCEPTION:${e?.message || String(e)}`,
+    };
+  }
+}
 
 // ─────────────────────────────
 // ✅ Timeout / retry / timebox utils
@@ -7296,34 +7386,94 @@ ${text}
 
 if (deeplKeyFinal) {
   // DeepL 우선
-  result = await translateText(
-    text,
-    tgt || null,
-    deeplKeyFinal ?? null,
-    geminiKeyFinal ?? null
-  );
+  let deeplErr = null;
 
-  // ✅ DeepL이 “none/원문그대로”로 떨어지면 Gemini로 fallback
-  const eng = String(result?.engine || "").toLowerCase();
-  const sameAsInput = String(result?.text || "").trim() === String(text || "").trim();
+  try {
+    result = await translateText(
+      text,
+      tgt || null,
+      deeplKeyFinal ?? null,
+      geminiKeyFinal ?? null
+    );
+  } catch (e) {
+    deeplErr = e;
+    // DeepL이 throw면 일단 "none + 원문"으로 두고, 아래에서 Gemini fallback(가능할 때만)
+    result = { text: String(text ?? "").trim(), engine: "none", target: tgt };
+  }
 
-  if ((eng === "none" || !result?.text || sameAsInput) && canUseGemini) {
+  // ✅ DeepL 호출 직후(DeepL 결과를 받은 다음)에:
+try {
+  console.log("ℹ️ /api/translate DeepL-after:", {
+    engine: String(result?.engine || ""),
+    status: result?.meta?.status ?? null,
+    base: result?.meta?.base ?? null,
+    error: result?.error ?? null,
+    deeplErr: deeplErr ? (deeplErr.message || String(deeplErr)) : null,
+  });
+} catch {}
+
+  const _in = String(text ?? "").trim();
+
+  // result가 string이거나, {text}/{translated}/{translation} 형태여도 안전하게 읽기
+  const _out0 =
+    typeof result === "string"
+      ? String(result).trim()
+      : String(result?.text ?? result?.translated ?? result?.translation ?? "").trim();
+
+  const _eng0 =
+    typeof result === "object" && result
+      ? String(result?.engine ?? "").toLowerCase()
+      : "";
+
+  const _looksNone0 = (_eng0 === "none" || !_out0 || _out0 === _in);
+
+  // ✅ DeepL이 none/원문이면: "Gemini 사용 가능(canUseGemini)할 때만" fallback
+  if (_looksNone0 && canUseGemini) {
     result = await geminiTranslate();
   }
 
-  // ✅ 그래도 none이면 성공으로 보내지 말고 에러로 처리
-  const eng2 = String(result?.engine || "").toLowerCase();
-  const same2 = String(result?.text || "").trim() === String(text || "").trim();
-  if (eng2 === "none" || !result?.text || same2) {
+  // 최종 결과 재평가
+  const _out1 =
+    typeof result === "string"
+      ? String(result).trim()
+      : String(result?.text ?? result?.translated ?? result?.translation ?? "").trim();
+
+  const _eng1 =
+    typeof result === "object" && result
+      ? String(result?.engine ?? "").toLowerCase()
+      : "";
+
+  const _looksNone1 = (_eng1 === "none" || !_out1 || _out1 === _in);
+
+  // ✅ 최종도 none/원문이면 성공으로 보내지 말고 에러 처리
+  if (_looksNone1) {
     const e = new Error("TRANSLATION_NO_ENGINE_EXECUTED");
     e.code = "TRANSLATION_NO_ENGINE_EXECUTED";
+    e.detail = {
+      deepl_failed: !!deeplErr,
+      deepl_err: deeplErr ? (deeplErr.message || String(deeplErr)) : null,
+      has_deepl: !!deeplKeyFinal,
+      can_use_gemini: !!canUseGemini,
+    };
     throw e;
   }
+
+  // ✅ 응답에서 result.text를 쓰니까: 결과를 반드시 {text, engine, target}로 정규화
+  if (typeof result === "string") {
+    result = { text: _out1, engine: "deepl", target: tgt };
+  } else if (!result || typeof result !== "object") {
+    result = { text: _out1, engine: "deepl", target: tgt };
+  } else {
+    if (result.text == null) result.text = _out1;
+    if (!result.engine) result.engine = "deepl";
+    if (!result.target) result.target = tgt;
+  }
+
 } else {
   // DeepL 없으면 Gemini
   result = await geminiTranslate();
 }
-
+  
     // 5) 성공 응답 (ⅩⅤ 규약: buildSuccess 사용)
     return res.json(
       buildSuccess({
@@ -7463,6 +7613,14 @@ if (logUserId) {
 }
 
     const canUseGemini = !!geminiKeyFinal || geminiKeysCount > 0;
+    console.log("ℹ️ /api/translate key-state:", {
+    userId: userId || null,
+    has_deepl: !!deeplKeyFinal,
+    deepl_len: deeplKeyFinal ? String(deeplKeyFinal).length : 0,
+    geminiKeysCount,
+    has_gemini_body: !!geminiKeyFinal,
+    canUseGemini,
+    });
 
     const safeMode = (mode || "chunk").toString().toLowerCase();
     if (!["chunk", "final"].includes(safeMode)) {
