@@ -1768,6 +1768,7 @@ function getJsonBody(req) {
   return {};
 }
 
+
 async function getSupabaseAuthUser(req) {
   // ✅ request 단위 캐시 (null도 캐시)
   if (Object.prototype.hasOwnProperty.call(req, "_supabaseAuthUser")) {
@@ -4525,12 +4526,100 @@ function computeEngineCorrectionFactor(engines = [], statsMap = {}) {
   return Math.max(0.9, Math.min(1.1, C));
 }
 
+// =======================================================
+// Snippet Verification Shim (/api/verify-snippet)
+//   - Convert snippet payload -> FV verify payload
+// =======================================================
+function snippetToVerifyBody(req, res, next) {
+  const b = getJsonBody(req);
+
+  const snippetRaw = String(
+    b?.snippet ?? b?.snippet_text ?? b?.text ?? ""
+  ).trim();
+
+  const question = String(
+    b?.question ?? b?.prompt ?? ""
+  ).trim();
+
+  if (!snippetRaw) {
+    return res.status(400).json(buildError("VALIDATION_ERROR", "snippet is required"));
+  }
+
+  // ✅ hard clip to match enforceVerifyPayloadLimits
+  const clippedCore = snippetRaw.slice(0, VERIFY_MAX_CORE_TEXT_CHARS);
+  const fallbackQuery = (question || snippetRaw.slice(0, 280)).trim();
+
+  // ✅ drop raw snippet fields to avoid collisions
+  const {
+    snippet: __drop_snippet,
+    snippet_text: __drop_snippet_text,
+    text: __drop_text,
+    question: __drop_question,
+    prompt: __drop_prompt,
+    ...rest
+  } = b;
+
+  const clippedUserAnswer = String(rest.user_answer ?? clippedCore)
+    .slice(0, VERIFY_MAX_USER_ANSWER_CHARS);
+
+  req.body = {
+    ...rest,
+
+    // ✅ force FV
+    mode: "fv",
+
+    // ✅ FV core_text = snippet
+    core_text: clippedCore,
+
+    // ✅ keep/clip user_answer
+    user_answer: clippedUserAnswer,
+
+    // ✅ preserve original intent
+    rawQuery: String(rest.rawQuery ?? (question || rest.query || "")).trim(),
+    query: String(rest.query ?? fallbackQuery).trim(),
+
+    // ✅ default model for snippet verify
+    gemini_model: rest.gemini_model ?? "flash",
+  };
+
+  return next();
+}
+
+  const fallbackQuery = (question || snippet.slice(0, 280)).trim();
+
+  // ✅ 원본 스니펫 필드 drop (payload allowlist/limits 충돌 방지)
+  const {
+    snippet: __drop_snippet,
+    snippet_text: __drop_snippet_text,
+    text: __drop_text,
+    question: __drop_question,
+    prompt: __drop_prompt,
+    ...rest
+  } = _body;
+
+  req.body = {
+    ...rest,
+
+    // 스니펫 검증은 FV로 고정
+    mode: "fv",
+    core_text: snippet,
+
+    // 너무 길면 payload limit 걸릴 수 있어서 캡
+    user_answer: (rest.user_answer ?? snippet.slice(0, 2000)),
+
+    rawQuery: String(rest.rawQuery ?? (question || rest.query || "")).trim(),
+    query: String(rest.query ?? fallbackQuery).trim(),
+
+    // ✅ 스니펫은 기본 flash(속도/비용 안정). 클라가 gemini_model 주면 존중.
+    gemini_model: rest.gemini_model ?? "flash",
+  };
+
 // ─────────────────────────────
 // ✅ Verify Core (QV / FV / DV / CV / LV)
 //   - DV/CV: GitHub 기반 TruthScore 직접 계산 (Gemini→GitHub)
 //   - LV: TruthScore 없이 K-Law 결과만 제공 (Ⅸ 명세 반영)
 // ─────────────────────────────
-app.post("/api/verify", verifyRateLimit, enforceVerifyPayloadLimits, requireVerifyAuth, guardProdKeyUuid, async (req, res) => {
+const verifyCoreHandler = async (req, res) => {
   // ✅ TDZ 방지: verify 핸들러 스코프에서 먼저 선언
   let ghUserText = String(req.body?.query || "").trim();
 
@@ -4567,10 +4656,42 @@ app.post("/api/verify", verifyRateLimit, enforceVerifyPayloadLimits, requireVeri
   } = req.body;
 
   const safeMode = (mode || "").trim().toLowerCase();
+  // ✅ normalize rawQuery/key_uuid without redeclare 폭탄
+const rawQuery = String(req.body?.rawQuery ?? "").trim();
+const key_uuid = String(req.body?.key_uuid ?? req.body?.keyUuid ?? "").trim();
 
-  // ✅ DV/CV(=GitHub-only)에서 비코드 질의가 들어오는 걸 조기에 차단하기 위한 휴리스틱
-const rawQuery = (typeof query === "string" ? query : "").trim();
+// ✅ S-17: cache hit (QV/FV heavy path) — MUST be before heavy work/switch
 let __cacheKey = null;
+if (safeMode === "qv" || safeMode === "fv") {
+  __cacheKey = makeVerifyCacheKey({
+    mode: safeMode,
+    query,
+    rawQuery,
+    core_text,
+    user_answer,
+    answerText,
+    key_uuid,
+  });
+
+  const __cachedPayload = __cacheKey ? verifyCacheGet(__cacheKey) : null;
+  if (__cachedPayload) {
+    const elapsedMs = Date.now() - start;
+
+    const out = {
+      ...__cachedPayload,
+      elapsed: elapsedMs,
+      cached: true,
+    };
+
+    if (out.partial_scores && typeof out.partial_scores === "object") {
+      out.partial_scores = { ...out.partial_scores, cache_hit: true };
+    } else {
+      out.partial_scores = { cache_hit: true };
+    }
+
+    return res.json(buildSuccess(out));
+  }
+}
 
 // ✅ (B안 보강) Gemini sentinel이 가끔 뚫려도 "명백한 비코드(통계/정책/일반사실)"는 DV/CV에서 차단
 const looksObviouslyNonCode = (s) => {
@@ -5205,19 +5326,6 @@ if (naverPool.length > 0) {
 
 // ✅ GitHub 관련 로직에서 항상 쓰는 텍스트(= TDZ 방지)
 ghUserText = String(query || "").trim();
-
-// ✅ S-17: cache hit (QV/FV heavy path)
-if (safeMode === "qv" || safeMode === "fv") {
-  __cacheKey = makeVerifyCacheKey({
-    mode: safeMode,
-    query,
-    rawQuery,
-    user_answer,
-    // answerText는 QV/FV에서 사실상 query라 필수 아님. 넣고 싶으면 유지해도 OK.
-    answerText,
-    key_uuid: req.body?.key_uuid,
-  });
-}
 
 const __cachedPayload = __cacheKey ? verifyCacheGet(__cacheKey) : null;
 if (__cachedPayload) {
@@ -7300,7 +7408,88 @@ const status =
 
 return res.status(status).json(buildError("INTERNAL_SERVER_ERROR", "서버 내부 오류 발생", e?.message));
   }
-});
+};
+
+app.post(
+  "/api/verify",
+  blockDevRoutesInProd,
+  verifyRateLimit,
+  guardProdKeyUuid,
+  requireVerifyAuth,
+  rejectLvOnVerify,
+  enforceVerifyPayloadLimits,
+  verifyCoreHandler
+);
+
+// ✅ Snippet verification endpoint (web/PC/extension)
+app.post(
+  "/api/verify-snippet",
+  blockDevRoutesInProd,
+  verifyRateLimit,
+  guardProdKeyUuid,
+  requireVerifyAuth,
+  snippetToVerifyBody,
+  rejectLvOnVerify,
+  enforceVerifyPayloadLimits,
+  verifyCoreHandler
+);
+
+// ✅ /api/verify에서는 lv 금지 (LV는 /api/lv 전용)
+function rejectLvOnVerify(req, res, next) {
+  const m = String(req.body?.mode || "").trim().toLowerCase();
+  if (m === "lv") {
+    return res
+      .status(400)
+      .json(buildError("LV_ENDPOINT_REQUIRED", "LV 모드는 /api/lv 엔드포인트를 사용하세요."));
+  }
+  return next();
+}
+
+// ✅ LV endpoint (keeps existing LV logic inside verifyCoreHandler)
+function forceLvMode(req, _res, next) {
+  const b = (req.body && typeof req.body === "object") ? req.body : {};
+
+  // query가 없으면 question/prompt도 받아주기
+  const q0 =
+    (typeof b.query === "string" && b.query.trim()) ||
+    (typeof b.question === "string" && b.question.trim()) ||
+    (typeof b.prompt === "string" && b.prompt.trim()) ||
+    "";
+
+  const cleaned = {};
+  const put = (k, v) => {
+    if (v === undefined || v === null) return;
+    if (typeof v === "string" && v.trim() === "") return;
+    cleaned[k] = v;
+  };
+
+  // ✅ LV는 이 필드만 통과(나머지는 drop)
+  put("query", String(q0).slice(0, VERIFY_MAX_QUERY_CHARS || 5000));
+  put("rawQuery", b.rawQuery);
+
+  put("user_id", b.user_id);
+  put("user_email", b.user_email);
+  put("user_name", b.user_name);
+  put("key_uuid", b.key_uuid);
+
+  put("klaw_key", b.klaw_key);
+  put("gemini_key", b.gemini_key);
+  put("gemini_model", b.gemini_model);
+  put("debug", b.debug);
+
+  cleaned.mode = "lv";
+  req.body = cleaned;
+  return next();
+}
+
+app.post("/api/lv",
+  verifyRateLimit,
+  forceLvMode,
+  enforceVerifyPayloadLimits,
+  requireVerifyAuth,
+  guardProdKeyUuid,
+  verifyCoreHandler
+);
 
 // ✅ 번역 테스트 라우트 (간단형, 백호환용)
 app.post("/api/translate", async (req, res) => {
@@ -7419,7 +7608,7 @@ try {
   });
 } catch {}
 
-  const _in = String(text ?? "").trim();
+  const _in = String(safeText ?? text ?? "").trim();
 
   // result가 string이거나, {text}/{translated}/{translation} 형태여도 안전하게 읽기
   const _out0 =
@@ -7493,7 +7682,7 @@ try {
     console.error("❌ /api/translate Error:", e.message);
     console.error("❌ /api/translate stack:", e?.stack || e);
 
-    // ✅ 키링 소진은 /api/verify와 동일하게 200 + 코드로 내려주기
+    // ✅ 키링 소진은 /api/verify(/api/verify-snippet)와 동일하게 200 + 코드로 내려주기
     if (e?.code === "GEMINI_KEY_EXHAUSTED") {
       return res.status(200).json(
         buildError(
@@ -7620,7 +7809,7 @@ if (logUserId) {
 }
 
     const canUseGemini = !!geminiKeyFinal || geminiKeysCount > 0;
-    console.log("ℹ️ /api/translate key-state:", {
+    console.log("ℹ️ /api/docs/analyze key-state:", {
     userId: userId || null,
     has_deepl: !!deeplKeyFinal,
     deepl_len: deeplKeyFinal ? String(deeplKeyFinal).length : 0,
@@ -7706,6 +7895,14 @@ if (logUserId) {
     let summaryResult = null;
     let translateResult = null;
 
+    // ✅ (핵심) translateResult에 최종 번역 결과를 반드시 저장 (응답에서 사용)
+translateResult = {
+  text: String(tr?.text ?? tr?.translated ?? tr?.translation ?? "").trim(),
+  engine: String(tr?.engine ?? "none"),
+  targetLang:
+    (String(tr?.targetLang ?? tr?.target ?? __docTgtLang).trim().toUpperCase() || __docTgtLang),
+};
+
     // ─────────────────────────────
     // 1) 요약 (Gemini 2.5 Flash)
     // ─────────────────────────────
@@ -7787,17 +7984,18 @@ ${srcText}
 };
 
 if (wantsTranslate) {
-  const _in = String(text ?? "").trim();
+  const _in = String(safeText ?? text ?? "").trim();
 
   // 1) DeepL 먼저 시도
   if (deeplKeyFinal) {
     try {
       tr = await translateText(
-        text,
-        __docTgtLang,
-        deeplKeyFinal ?? null,
-        geminiKeyFinal ?? null
-      );
+  safeText,
+  __docTgtLang,
+  deeplKeyFinal ?? null,
+  geminiKeyFinal ?? null
+  
+);
     } catch (e) {
       // DeepL이 예외 던지면 "none + 원문"으로 두고 아래에서 평가
       tr = {
@@ -7807,6 +8005,12 @@ if (wantsTranslate) {
         error: `DEEPL_EXCEPTION:${e?.message || String(e)}`,
       };
     }
+    // ✅ (핵심) translateResult에 최종 번역 결과를 반드시 저장 (응답에서 사용)
+translateResult = {
+  text: String(tr?.text ?? tr?.translated ?? tr?.translation ?? "").trim(),
+  engine: String(tr?.engine ?? "none"),
+  targetLang: (String(tr?.targetLang ?? tr?.target ?? __docTgtLang).trim().toUpperCase() || __docTgtLang),
+};
   }
 
   // 2) DeepL 결과 평가
@@ -7824,7 +8028,7 @@ if (wantsTranslate) {
 
   // 3) none/원문 + Gemini 사용 가능하면 fallback
   if (_looksNone0 && canUseGemini) {
-    tr = await __geminiTranslateDoc(text);
+    tr = await __geminiTranslateDoc(safeText);
   }
 
   // 4) 최종 평가
