@@ -3589,17 +3589,52 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
   }
 }
 
-// ✅ ADD: Rotation wrapper
-// - 우선순위: (1) 요청에서 gemini_key(keyHint) 왔으면 1회 시도 → (401/403/429)면 DB 키링으로
-// - DB 키링은 (429/401/403/INVALID_KEY)이면 해당 key_id를 exhausted로 기록하고 다음 키로 자동교체
 async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} }) {
   const label0 = opts.label || `gemini:${model}`;
   const hint = String(keyHint || "").trim();
 
   const getStatus = (e) =>
-    e?.response?.status ?? e?.status ?? e?.statusCode ?? null;
+    e?.response?.status ?? e?.status ?? e?.statusCode ?? e?.httpStatus ?? null;
 
-  // 0) hint(요청 body 등)로 1회 시도 → (401/403/429)면 keyring으로 fallback
+  const _mergedErrMsg = (e) => {
+    const msg0 = String(e?.message || "");
+    const msg1 = String(e?.detail?.message || "");
+    const msg2 = String(e?.response?.data?.error?.message || "");
+    return `${msg0} ${msg1} ${msg2}`.trim();
+  };
+
+  const _isInvalidKey = (e) => {
+    const merged = _mergedErrMsg(e);
+    return (
+      e?.code === "INVALID_GEMINI_KEY" ||
+      /api key not valid/i.test(merged)
+    );
+  };
+
+  const _parseRetryAfterMs = (e) => {
+    const msg = _mergedErrMsg(e);
+
+    // (1) message: "Please retry in ..."
+    let raMs = null;
+    const mMs = msg.match(/retry in\s+([0-9.]+)\s*ms/i);
+    const mS = msg.match(/retry in\s+([0-9.]+)\s*s/i);
+    if (mMs) raMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
+    else if (mS) raMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
+
+    // (2) header: Retry-After
+    if (raMs == null) {
+      const ra = e?.response?.headers?.["retry-after"] ?? e?.response?.headers?.["Retry-After"];
+      if (ra != null) {
+        const sec = parseFloat(String(ra).trim());
+        if (Number.isFinite(sec)) raMs = Math.max(0, Math.ceil(sec * 1000));
+      }
+    }
+
+    if (raMs == null) raMs = 60000; // fallback 60s
+    return raMs;
+  };
+
+  // 0) hint(body에서 온 keyHint) 1회 시도 -> 401/403/429면 keyring으로 fallback
   if (hint) {
     try {
       return await fetchGeminiRaw({
@@ -3611,38 +3646,40 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
     } catch (e) {
       const st = getStatus(e);
       console.error("Gemini call failed:", `${label0}#hint`, `status=${st}`, geminiErrMessage(e));
-
-      // 이 3개만 fallback 허용
       if (st !== 401 && st !== 403 && st !== 429) throw e;
-      // fallthrough → keyring
+      // fallthrough -> keyring
     }
   }
 
-  // 1) keyring 사용에는 userId 필요
-  if (!userId) {
-    const err = new Error("Gemini keyring requires userId (no gemini_key provided).");
-    err.code = "GEMINI_KEY_MISSING";
-    throw err;
-  }
+  // 1) keyring rotating
+  const row0 = await loadUserSecretsRow(userId);
+  let secrets0 = _ensureGeminiSecretsShape(row0.secrets);
+
+  const pac = await ensureGeminiResetIfNeeded(userId, secrets0);
+  const pt_date_now = pac.pt_date;
 
   const tried = new Set();
   let lastErr = null;
   let lastKctx = null;
 
-  const maxAttempts = Number.isFinite(opts?.maxAttempts) ? opts.maxAttempts : 12;
+  const keysCount0 = Array.isArray(secrets0?.gemini?.keyring?.keys) ? secrets0.gemini.keyring.keys.length : 0;
+  const maxTries = Math.max(1, keysCount0 + 1);
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const kctx = await getGeminiKeyFromDB(userId); // {gemini_key, key_id, pt_date, next_reset_utc}
+  for (let t = 0; t < maxTries; t++) {
+    let kctx;
+    try {
+      kctx = await getGeminiKeyFromDB(userId);
+    } catch (e) {
+      lastErr = e;
+      break;
+    }
+
     lastKctx = kctx;
 
-    const keyId = String(kctx?.key_id ?? "unknown");
     const key = String(kctx?.gemini_key || "").trim();
+    const keyId = kctx?.key_id || null;
 
-    if (!key) {
-      const err = new Error("Gemini keyring returned empty key.");
-      err.code = "GEMINI_KEY_MISSING";
-      throw err;
-    }
+    if (!key || !keyId) break;
 
     // 같은 key_id만 계속 나오면 무한루프 방지
     if (tried.has(keyId)) break;
@@ -3656,145 +3693,77 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         opts: { ...opts, label: `${label0}#${keyId}` },
       });
     } catch (e) {
-  lastErr = e;
-  const st = getStatus(e);
+      lastErr = e;
+      const st = getStatus(e);
 
-  const _msg0 = String(e?.message || "");
-  const _msg1 = String(geminiErrMessage(e) || "");
-  const _msg = (_msg0 + " " + _msg1).trim();
+      // 핵심: 401/403은 “소진”이 아니라 “키/제한 문제”일 가능성이 큼 → 다음 키로 넘김
+      console.error("Gemini call failed:", `${label0}#${keyId}`, `status=${st}`, geminiErrMessage(e));
 
-  console.error("Gemini call failed:", `${label0}#${keyId}`, `status=${st}`, _msg1 || _msg0);
+      if (st === 429) {
+        const raMs = _parseRetryAfterMs(e);
+        await markGeminiKeyRateLimitedById(userId, keyId, raMs);
+        continue;
+      }
 
- if (st === 429) {
-  // 429: “키 소진”이 아니라 “레이트리밋” -> 잠깐 쿨다운 + 다음 키로 회전
-  const msg = String(e?.message || "");
-  let raMs = null;
+      // ✅ 400 invalid key / 401 / 403 => "오늘만 exhausted" 처리해서 회전
+      if (st === 401 || st === 403 || (st === 400 && _isInvalidKey(e)) || _isInvalidKey(e)) {
+        const row = await loadUserSecretsRow(userId);
+        let secrets = _ensureGeminiSecretsShape(row.secrets);
+        await markGeminiKeyExhausted(userId, secrets, keyId, lastKctx?.pt_date ?? pt_date_now ?? null);
+        continue;
+      }
 
-  const mMs = msg.match(/retry in\s+([0-9.]+)\s*ms/i);
-  const mS  = msg.match(/retry in\s+([0-9.]+)\s*s/i);
-  if (mMs) raMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
-  else if (mS) raMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
-
-  if (raMs == null) {
-    const ra = e?.response?.headers?.["retry-after"] ?? e?.response?.headers?.["Retry-After"];
-    if (ra != null) {
-      const sec = parseFloat(String(ra).trim());
-      if (Number.isFinite(sec)) raMs = Math.max(0, Math.ceil(sec * 1000));
+      throw e;
     }
   }
 
-  if (raMs == null) raMs = 60000;
-  await markGeminiKeyRateLimitedById(userId, keyId, raMs);
-  continue;
-}
+  // 2) 여기까지 오면: hint 실패 + keyring도 전부 실패
+  const err = new Error("Gemini keys are not usable. (keyring)");
 
-// ✅ 400 invalid key => 영구제외 말고 "오늘만 exhausted" 처리해서 회전
-{
-  const msg0 = String(e?.message || "");
-  const msg1 = String(e?.detail?.message || "");
-  const msg2 = String(e?.response?.data?.error?.message || "");
-  const merged = `${msg0} ${msg1} ${msg2}`;
+  const _keysStoredCount =
+    Number.isFinite(lastKctx?.keys_count) ? lastKctx.keys_count :
+    Number.isFinite(lastKctx?.keysCount) ? lastKctx.keysCount :
+    null;
 
-  const isInvalidKey =
-    e?.code === "INVALID_GEMINI_KEY" ||
-    /api key not valid/i.test(merged);
+  const _lastMsg = lastErr ? String(lastErr?.message || lastErr) : null;
+  const _lastStatus =
+    Number.isFinite(lastErr?.response?.status) ? lastErr.response.status :
+    Number.isFinite(lastErr?.status) ? lastErr.status :
+    Number.isFinite(lastErr?.httpStatus) ? lastErr.httpStatus :
+    null;
 
-  if (isInvalidKey) {
-    console.warn("⚠️ Gemini invalid key detected; exhausting for today:", keyId);
+  const _is429 =
+    _lastStatus === 429 ||
+    (_lastMsg && /status\s*=?\s*429|quota exceeded|rate limit|generate_content_free_tier_requests/i.test(_lastMsg));
 
-    const row = await loadUserSecretsRow(userId);
-    let secrets = _ensureGeminiSecretsShape(row.secrets);
-
-    await markGeminiKeyExhausted(
-      userId,
-      secrets,
-      keyId,
-      lastKctx?.pt_date ?? pt_date_now ?? null
-    );
-
-    continue;
+  let _retryAfterMs = null;
+  if (_lastMsg) {
+    const mMs = _lastMsg.match(/retry in\s+([0-9.]+)\s*ms/i);
+    const mS  = _lastMsg.match(/retry in\s+([0-9.]+)\s*s/i);
+    if (mMs) _retryAfterMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
+    else if (mS) _retryAfterMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
   }
-}
-}
-
-if (st === 401 || st === 403) {
-  // 401/403은 권한/키 문제 가능성이 큼 -> 다음 키로 넘김(=exhausted 처리)
-  const row = await loadUserSecretsRow(userId);
-  let secrets = _ensureGeminiSecretsShape(row.secrets);
-  await markGeminiKeyExhausted(userId, secrets, keyId, lastKctx?.pt_date ?? null);
-  continue;
-}
-
-if (st === 400) {
-  // 400 중 “API key not valid”는 키 문자열 자체가 구글에서 거부된 것(오타/폐기/제한/깨짐 등)
-  // -> 영구 제외는 안 하고, "오늘만 exhausted" 처리해서 회전만 시킴
-  const msg0 = String(e?.message || "");
-  const msg1 = String(e?.response?.data?.error?.message || "");
-  const merged = `${msg0} ${msg1}`;
-
-  if (/api key not valid/i.test(merged)) {
-    const row = await loadUserSecretsRow(userId);
-    let secrets = _ensureGeminiSecretsShape(row.secrets);
-
-    // pt_date가 없으면 null로 넣어도 되고, 있으면 그걸 사용
-    await markGeminiKeyExhausted(userId, secrets, keyId, lastKctx?.pt_date ?? null);
-    continue;
-  }
-}
-
-throw e;
-}
+  if (_retryAfterMs == null) {
+    const ra = lastErr?.response?.headers?.["retry-after"] ?? lastErr?.response?.headers?.["Retry-After"];
+    if (ra != null) {
+      const sec = parseFloat(String(ra).trim());
+      if (Number.isFinite(sec)) _retryAfterMs = Math.max(0, Math.ceil(sec * 1000));
+    }
   }
 
-  // 2) 여기까지 오면: hint도 실패 + keyring 키도 전부 실패
-const err = new Error("Gemini keys are not usable. (keyring)");
+  err.code = _is429 ? "GEMINI_RATE_LIMIT" : "GEMINI_KEY_EXHAUSTED";
+  err.detail = {
+    keysCount: (_keysStoredCount ?? tried.size),
+    keysTriedCount: tried.size,
+    pt_date: pt_date_now,
+    next_reset_utc: pac.next_reset_utc,
+    last_error: _lastMsg,
+    last_status: _lastStatus,
+    retry_after_ms: _retryAfterMs,
+  };
 
-const _keysStoredCount =
-  Number.isFinite(lastKctx?.keys_count) ? lastKctx.keys_count :
-  Number.isFinite(lastKctx?.keysCount) ? lastKctx.keysCount :
-  null;
-
-const _lastMsg = lastErr ? String(lastErr?.message || lastErr) : null;
-const _lastStatus =
-  Number.isFinite(lastErr?.response?.status) ? lastErr.response.status :
-  Number.isFinite(lastErr?.status) ? lastErr.status :
-  Number.isFinite(lastErr?.httpStatus) ? lastErr.httpStatus :
-  null;
-
-const _is429 =
-  _lastStatus === 429 ||
-  (_lastMsg && /status\s*=?\s*429|quota exceeded|rate limit|generate_content_free_tier_requests/i.test(_lastMsg));
-
-let _retryAfterMs = null;
-// (1) 메시지: "Please retry in ..."
-if (_lastMsg) {
-  const mMs = _lastMsg.match(/retry in\s+([0-9.]+)\s*ms/i);
-  const mS  = _lastMsg.match(/retry in\s+([0-9.]+)\s*s/i);
-  if (mMs) _retryAfterMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
-  else if (mS) _retryAfterMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
+  throw err;
 }
-// (2) 헤더: Retry-After
-if (_retryAfterMs == null) {
-  const ra = lastErr?.response?.headers?.["retry-after"] ?? lastErr?.response?.headers?.["Retry-After"];
-  if (ra != null) {
-    const sec = parseFloat(String(ra).trim());
-    if (Number.isFinite(sec)) _retryAfterMs = Math.max(0, Math.ceil(sec * 1000));
-  }
-}
-
-err.code = _is429 ? "GEMINI_RATE_LIMIT" : "GEMINI_KEY_EXHAUSTED";
-
-err.detail = {
-  keysCount: (_keysStoredCount ?? tried.size),   // 기존 필드 유지(호환)
-  keysTriedCount: tried.size,                    // ✅ 이번 요청에서 실제 시도한 키 수
-  pt_date: pt_date_now,
-  next_reset_utc: pac.next_reset_utc,
-  last_error: _lastMsg,
-  last_status: _lastStatus,
-  retry_after_ms: _retryAfterMs,
-};
-
-throw err;
 
 // ─────────────────────────────
 // ✅ 유효성 (Vᵣ) 계산식 — GitHub 기반
