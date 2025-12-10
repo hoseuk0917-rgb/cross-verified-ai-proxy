@@ -4631,7 +4631,8 @@ const verifyCoreHandler = async (req, res) => {
     answerText: answerText,
     ghUserText,
   });
-
+  
+  let __irrelevant_urls = [];
   let logUserId = null;   // ✅ 요청마다 독립
   let authUser = null;    // ✅ 요청마다 독립
 
@@ -6767,6 +6768,12 @@ ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
 - partial_scores.engines_used: (QV/FV) 실제로 evidence가 남아있는 엔진 목록(E_eff)입니다.
   engines_used에 없는 엔진은 "근거 없음"이므로 support/conflict 판단에 포함하지 말고, engine_adjust도 1.0 근처로 두세요.
 
+// ✅ [ADD] Irrelevant URL handling (context-based disambiguation)
+// - evidence item이 문맥상 무관하면(예: "수도"=capital 질문인데 "수도사업소/상수도/아리수" 같은 waterworks)
+//   support/conflict 판단에 포함하지 말고, blocks[i].irrelevant_urls에 URL을 넣으세요.
+// - irrelevant로 분류한 근거만 존재하는 경우: block_truthscore를 0.55 이하로 낮추고 comment에 "근거 무관/의미혼동"을 명시하세요.
+// - irrelevant_urls는 verify 한 번에서 같이 출력(추가 호출 없음)
+
 [작업 지침]
 
 1. 블록 사용 규칙
@@ -6824,6 +6831,7 @@ ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
       "id": 1,
       "text": "이 블록에 해당하는 텍스트",
       "block_truthscore": 0.85,
+      "irrelevant_urls": []
       "evidence": {
         "support": ["crossref","naver"],
         "conflict": ["wikidata"]
@@ -6898,6 +6906,23 @@ if (!verify || !verify.trim()) {
     const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
     const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
     verifyMeta = JSON.parse(jsonText);
+    // ✅ (optional) normalize if helper exists
+if (typeof normalizeVerifyMeta === "function") {
+  try { verifyMeta = normalizeVerifyMeta(verifyMeta, verifyEvidenceLookup); } catch (_) {}
+}
+
+// ✅ collect irrelevant_urls from verify output (no extra model calls)
+try {
+  const _blocks = Array.isArray(verifyMeta?.blocks) ? verifyMeta.blocks : [];
+  const _urls = _blocks
+    .flatMap(b => (Array.isArray(b?.irrelevant_urls) ? b.irrelevant_urls : []))
+    .map(u => String(u || "").trim())
+    .filter(Boolean);
+
+  __irrelevant_urls = Array.from(new Set(_urls));
+} catch (_) {
+  __irrelevant_urls = [];
+}
   } catch {
     verifyMeta = null;
     if (DEBUG) console.warn("⚠️ verifyMeta JSON parse fail");
@@ -7251,9 +7276,41 @@ if (safeMode === "qv" || safeMode === "fv") {
 }
 }
 
+const __naverResultsOut =
+  (__irrelevant_urls.length > 0 && Array.isArray(naver_results))
+    ? naver_results.filter(r => {
+        const u = String(r?.link || r?.source_url || r?.url || "").trim();
+        return u ? !__irrelevant_urls.includes(u) : true;
+      })
+    : naver_results;
+
+if (__irrelevant_urls.length > 0 && partial_scores && typeof partial_scores === "object") {
+  partial_scores.irrelevant_urls = __irrelevant_urls;
+}
+
 // 🔹 QV/FV 모드에서는 Naver 검색 결과도 같이 내려줌
-if ((safeMode === "qv" || safeMode === "fv") && external.naver) {
-  payload.naver_results = external.naver;
+//    + verify 단계에서 irrelevant_urls가 나오면 응답에서만 prune(추가 호출 없음)
+if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(external.naver)) {
+  const __irSet = new Set(
+    (Array.isArray(__irrelevant_urls) ? __irrelevant_urls : [])
+      .map(u => String(u || "").trim())
+      .filter(Boolean)
+  );
+
+  payload.naver_results = (__irSet.size > 0)
+    ? external.naver.filter(r => {
+        const u = String(r?.link || r?.source_url || r?.url || "").trim();
+        return u ? !__irSet.has(u) : true;
+      })
+    : external.naver;
+
+  if (__irSet.size > 0) {
+    if (payload.partial_scores && typeof payload.partial_scores === "object") {
+      payload.partial_scores.irrelevant_urls = Array.from(__irSet);
+    } else {
+      payload.partial_scores = { ...(payload.partial_scores || {}), irrelevant_urls: Array.from(__irSet) };
+    }
+  }
 }
 
     return res.json(buildSuccess(payload));
