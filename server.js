@@ -5144,15 +5144,35 @@ if (!naverQueries.length) {
   //  - news는 시사성일 때만
   //  - 관련도 최소치 이상만
   //  - 상위 K개만
-  const naverItemsForVerify = pickTopNaverEvidenceForVerify({
-    items: naverItemsAll,
-    query,
-    blockText: b?.text || "",
-    naverQueries,
-    allowNews: allowNewsEvidence,
-    topK: BLOCK_NAVER_EVIDENCE_TOPK,
-    minRelevance: NAVER_RELEVANCE_MIN,
-  });
+  let naverItemsForVerify = pickTopNaverEvidenceForVerify({
+  items: naverItemsAll,
+  query,
+  blockText: b?.text || "",
+  naverQueries,
+  allowNews: allowNewsEvidence,
+  topK: BLOCK_NAVER_EVIDENCE_TOPK,
+  minRelevance: NAVER_RELEVANCE_MIN,
+});
+
+// ✅ fallback: strict 필터로 0개가 되면, "후처리(Gemini)가 문맥으로 irrelevant_urls를 만들 수 있도록"
+//            이미 받아온 naverItemsAll에서 TOPK만 최소로 태움(추가 호출 0)
+if ((!Array.isArray(naverItemsForVerify) || naverItemsForVerify.length === 0) && Array.isArray(naverItemsAll) && naverItemsAll.length > 0) {
+  // 1) 원칙: 시사성 아니면 news는 우선 제외
+  const __poolNoNews = allowNewsEvidence ? naverItemsAll : naverItemsAll.filter(r => (r?.naver_type !== "news"));
+
+  // 2) tier/whitelisted/inferred(공식추정) 우선
+  const __poolPrefer = (__poolNoNews.length ? __poolNoNews : naverItemsAll).filter(r =>
+    !!(r?.tier || r?.whitelisted || r?._whitelist_inferred || r?.inferred)
+  );
+
+  // 3) 최종 풀 선택 (prefer > noNews > all)
+  const __poolFinal =
+    (__poolPrefer.length > 0) ? __poolPrefer :
+    (__poolNoNews.length > 0) ? __poolNoNews :
+    naverItemsAll;
+
+  naverItemsForVerify = topArr(__poolFinal, BLOCK_NAVER_EVIDENCE_TOPK);
+}
 
   // ✅ 뉴스 엔진(gdelt)도 시사성일 때만 evidence로 사용(표시는 external에 유지)
   const gdeltForVerify = allowNewsEvidence ? topArr(gdPack.result, BLOCK_EVIDENCE_TOPK) : [];
@@ -5178,7 +5198,7 @@ if (!naverQueries.length) {
       openalex: topArr(oaPack.result, BLOCK_EVIDENCE_TOPK),
       wikidata: topArr(wdPack.result, 5), // wikidata는 구조상 조금 더 허용
       gdelt: gdeltForVerify,
-      naver: naverItemsForVerify,
+      naver: topArr(naverItemsForVerify, BLOCK_NAVER_EVIDENCE_TOPK),
     },
   });
 }
