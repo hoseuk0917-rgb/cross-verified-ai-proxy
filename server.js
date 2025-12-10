@@ -3688,16 +3688,33 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
   continue;
 }
 
-if (st === 400) {
-  // 400 중에서도 “API key not valid”면 키 자체가 죽은 것 -> invalid로 영구 제외 + 다음 키로 회전
+// ✅ 400 invalid key => 영구제외 말고 "오늘만 exhausted" 처리해서 회전
+{
   const msg0 = String(e?.message || "");
-  const msg1 = String(e?.response?.data?.error?.message || "");
-  const merged = `${msg0} ${msg1}`;
+  const msg1 = String(e?.detail?.message || "");
+  const msg2 = String(e?.response?.data?.error?.message || "");
+  const merged = `${msg0} ${msg1} ${msg2}`;
 
-  if (/api key not valid|invalid api key/i.test(merged)) {
-    await markGeminiKeyInvalidById(userId, keyId, merged);
+  const isInvalidKey =
+    e?.code === "INVALID_GEMINI_KEY" ||
+    /api key not valid/i.test(merged);
+
+  if (isInvalidKey) {
+    console.warn("⚠️ Gemini invalid key detected; exhausting for today:", keyId);
+
+    const row = await loadUserSecretsRow(userId);
+    let secrets = _ensureGeminiSecretsShape(row.secrets);
+
+    await markGeminiKeyExhausted(
+      userId,
+      secrets,
+      keyId,
+      lastKctx?.pt_date ?? pt_date_now ?? null
+    );
+
     continue;
   }
+}
 }
 
 if (st === 401 || st === 403) {
