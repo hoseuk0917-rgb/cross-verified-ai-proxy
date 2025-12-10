@@ -323,7 +323,16 @@ installConsoleRedactor();
 const DEBUG = !isProd && process.env.DEBUG === "true";
 
 // ✅ ADD: Secrets 암호화(서버 마스터키) + Pacific 리셋 TZ
-const SETTINGS_ENC_KEY_B64 = (process.env.SETTINGS_ENC_KEY_B64 || "").trim(); // base64(32bytes)
+const SETTINGS_ENC_KEY_B64 = (
+  process.env.SETTINGS_ENC_KEY_B64 ||
+  process.env.USER_SECRETS_ENC_KEY_B64 ||
+  process.env.ENCRYPTION_KEY ||
+  process.env.APP_ENC_KEY ||
+  process.env.SETTINGS_ENCRYPTION_KEY ||
+  process.env.YOUR_EXISTING_ENV_NAME ||   // ✅ 너가 쓰던 기존 이름(예: APP_ENC_KEY_B64 같은 것)
+  ""
+).trim(); // base64(32bytes)
+
 const GEMINI_RESET_TZ = process.env.GEMINI_RESET_TZ || "America/Los_Angeles"; // 태평양 시간(PT)
 const PACIFIC_INFO_TTL_MS = parseInt(process.env.PACIFIC_INFO_TTL_MS || "300000", 10); // 5분 캐시
 const GEMINI_KEYRING_MAX = parseInt(process.env.GEMINI_KEYRING_MAX || "10", 10);
