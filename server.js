@@ -7276,18 +7276,6 @@ if (safeMode === "qv" || safeMode === "fv") {
 }
 }
 
-const __naverResultsOut =
-  (__irrelevant_urls.length > 0 && Array.isArray(naver_results))
-    ? naver_results.filter(r => {
-        const u = String(r?.link || r?.source_url || r?.url || "").trim();
-        return u ? !__irrelevant_urls.includes(u) : true;
-      })
-    : naver_results;
-
-if (__irrelevant_urls.length > 0 && partial_scores && typeof partial_scores === "object") {
-  partial_scores.irrelevant_urls = __irrelevant_urls;
-}
-
 // 🔹 QV/FV 모드에서는 Naver 검색 결과도 같이 내려줌
 //    + verify 단계에서 irrelevant_urls가 나오면 응답에서만 prune(추가 호출 없음)
 if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(external.naver)) {
