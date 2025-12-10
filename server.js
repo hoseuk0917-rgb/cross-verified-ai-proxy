@@ -4608,6 +4608,57 @@ function snippetToVerifyBody(req, res, next) {
   return next();
 }
 
+function extractJsonObjectFromText(raw) {
+  try {
+    let s = String(raw || "").trim();
+    if (!s) return null;
+
+    // 1) 코드펜스 제거(있으면)
+    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence && fence[1]) s = String(fence[1]).trim();
+
+    // 2) 첫 '{'부터 균형잡힌 '}'까지 스캔 (문자열 내부 괄호는 무시)
+    const first = s.indexOf("{");
+    if (first < 0) return null;
+
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+
+    for (let i = first; i < s.length; i++) {
+      const ch = s[i];
+
+      if (inStr) {
+        if (esc) { esc = false; continue; }
+        if (ch === "\\") { esc = true; continue; }
+        if (ch === "\"") { inStr = false; continue; }
+        continue;
+      }
+
+      if (ch === "\"") { inStr = true; continue; }
+      if (ch === "{") { depth++; continue; }
+      if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          const jsonText = s.slice(first, i + 1);
+          return JSON.parse(jsonText);
+        }
+      }
+    }
+
+    // 3) fallback: 끝 '}'까지 잘라서 한 번 더
+    const last = s.lastIndexOf("}");
+    if (last > first) {
+      const jsonText = s.slice(first, last + 1);
+      return JSON.parse(jsonText);
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // ─────────────────────────────
 // ✅ Verify Core (QV / FV / DV / CV / LV)
 //   - DV/CV: GitHub 기반 TruthScore 직접 계산 (Gemini→GitHub)
@@ -6770,6 +6821,10 @@ const coreText =
 [입력 JSON]
 ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
 
+[출력 규칙(매우 중요)]
+반드시 "JSON만" 출력하세요. (\`\`\`json 같은 코드펜스/설명문 금지)
+문자열 값 안에 쌍따옴표(")를 쓰지 마세요. 필요하면 작은따옴표(') 또는 다른 표현으로 바꾸세요.
+
 입력 필드 설명(요약):
 - mode: "qv" | "fv" | "dv" | "cv" 중 하나
 - query: 사용자가 입력한 질문 또는 사실 문장
@@ -6785,6 +6840,11 @@ ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
 - external: crossref / openalex / wikidata / gdelt / naver / github / klaw 등 외부 엔진 결과
 - partial_scores: 서버에서 미리 계산된 전역 스코어
     (예: recency, validity, consistency, engine_factor, naver_tier_factor 등)
+// ✅ JSON 출력 안정화 규칙(중요)
+// - 출력은 오직 JSON 1개(마크다운/코드펜스 금지)
+// - 문자열 값 내부에 쌍따옴표(") 사용 금지 (필요하면 작은따옴표(') 쓰거나 단어로 풀어서)
+// - 반드시 JSON.parse 가능한 형태로만 출력(escape 포함)
+// - trailing comma 금지    
 - partial_scores.engines_used: (QV/FV) 실제로 evidence가 남아있는 엔진 목록(E_eff)입니다.
   engines_used에 없는 엔진은 "근거 없음"이므로 support/conflict 판단에 포함하지 말고, engine_adjust도 1.0 근처로 두세요.
 
@@ -6916,48 +6976,48 @@ verifyModelUsed = m;
 }
 
 // ✅ 끝까지 실패했으면 기존 정책대로: verifyMeta 없이 외부엔진 기반으로만 진행
-if (!verify || !verify.trim()) {
+if (!verify || !String(verify).trim()) {
   verifyMeta = null;
+  __irrelevant_urls = [];
   if (DEBUG) console.warn("⚠️ verify failed on all models:", lastVerifyErr?.message || "unknown");
 } else {
-  // ✅ Pro 결과(JSON) 파싱 시도
+  // ✅ JSON만 뽑아내기(코드펜스/잡문 있어도 최대한 복구)
   try {
-    const trimmed = (verify || "").trim();
-    const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
-    const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
+    let s = String(verify || "").trim();
+
+    // 1) ```json ... ``` 코드펜스 제거
+    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence && fence[1]) s = String(fence[1]).trim();
+
+    // 2) 첫 { ~ 마지막 } 까지 우선 추출(기존 방식 유지 + fence 제거로 안정화)
+    const first = s.indexOf("{");
+    const last = s.lastIndexOf("}");
+    const jsonText = (first >= 0 && last > first) ? s.slice(first, last + 1) : s;
+
     verifyMeta = JSON.parse(jsonText);
-    // ✅ verify에서 내려준 irrelevant_urls를 모아서 응답에서만 prune(추가 호출 없음)
-__irrelevant_urls = [];
-if (verifyMeta && Array.isArray(verifyMeta.blocks)) {
-  for (const bb of verifyMeta.blocks) {
-    if (Array.isArray(bb?.irrelevant_urls)) __irrelevant_urls.push(...bb.irrelevant_urls);
-  }
-}
-__irrelevant_urls = Array.from(
-  new Set(__irrelevant_urls.map(u => String(u || "").trim()).filter(Boolean))
-);
+
     // ✅ (optional) normalize if helper exists
-if (typeof normalizeVerifyMeta === "function") {
-  try { verifyMeta = normalizeVerifyMeta(verifyMeta, verifyEvidenceLookup); } catch (_) {}
-}
+    if (typeof normalizeVerifyMeta === "function") {
+      try { verifyMeta = normalizeVerifyMeta(verifyMeta, verifyEvidenceLookup); } catch (_) {}
+    }
 
-// ✅ collect irrelevant_urls from verify output (no extra model calls)
-try {
-  const _blocks = Array.isArray(verifyMeta?.blocks) ? verifyMeta.blocks : [];
-  const _urls = _blocks
-    .flatMap(b => (Array.isArray(b?.irrelevant_urls) ? b.irrelevant_urls : []))
-    .map(u => String(u || "").trim())
-    .filter(Boolean);
+    // ✅ irrelevant_urls는 "딱 1번만" 수집
+    try {
+      const _blocks = Array.isArray(verifyMeta?.blocks) ? verifyMeta.blocks : [];
+      const _urls = _blocks
+        .flatMap(b => (Array.isArray(b?.irrelevant_urls) ? b.irrelevant_urls : []))
+        .map(u => String(u || "").trim())
+        .filter(Boolean);
 
-  __irrelevant_urls = Array.from(new Set(_urls));
-} catch (_) {
-  __irrelevant_urls = [];
-}
+      __irrelevant_urls = Array.from(new Set(_urls));
+    } catch (_) {
+      __irrelevant_urls = [];
+    }
   } catch {
-  verifyMeta = null;
-  __irrelevant_urls = [];
-  if (DEBUG) console.warn("⚠️ verifyMeta JSON parse fail");
-}
+    verifyMeta = null;
+    __irrelevant_urls = [];
+    if (DEBUG) console.warn("⚠️ verifyMeta JSON parse fail");
+  }
 }
     } catch (e) {
       if (e?.code === "INVALID_GEMINI_KEY" || e?.code === "GEMINI_KEY_EXHAUSTED" || e?.code === "GEMINI_KEY_MISSING") throw e;
