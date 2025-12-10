@@ -1553,15 +1553,18 @@ function _ensureGeminiSecretsShape(secrets) {
   if (!secrets.gemini.keyring || typeof secrets.gemini.keyring !== "object") {
     secrets.gemini.keyring = {
   keys: [],
-  state: { active_id: null, exhausted_ids: {}, last_reset_pt_date: null, rate_limited_until: {} }
+  state: { active_id: null, exhausted_ids: {}, invalid_ids: {}, last_reset_pt_date: null, rate_limited_until: {} }
 };
   }
   if (!Array.isArray(secrets.gemini.keyring.keys)) secrets.gemini.keyring.keys = [];
   if (!secrets.gemini.keyring.state || typeof secrets.gemini.keyring.state !== "object") {
-    secrets.gemini.keyring.state = { active_id: null, exhausted_ids: {}, last_reset_pt_date: null, rate_limited_until: {} };
+    secrets.gemini.keyring.state = { active_id: null, exhausted_ids: {}, invalid_ids: {}, last_reset_pt_date: null, rate_limited_until: {} };
   }
   if (!secrets.gemini.keyring.state.exhausted_ids || typeof secrets.gemini.keyring.state.exhausted_ids !== "object") {
   secrets.gemini.keyring.state.exhausted_ids = {};
+}
+if (!secrets.gemini.keyring.state.invalid_ids || typeof secrets.gemini.keyring.state.invalid_ids !== "object") {
+  secrets.gemini.keyring.state.invalid_ids = {};
 }
 
 // ✅ ADD: 429 쿨다운 상태 저장소(없으면 초기화)
@@ -1709,6 +1712,7 @@ function pickGeminiKeyCandidate(secrets) {
   const keys = Array.isArray(kr?.keys) ? kr.keys : [];
   const state = kr?.state || {};
   const exhausted = state.exhausted_ids || {};
+  const invalid = state.invalid_ids || {};
 
   // ✅ 429 쿨다운 키는 일정 시간 후보에서 제외
   const rateLimitedUntil = state.rate_limited_until || {};
@@ -1724,6 +1728,7 @@ function pickGeminiKeyCandidate(secrets) {
     const k = keys[(startIdx + offset) % keys.length];
     if (!k || !k.id || !k.enc) continue;
     if (exhausted[k.id]) continue;
+    if (invalid[k.id]) continue;
 
     const until = rateLimitedUntil[k.id];
     if (Number.isFinite(until) && until > nowMs) continue;
@@ -3660,48 +3665,67 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
 
   console.error("Gemini call failed:", `${label0}#${keyId}`, `status=${st}`, _msg1 || _msg0);
 
-  if (st === 429) {
-    // 429: 레이트리밋 -> 쿨다운 기록 + 다음 키로 회전
-    let raMs = null;
+ if (st === 429) {
+  // 429: “키 소진”이 아니라 “레이트리밋” -> 잠깐 쿨다운 + 다음 키로 회전
+  const msg = String(e?.message || "");
+  let raMs = null;
 
-    const mMs = _msg.match(/retry in\s+([0-9.]+)\s*ms/i);
-    const mS  = _msg.match(/retry in\s+([0-9.]+)\s*s/i);
-    if (mMs) raMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
-    else if (mS) raMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
+  const mMs = msg.match(/retry in\s+([0-9.]+)\s*ms/i);
+  const mS  = msg.match(/retry in\s+([0-9.]+)\s*s/i);
+  if (mMs) raMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
+  else if (mS) raMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
 
-    if (raMs == null) {
-      const ra = e?.response?.headers?.["retry-after"] ?? e?.response?.headers?.["Retry-After"];
-      if (ra != null) {
-        const sec = parseFloat(String(ra).trim());
-        if (Number.isFinite(sec)) raMs = Math.max(0, Math.ceil(sec * 1000));
-      }
+  if (raMs == null) {
+    const ra = e?.response?.headers?.["retry-after"] ?? e?.response?.headers?.["Retry-After"];
+    if (ra != null) {
+      const sec = parseFloat(String(ra).trim());
+      if (Number.isFinite(sec)) raMs = Math.max(0, Math.ceil(sec * 1000));
     }
-
-    if (raMs == null) raMs = 60000;
-
-    await markGeminiKeyRateLimitedById(userId, keyId, raMs);
-    continue;
   }
 
-  // ✅ ADD: 400인데 "API key not valid"류면 이 키는 폐기(exhausted)하고 다음 키로 회전
-  const isInvalidKey400 =
-    st === 400 && /api key not valid|key not valid|invalid api key/i.test(_msg);
+  if (raMs == null) raMs = 60000;
+  await markGeminiKeyRateLimitedById(userId, keyId, raMs);
+  continue;
+}
 
-  if (isInvalidKey400) {
+if (st === 400) {
+  // 400 중에서도 “API key not valid”면 키 자체가 죽은 것 -> invalid로 영구 제외 + 다음 키로 회전
+  const msg0 = String(e?.message || "");
+  const msg1 = String(e?.response?.data?.error?.message || "");
+  const merged = `${msg0} ${msg1}`;
+
+  if (/api key not valid|invalid api key/i.test(merged)) {
+    await markGeminiKeyInvalidById(userId, keyId, merged);
+    continue;
+  }
+}
+
+if (st === 401 || st === 403) {
+  // 401/403은 권한/키 문제 가능성이 큼 -> 다음 키로 넘김(=exhausted 처리)
+  const row = await loadUserSecretsRow(userId);
+  let secrets = _ensureGeminiSecretsShape(row.secrets);
+  await markGeminiKeyExhausted(userId, secrets, keyId, lastKctx?.pt_date ?? null);
+  continue;
+}
+
+if (st === 400) {
+  // 400 중 “API key not valid”는 키 문자열 자체가 구글에서 거부된 것(오타/폐기/제한/깨짐 등)
+  // -> 영구 제외는 안 하고, "오늘만 exhausted" 처리해서 회전만 시킴
+  const msg0 = String(e?.message || "");
+  const msg1 = String(e?.response?.data?.error?.message || "");
+  const merged = `${msg0} ${msg1}`;
+
+  if (/api key not valid/i.test(merged)) {
     const row = await loadUserSecretsRow(userId);
     let secrets = _ensureGeminiSecretsShape(row.secrets);
+
+    // pt_date가 없으면 null로 넣어도 되고, 있으면 그걸 사용
     await markGeminiKeyExhausted(userId, secrets, keyId, lastKctx?.pt_date ?? null);
     continue;
   }
+}
 
-  if (st === 401 || st === 403) {
-    const row = await loadUserSecretsRow(userId);
-    let secrets = _ensureGeminiSecretsShape(row.secrets);
-    await markGeminiKeyExhausted(userId, secrets, keyId, lastKctx?.pt_date ?? null);
-    continue;
-  }
-
-  throw e;
+throw e;
 }
   }
 
