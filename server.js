@@ -6926,6 +6926,16 @@ if (!verify || !verify.trim()) {
     const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
     const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
     verifyMeta = JSON.parse(jsonText);
+    // ✅ verify에서 내려준 irrelevant_urls를 모아서 응답에서만 prune(추가 호출 없음)
+__irrelevant_urls = [];
+if (verifyMeta && Array.isArray(verifyMeta.blocks)) {
+  for (const bb of verifyMeta.blocks) {
+    if (Array.isArray(bb?.irrelevant_urls)) __irrelevant_urls.push(...bb.irrelevant_urls);
+  }
+}
+__irrelevant_urls = Array.from(
+  new Set(__irrelevant_urls.map(u => String(u || "").trim()).filter(Boolean))
+);
     // ✅ (optional) normalize if helper exists
 if (typeof normalizeVerifyMeta === "function") {
   try { verifyMeta = normalizeVerifyMeta(verifyMeta, verifyEvidenceLookup); } catch (_) {}
@@ -6944,9 +6954,10 @@ try {
   __irrelevant_urls = [];
 }
   } catch {
-    verifyMeta = null;
-    if (DEBUG) console.warn("⚠️ verifyMeta JSON parse fail");
-  }
+  verifyMeta = null;
+  __irrelevant_urls = [];
+  if (DEBUG) console.warn("⚠️ verifyMeta JSON parse fail");
+}
 }
     } catch (e) {
       if (e?.code === "INVALID_GEMINI_KEY" || e?.code === "GEMINI_KEY_EXHAUSTED" || e?.code === "GEMINI_KEY_MISSING") throw e;
@@ -7296,9 +7307,32 @@ if (safeMode === "qv" || safeMode === "fv") {
 }
 }
 
-// 🔹 QV/FV 모드에서는 Naver 검색 결과도 같이 내려줌
-//    + verify 단계에서 irrelevant_urls가 나오면 응답에서만 prune(추가 호출 없음)
-if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(external.naver)) {
+// 🔹 QV/FV 모드에서는 Naver 결과도 같이 내려줌
+//    - external.naver "풀"이 아니라, blocksForVerify에 실제로 들어간 naver evidence만 내려서 UI 노이즈를 줄임
+//    + verify 단계에서 나온 irrelevant_urls가 있으면 응답에서만 prune (추가 호출 없음)
+if (safeMode === "qv" || safeMode === "fv") {
+  // blocksForVerify에 실제로 들어간 naver evidence만 모음
+  const __naverEvidenceUsed =
+    (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
+      ? blocksForVerify.flatMap(b => (Array.isArray(b?.evidence?.naver) ? b.evidence.naver : []))
+      : [];
+
+  // 혹시 dedupeByLink가 없다면(드물지만) 대비해서 로컬 dedupe
+  const __deduped = (typeof dedupeByLink === "function")
+    ? dedupeByLink(__naverEvidenceUsed)
+    : (() => {
+        const seen = new Set();
+        const out = [];
+        for (const r of (__naverEvidenceUsed || [])) {
+          const u = String(r?.link || r?.source_url || r?.url || "").trim();
+          const k = u || JSON.stringify([r?.title || "", r?.source_host || "", r?.naver_type || ""]);
+          if (seen.has(k)) continue;
+          seen.add(k);
+          out.push(r);
+        }
+        return out;
+      })();
+
   const __irSet = new Set(
     (Array.isArray(__irrelevant_urls) ? __irrelevant_urls : [])
       .map(u => String(u || "").trim())
@@ -7306,18 +7340,14 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(external.naver)) {
   );
 
   payload.naver_results = (__irSet.size > 0)
-    ? external.naver.filter(r => {
+    ? __deduped.filter(r => {
         const u = String(r?.link || r?.source_url || r?.url || "").trim();
         return u ? !__irSet.has(u) : true;
       })
-    : external.naver;
+    : __deduped;
 
   if (__irSet.size > 0) {
-    if (payload.partial_scores && typeof payload.partial_scores === "object") {
-      payload.partial_scores.irrelevant_urls = Array.from(__irSet);
-    } else {
-      payload.partial_scores = { ...(payload.partial_scores || {}), irrelevant_urls: Array.from(__irSet) };
-    }
+    payload.partial_scores = { ...(payload.partial_scores || {}), irrelevant_urls: Array.from(__irSet) };
   }
 }
 
