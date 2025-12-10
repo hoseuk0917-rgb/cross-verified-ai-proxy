@@ -4602,6 +4602,11 @@ function snippetToVerifyBody(req, res, next) {
 //   - LV: TruthScore 없이 K-Law 결과만 제공 (Ⅸ 명세 반영)
 // ─────────────────────────────
 const verifyCoreHandler = async (req, res) => {
+    // ✅ answerText 공용 선선언 (ReferenceError 방지)
+  const __b0 = (req && req.body && typeof req.body === "object") ? req.body : {};
+  const __answerText0 = String((__b0.answerText ?? __b0.user_answer ?? __b0.query ?? "")).trim();
+  let answerText = __answerText0;
+
   // ✅ TDZ 방지: verify 핸들러 스코프에서 먼저 선언
   let ghUserText = String(req.body?.query || "").trim();
 
@@ -4611,7 +4616,7 @@ const verifyCoreHandler = async (req, res) => {
     query: req.body?.query,
     rawQuery: req.body?.rawQuery,
     user_answer: req.body?.user_answer,
-    answerText: req.body?.user_answer ?? req.body?.answerText,
+    answerText: answerText,
     ghUserText,
   });
 
@@ -4651,7 +4656,7 @@ if (safeMode === "qv" || safeMode === "fv") {
     rawQuery,
     core_text,
     user_answer,
-    answerText,
+    answerText: __answerText0,
     key_uuid,
   });
 
@@ -8528,16 +8533,25 @@ app.use("/api", (req, res) => {
 //   - 반드시 "모든 라우트 선언이 끝난 뒤" + "app.listen 전"에 위치해야 함
 // ─────────────────────────────
 app.use((err, req, res, next) => {
-  const p = String(req.originalUrl || "");
-const wantsJson = p.startsWith("/api") || p.startsWith("/admin");
+  const p = String(req?.originalUrl || req?.url || "");
+  const wantsJson = p.startsWith("/api") || p.startsWith("/admin");
+
+  // admin/ejs 같은 화면 요청은 텍스트로
   if (!wantsJson) {
-    // admin/ejs 같은 화면 요청은 기존처럼 텍스트로 내보내고 싶으면 이렇게 둬도 됨
-    // (원하면 여기도 JSON으로 바꿔도 됨)
+    // ✅ 서버 콘솔에는 항상 남김(원인 추적용)
+    console.error("💥 Express error (non-json):", err?.stack || err, {
+      method: req?.method,
+      path: p,
+    });
     return res.status(err?.status || 500).send("Server error");
   }
 
   // body parser JSON 파싱 실패
   if (err?.type === "entity.parse.failed") {
+    console.warn("⚠️ INVALID_JSON:", err?.message, {
+      method: req?.method,
+      path: p,
+    });
     return res.status(400).json(
       buildError("INVALID_JSON", "JSON 파싱에 실패했습니다.", err?.message)
     );
@@ -8545,14 +8559,32 @@ const wantsJson = p.startsWith("/api") || p.startsWith("/admin");
 
   // body size 초과
   if (err?.type === "entity.too.large") {
+    console.warn("⚠️ PAYLOAD_TOO_LARGE:", err?.message, {
+      method: req?.method,
+      path: p,
+    });
     return res.status(413).json(
       buildError("PAYLOAD_TOO_LARGE", "요청 바디가 너무 큽니다.", err?.message)
     );
   }
 
-  // 기본값
   const status = err?.httpStatus || err?.status || 500;
-  const code = err?.code || (status >= 500 ? "INTERNAL_SERVER_ERROR" : "REQUEST_ERROR");
+  const code =
+    err?.code || (status >= 500 ? "INTERNAL_SERVER_ERROR" : "REQUEST_ERROR");
+
+  // ✅ 500대(또는 DEBUG)면 스택을 무조건 콘솔에 출력
+  if (status >= 500 || DEBUG) {
+    console.error("💥 INTERNAL_SERVER_ERROR:", err?.stack || err, {
+      method: req?.method,
+      path: p,
+    });
+  } else {
+    console.warn("⚠️ REQUEST_ERROR:", err?.message || String(err), {
+      method: req?.method,
+      path: p,
+    });
+  }
+
   const message =
     err?.publicMessage ||
     (status >= 500
@@ -8572,22 +8604,4 @@ app.listen(PORT, () => {
   );
     console.log("🔹 Naver 서버 직접 호출 (Region 제한 해제)");
   console.log("🔹 Supabase + Gemini 2.5 (Flash / Pro / Lite) 정상 동작");
-});
-
-app.use((err, req, res, next) => {
-  console.error("💥 unhandled express error:", err);
-
-  if (res.headersSent) return next(err);
-
-  const status = err?.status || err?.statusCode || 500;
-
-  // 운영: 내부 디테일/스택 숨김
-  if (isProd) {
-    return res.status(status).json(buildError("INTERNAL_SERVER_ERROR", "Server error"));
-  }
-
-  // 개발: 디테일 노출 허용
-  return res.status(status).json(buildError("INTERNAL_SERVER_ERROR", err?.message || "Server error", {
-    stack: err?.stack || null,
-  }));
 });
