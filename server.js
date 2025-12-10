@@ -229,6 +229,9 @@ async function withRetry(fn, { maxRetries, baseMs, label }) {
 
 dotenv.config();
 
+const __k = String(process.env.SETTINGS_ENC_KEY_B64 || "").trim();
+console.log(`🔐 SETTINGS_ENC_KEY_B64 present=${__k.length > 0} len=${__k.length}`);
+
 const isProd = process.env.NODE_ENV === "production";
 
 // ─────────────────────────────
