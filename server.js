@@ -4321,6 +4321,11 @@ const NAVER_NUMERIC_FETCH_MAX = parseInt(process.env.NAVER_NUMERIC_FETCH_MAX || 
 const STRICT_NUMERIC_PRUNE =
   String(process.env.STRICT_NUMERIC_PRUNE ?? "false").toLowerCase() === "true";
 
+  // ✅ Naver: widen pool, keep topK tight
+const NAVER_QUERY_MAX = Math.max(1, Math.min(5, parseInt(process.env.NAVER_QUERY_MAX || "3", 10)));
+const NAVER_PER_QUERY_DISPLAY = Math.max(3, Math.min(50, parseInt(process.env.NAVER_PER_QUERY_DISPLAY || "10", 10)));
+const NAVER_POOL_MAX = Math.max(5, Math.min(100, parseInt(process.env.NAVER_POOL_MAX || "20", 10)));
+
 // 숫자/통계류는 본문에 숫자 발췌가 비어도 title/url에만 숫자가 있을 수 있어서 예외로 킵
 const NUMERIC_PRUNE_TRUSTED_HOSTS = (process.env.NUMERIC_PRUNE_TRUSTED_HOSTS ||
   "stat.go.kr,kosis.kr,data.go.kr,mois.go.kr,worldbank.org,oecd.org,imf.org,who.int,un.org")
@@ -5145,7 +5150,38 @@ const engine_metrics = engineMetrics;
   const geminiMetrics = {};
 
   // ✅ QV/FV 2-call 구조용: 전처리 결과(답변/블록/증거)를 요청 스코프에 보관
-  let qvfvPre = null;                 
+  let qvfvPre = null;
+  const NAVER_QUERY_MAX = Math.max(1, Math.min(5, parseInt(process.env.NAVER_QUERY_MAX || "3", 10)));
+
+  // =======================================================
+// ✅ Naver query expansion helpers (widen pool via diversity)
+// - place here (right above qvfvBlocksForVerifyFull) so it's easy to find
+// =======================================================
+
+function __uniqStrings(arr) {
+  const out = [];
+  const seen = new Set();
+  for (const v of arr || []) {
+    const s = String(v || "").trim();
+    if (!s) continue;
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out;
+}
+
+function __expandNaverQueries(baseQueries, { korean_core, english_core }) {
+  const base = Array.isArray(baseQueries) ? baseQueries : (baseQueries ? [baseQueries] : []);
+  const cand = [
+    ...base,
+    korean_core,
+    english_core,
+  ];
+  return __uniqStrings(cand).slice(0, (typeof NAVER_QUERY_MAX === "number" ? NAVER_QUERY_MAX : 3));
+}
+
   let qvfvBlocksForVerifyFull = null; // [{id,text,queries,evidence...}, ...]
   let qvfvPreDone = false;            // 전처리 성공 여부
 
@@ -5464,7 +5500,7 @@ if ((!Array.isArray(naverItemsForVerify) || naverItemsForVerify.length === 0) &&
       openalex: qOpenalex,
       wikidata: qWikidata,
       gdelt: qGdelt,
-      naver: naverQueries
+      naver: __expandNaverQueries(naverQueries, { korean_core, english_core })
     },
     evidence: {
       crossref: topArr(crPack.result, BLOCK_EVIDENCE_TOPK),
