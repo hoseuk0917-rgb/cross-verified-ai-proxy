@@ -3651,48 +3651,58 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         opts: { ...opts, label: `${label0}#${keyId}` },
       });
     } catch (e) {
-      lastErr = e;
-      const st = getStatus(e);
+  lastErr = e;
+  const st = getStatus(e);
 
-      // 핵심: 401/403은 “소진”이 아니라 “키/제한 문제”일 가능성이 큼 → 다음 키로 넘김
-      console.error("Gemini call failed:", `${label0}#${keyId}`, `status=${st}`, geminiErrMessage(e));
+  const _msg0 = String(e?.message || "");
+  const _msg1 = String(geminiErrMessage(e) || "");
+  const _msg = (_msg0 + " " + _msg1).trim();
 
-      if (st === 429) {
-  // 429: “키 소진”이 아니라 “레이트리밋” -> 잠깐 쿨다운 + 다음 키로 회전
-  const msg = String(e?.message || "");
-  let raMs = null;
+  console.error("Gemini call failed:", `${label0}#${keyId}`, `status=${st}`, _msg1 || _msg0);
 
-  // (1) message: "Please retry in ..."
-  const mMs = msg.match(/retry in\s+([0-9.]+)\s*ms/i);
-  const mS  = msg.match(/retry in\s+([0-9.]+)\s*s/i);
-  if (mMs) raMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
-  else if (mS) raMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
+  if (st === 429) {
+    // 429: 레이트리밋 -> 쿨다운 기록 + 다음 키로 회전
+    let raMs = null;
 
-  // (2) header: Retry-After
-  if (raMs == null) {
-    const ra = e?.response?.headers?.["retry-after"] ?? e?.response?.headers?.["Retry-After"];
-    if (ra != null) {
-      const sec = parseFloat(String(ra).trim());
-      if (Number.isFinite(sec)) raMs = Math.max(0, Math.ceil(sec * 1000));
+    const mMs = _msg.match(/retry in\s+([0-9.]+)\s*ms/i);
+    const mS  = _msg.match(/retry in\s+([0-9.]+)\s*s/i);
+    if (mMs) raMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
+    else if (mS) raMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
+
+    if (raMs == null) {
+      const ra = e?.response?.headers?.["retry-after"] ?? e?.response?.headers?.["Retry-After"];
+      if (ra != null) {
+        const sec = parseFloat(String(ra).trim());
+        if (Number.isFinite(sec)) raMs = Math.max(0, Math.ceil(sec * 1000));
+      }
     }
+
+    if (raMs == null) raMs = 60000;
+
+    await markGeminiKeyRateLimitedById(userId, keyId, raMs);
+    continue;
   }
 
-  if (raMs == null) raMs = 60000; // fallback 60s
+  // ✅ ADD: 400인데 "API key not valid"류면 이 키는 폐기(exhausted)하고 다음 키로 회전
+  const isInvalidKey400 =
+    st === 400 && /api key not valid|key not valid|invalid api key/i.test(_msg);
 
-  await markGeminiKeyRateLimitedById(userId, keyId, raMs);
-  continue;
+  if (isInvalidKey400) {
+    const row = await loadUserSecretsRow(userId);
+    let secrets = _ensureGeminiSecretsShape(row.secrets);
+    await markGeminiKeyExhausted(userId, secrets, keyId, lastKctx?.pt_date ?? null);
+    continue;
+  }
+
+  if (st === 401 || st === 403) {
+    const row = await loadUserSecretsRow(userId);
+    let secrets = _ensureGeminiSecretsShape(row.secrets);
+    await markGeminiKeyExhausted(userId, secrets, keyId, lastKctx?.pt_date ?? null);
+    continue;
+  }
+
+  throw e;
 }
-
-if (st === 401 || st === 403) {
-  // 401/403은 키/권한 문제일 가능성 큼 -> 오늘은 해당 키 스킵(=exhausted로 처리)
-  const row = await loadUserSecretsRow(userId);
-  let secrets = _ensureGeminiSecretsShape(row.secrets);
-  await markGeminiKeyExhausted(userId, secrets, keyId, lastKctx?.pt_date ?? null);
-  continue;
-}
-
-throw e;
-    }
   }
 
   // 2) 여기까지 오면: hint도 실패 + keyring 키도 전부 실패
