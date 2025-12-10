@@ -3,17 +3,28 @@
 // (Full Extended + LV External Module + Translation + Naver Region Detection)
 // =======================================================
 
-process.on("unhandledRejection", (r) => {
-  const msg = r?.message || String(r);
-  console.error("⚠️ Unhandled:", msg);
-  if (!isProd && r?.stack) console.error(r.stack);
+function __printFatal(tag, err) {
+  try {
+    const out =
+      err && err.stack ? String(err.stack)
+      : err && err.message ? String(err.message)
+      : String(err);
+
+    process.stderr.write(`${tag}\n${out}\n`);
+  } catch (_e) {
+    try { process.stderr.write(`${tag}\n${String(err)}\n`); } catch {}
+  }
+}
+
+process.on("unhandledRejection", (reason) => {
+  __printFatal("⚠️ UnhandledRejection:", reason);
 });
 
-process.on("uncaughtException", (e) => {
-  const msg = e?.message || String(e);
-  console.error("💥 Crash:", msg);
-  if (!isProd && e?.stack) console.error(e.stack);
+process.on("uncaughtException", (err) => {
+  __printFatal("💥 UncaughtException:", err);
+  process.exitCode = 1;
 });
+
 
 import express from "express";
 import session from "express-session";
@@ -4584,35 +4595,6 @@ function snippetToVerifyBody(req, res, next) {
 
   return next();
 }
-
-  const fallbackQuery = (question || snippet.slice(0, 280)).trim();
-
-  // ✅ 원본 스니펫 필드 drop (payload allowlist/limits 충돌 방지)
-  const {
-    snippet: __drop_snippet,
-    snippet_text: __drop_snippet_text,
-    text: __drop_text,
-    question: __drop_question,
-    prompt: __drop_prompt,
-    ...rest
-  } = _body;
-
-  req.body = {
-    ...rest,
-
-    // 스니펫 검증은 FV로 고정
-    mode: "fv",
-    core_text: snippet,
-
-    // 너무 길면 payload limit 걸릴 수 있어서 캡
-    user_answer: (rest.user_answer ?? snippet.slice(0, 2000)),
-
-    rawQuery: String(rest.rawQuery ?? (question || rest.query || "")).trim(),
-    query: String(rest.query ?? fallbackQuery).trim(),
-
-    // ✅ 스니펫은 기본 flash(속도/비용 안정). 클라가 gemini_model 주면 존중.
-    gemini_model: rest.gemini_model ?? "flash",
-  };
 
 // ─────────────────────────────
 // ✅ Verify Core (QV / FV / DV / CV / LV)
