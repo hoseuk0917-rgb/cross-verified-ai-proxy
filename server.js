@@ -1551,16 +1551,25 @@ function _ensureGeminiSecretsShape(secrets) {
   if (!secrets || typeof secrets !== "object") secrets = {};
   if (!secrets.gemini || typeof secrets.gemini !== "object") secrets.gemini = {};
   if (!secrets.gemini.keyring || typeof secrets.gemini.keyring !== "object") {
-    secrets.gemini.keyring = { keys: [], state: { active_id: null, exhausted_ids: {}, last_reset_pt_date: null } };
+    secrets.gemini.keyring = {
+  keys: [],
+  state: { active_id: null, exhausted_ids: {}, last_reset_pt_date: null, rate_limited_until: {} }
+};
   }
   if (!Array.isArray(secrets.gemini.keyring.keys)) secrets.gemini.keyring.keys = [];
   if (!secrets.gemini.keyring.state || typeof secrets.gemini.keyring.state !== "object") {
-    secrets.gemini.keyring.state = { active_id: null, exhausted_ids: {}, last_reset_pt_date: null };
+    secrets.gemini.keyring.state = { active_id: null, exhausted_ids: {}, last_reset_pt_date: null, rate_limited_until: {} };
   }
   if (!secrets.gemini.keyring.state.exhausted_ids || typeof secrets.gemini.keyring.state.exhausted_ids !== "object") {
-    secrets.gemini.keyring.state.exhausted_ids = {};
-  }
-  return secrets;
+  secrets.gemini.keyring.state.exhausted_ids = {};
+}
+
+// ✅ ADD: 429 쿨다운 상태 저장소(없으면 초기화)
+if (!secrets.gemini.keyring.state.rate_limited_until || typeof secrets.gemini.keyring.state.rate_limited_until !== "object") {
+  secrets.gemini.keyring.state.rate_limited_until = {};
+}
+
+return secrets;
 }
 
 // ─────────────────────────────
@@ -1637,6 +1646,39 @@ function _rotateKeyId(keys, currentId) {
   return keys[next]?.id || keys[0]?.id || null;
 }
 
+function _geminiHttpStatus(e) {
+  return e?.response?.status ?? e?.status ?? e?.httpStatus ?? null;
+}
+
+function _isGeminiRateLimit(e) {
+  return _geminiHttpStatus(e) === 429;
+}
+
+function _isGeminiAuthKeyInvalid(e) {
+  const s = _geminiHttpStatus(e);
+  if (s === 401 || s === 403) return true;
+
+  const msg = String(e?.message || e?.publicMessage || "");
+  return /API key not valid|invalid api key|API_KEY_INVALID/i.test(msg);
+}
+
+// Gemini 에러 문자열에 자주 들어오는 "Please retry in 56.8s / 549ms" 파싱
+function _parseGeminiRetryAfterMs(e) {
+  const msg = String(e?.message || "");
+  let m = msg.match(/retry in\s+([0-9.]+)\s*ms/i);
+  if (m) return Math.max(0, Math.floor(parseFloat(m[1])));
+
+  m = msg.match(/retry in\s+([0-9.]+)\s*s/i);
+  if (m) return Math.max(0, Math.floor(parseFloat(m[1]) * 1000));
+
+  const ra = e?.response?.headers?.["retry-after"] ?? e?.response?.headers?.["Retry-After"];
+  if (ra != null) {
+    const sec = parseFloat(String(ra));
+    if (Number.isFinite(sec)) return Math.max(0, Math.floor(sec * 1000));
+  }
+  return null;
+}
+
 async function ensureGeminiResetIfNeeded(userId, secrets) {
   const pac = await getPacificResetInfoCached();
   const pt_date_now = pac.pt_date;
@@ -1646,13 +1688,12 @@ async function ensureGeminiResetIfNeeded(userId, secrets) {
 
     // PT 날짜가 바뀌면 exhausted 초기화
   // (last가 null이어도 날짜가 잡히면 바로 초기화되게)
-  if (pt_date_now && last !== pt_date_now) {
-    state.exhausted_ids = {};
-    state.last_reset_pt_date = pt_date_now;
-    secrets.gemini.keyring.state = state;
-    await upsertUserSecretsRow(userId, secrets);
-  }
-
+  if (pt_date_now && last && last !== pt_date_now) {
+  state.exhausted_ids = {};
+  state.last_reset_pt_date = pt_date_now;
+  secrets.gemini.keyring.state = state;
+  await upsertUserSecretsRow(userId, secrets);
+}
   // 최초면 last_reset_pt_date 세팅
   if (pt_date_now && !state.last_reset_pt_date) {
     state.last_reset_pt_date = pt_date_now;
@@ -1669,6 +1710,10 @@ function pickGeminiKeyCandidate(secrets) {
   const state = kr?.state || {};
   const exhausted = state.exhausted_ids || {};
 
+  // ✅ 429 쿨다운 키는 일정 시간 후보에서 제외
+  const rateLimitedUntil = state.rate_limited_until || {};
+  const nowMs = Date.now();
+
   if (!keys.length) return { keyId: null, enc: null, keysCount: 0 };
 
   const activeId = state.active_id || keys[0]?.id || null;
@@ -1677,9 +1722,13 @@ function pickGeminiKeyCandidate(secrets) {
 
   for (let offset = 0; offset < keys.length; offset++) {
     const k = keys[(startIdx + offset) % keys.length];
-    if (k && k.id && k.enc && !exhausted[k.id]) {
-      return { keyId: k.id, enc: k.enc, keysCount: keys.length };
-    }
+    if (!k || !k.id || !k.enc) continue;
+    if (exhausted[k.id]) continue;
+
+    const until = rateLimitedUntil[k.id];
+    if (Number.isFinite(until) && until > nowMs) continue;
+
+    return { keyId: k.id, enc: k.enc, keysCount: keys.length };
   }
 
   return { keyId: null, enc: null, keysCount: keys.length };
@@ -1700,6 +1749,29 @@ async function markGeminiKeyExhausted(userId, secrets, keyId, pt_date_now) {
   await upsertUserSecretsRow(userId, secrets);
 }
 
+async function markGeminiKeyRateLimitedById(userId, keyId, retryAfterMs) {
+  if (!userId || !keyId) return;
+
+  const row = await loadUserSecretsRow(userId);
+  let secrets = _ensureGeminiSecretsShape(row.secrets);
+
+  const kr = secrets.gemini.keyring;
+  const state = kr.state || {};
+  if (!state.rate_limited_until || typeof state.rate_limited_until !== "object") state.rate_limited_until = {};
+
+  const ms = Number.isFinite(retryAfterMs) ? retryAfterMs : 60000;
+  const until = Date.now() + Math.max(0, ms);
+  state.rate_limited_until[keyId] = until;
+
+  const keys = Array.isArray(kr.keys) ? kr.keys : [];
+  state.active_id = _rotateKeyId(keys, keyId);
+
+  kr.state = state;
+  secrets.gemini.keyring = kr;
+
+  await upsertUserSecretsRow(userId, secrets);
+}
+
 async function getGeminiKeyFromDB(userId) {
   const row = await loadUserSecretsRow(userId);
   let secrets = _ensureGeminiSecretsShape(row.secrets);
@@ -1712,11 +1784,59 @@ async function getGeminiKeyFromDB(userId) {
 
   // 키가 아예 없으면 즉시 종료
   if (!keysCount) {
-    const err = new Error("GEMINI_KEYRING_EMPTY_OR_EXHAUSTED");
-    err.code = "GEMINI_KEY_EXHAUSTED";
-    err.httpStatus = 200;
-    err.detail = { keysCount: 0, pt_date: pt_date_now, next_reset_utc: pac.next_reset_utc };
-    throw err;
+    // 여기까지 오면: 후보 키를 끝까지 못 구함
+//  - 전부 exhausted 인지
+//  - 아니면 전부 rate-limited(쿨다운) 인지 구분해서 에러코드 분기
+const state2 = secrets?.gemini?.keyring?.state || {};
+const exhausted2 = state2.exhausted_ids || {};
+const rl2 = state2.rate_limited_until || {};
+const nowMs2 = Date.now();
+
+let nonExhausted = 0;
+let nonExhaustedButRateLimited = 0;
+let minUntil = null;
+
+for (const k of keys) {
+  const id = k?.id;
+  if (!id) continue;
+  if (exhausted2[id]) continue;
+  nonExhausted++;
+
+  const until = rl2[id];
+  if (Number.isFinite(until) && until > nowMs2) {
+    nonExhaustedButRateLimited++;
+    if (minUntil == null || until < minUntil) minUntil = until;
+  }
+}
+
+// ✅ 케이스 A: “키는 있는데 전부 쿨다운 중”
+if (nonExhausted > 0 && nonExhaustedButRateLimited === nonExhausted && minUntil != null) {
+  const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
+  err.code = "GEMINI_RATE_LIMIT";
+  err.httpStatus = 200;
+
+  const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
+  err.detail = {
+    keysCount,
+    keysTriedCount: tried?.size ?? null,
+    pt_date: pt_date_now,
+    next_reset_utc: pac.next_reset_utc,
+    retry_after_ms: retryAfterMs,
+  };
+  throw err;
+}
+
+// ✅ 케이스 B: 진짜 exhausted/없음
+const err = new Error("GEMINI_KEYRING_EMPTY_OR_EXHAUSTED");
+err.code = "GEMINI_KEY_EXHAUSTED";
+err.httpStatus = 200;
+err.detail = {
+  keysCount,
+  keysTriedCount: tried?.size ?? null,
+  pt_date: pt_date_now,
+  next_reset_utc: pac.next_reset_utc,
+};
+throw err;
   }
 
   // ✅ 핵심: “현재 후보 키 복호화 실패”는 ‘전체 소진’이 아니라 ‘해당 키만 탈락’ → 다음 키로 계속
@@ -1727,8 +1847,10 @@ async function getGeminiKeyFromDB(userId) {
     if (!cand.keyId || !cand.enc) break;
 
         // 무한루프 방지: 같은 키가 다시 나오면 active_id를 "다음 키"로 넘기고 계속
-    if (tried.has(cand.keyId)) {
-      const nextId = _rotateKeyId(keys, cand.keyId) || keys[0]?.id || null;
+        if (tried.has(cand.keyId)) {
+      // ✅ 같은 keyId가 반복되면: active_id를 "다음 key"로 넘기고 계속 (무한루프 방지)
+      const keysAll = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
+      const nextId = _rotateKeyId(keysAll, cand.keyId);
       await setGeminiActiveId(userId, secrets, nextId);
       continue;
     }
@@ -1757,11 +1879,12 @@ async function getGeminiKeyFromDB(userId) {
     if (keyPlain && keyPlain.trim()) {
       await setGeminiActiveId(userId, secrets, cand.keyId);
       return {
-        gemini_key: keyPlain.trim(),
-        key_id: cand.keyId,
-        pt_date: pt_date_now,
-        next_reset_utc: pac.next_reset_utc,
-      };
+  gemini_key: keyPlain.trim(),
+  key_id: cand.keyId,
+  keys_count: keysCount,          // ✅ 저장된 키 총 개수
+  pt_date: pt_date_now,
+  next_reset_utc: pac.next_reset_utc,
+};
     }
 
     // 복호화 실패/빈키 → 해당 키만 exhausted 처리 후 다음 키로 진행
@@ -3534,29 +3657,93 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
       // 핵심: 401/403은 “소진”이 아니라 “키/제한 문제”일 가능성이 큼 → 다음 키로 넘김
       console.error("Gemini call failed:", `${label0}#${keyId}`, `status=${st}`, geminiErrMessage(e));
 
-      if (st === 401 || st === 403 || st === 429) continue; // 다음 키 시도
-      throw e; // 그 외(5xx/timeout 등)는 바로 위로 올림
+      if (st === 429) {
+  // 429: “키 소진”이 아니라 “레이트리밋” -> 잠깐 쿨다운 + 다음 키로 회전
+  const msg = String(e?.message || "");
+  let raMs = null;
+
+  // (1) message: "Please retry in ..."
+  const mMs = msg.match(/retry in\s+([0-9.]+)\s*ms/i);
+  const mS  = msg.match(/retry in\s+([0-9.]+)\s*s/i);
+  if (mMs) raMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
+  else if (mS) raMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
+
+  // (2) header: Retry-After
+  if (raMs == null) {
+    const ra = e?.response?.headers?.["retry-after"] ?? e?.response?.headers?.["Retry-After"];
+    if (ra != null) {
+      const sec = parseFloat(String(ra).trim());
+      if (Number.isFinite(sec)) raMs = Math.max(0, Math.ceil(sec * 1000));
+    }
+  }
+
+  if (raMs == null) raMs = 60000; // fallback 60s
+
+  await markGeminiKeyRateLimitedById(userId, keyId, raMs);
+  continue;
+}
+
+if (st === 401 || st === 403) {
+  // 401/403은 키/권한 문제일 가능성 큼 -> 오늘은 해당 키 스킵(=exhausted로 처리)
+  const row = await loadUserSecretsRow(userId);
+  let secrets = _ensureGeminiSecretsShape(row.secrets);
+  await markGeminiKeyExhausted(userId, secrets, keyId, lastKctx?.pt_date ?? null);
+  continue;
+}
+
+throw e;
     }
   }
 
   // 2) 여기까지 오면: hint도 실패 + keyring 키도 전부 실패
-  const err = new Error("Gemini keys are not usable. (keyring)");
-  err.code = "GEMINI_KEY_EXHAUSTED";
-    const _keysStoredCount =
-    (typeof userSecrets !== "undefined" && Array.isArray(userSecrets?.gemini?.keyring?.keys))
-      ? userSecrets.gemini.keyring.keys.length
-      : (typeof secrets !== "undefined" && Array.isArray(secrets?.gemini?.keyring?.keys))
-        ? secrets.gemini.keyring.keys.length
-        : null;
+const err = new Error("Gemini keys are not usable. (keyring)");
 
-  err.detail = {
-    keysCount: (_keysStoredCount ?? tried.size),   // 기존 필드 유지(호환) + 의미 개선
-    keysTriedCount: tried.size,                    // ✅ 이번 요청에서 실제 시도한 키 수
-    pt_date: pt_date_now,
-    next_reset_utc: pac.next_reset_utc,
-    last_error: lastErr ? String(lastErr?.message || lastErr) : null,
-  };
-  throw err;
+const _keysStoredCount =
+  Number.isFinite(lastKctx?.keys_count) ? lastKctx.keys_count :
+  Number.isFinite(lastKctx?.keysCount) ? lastKctx.keysCount :
+  null;
+
+const _lastMsg = lastErr ? String(lastErr?.message || lastErr) : null;
+const _lastStatus =
+  Number.isFinite(lastErr?.response?.status) ? lastErr.response.status :
+  Number.isFinite(lastErr?.status) ? lastErr.status :
+  Number.isFinite(lastErr?.httpStatus) ? lastErr.httpStatus :
+  null;
+
+const _is429 =
+  _lastStatus === 429 ||
+  (_lastMsg && /status\s*=?\s*429|quota exceeded|rate limit|generate_content_free_tier_requests/i.test(_lastMsg));
+
+let _retryAfterMs = null;
+// (1) 메시지: "Please retry in ..."
+if (_lastMsg) {
+  const mMs = _lastMsg.match(/retry in\s+([0-9.]+)\s*ms/i);
+  const mS  = _lastMsg.match(/retry in\s+([0-9.]+)\s*s/i);
+  if (mMs) _retryAfterMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
+  else if (mS) _retryAfterMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
+}
+// (2) 헤더: Retry-After
+if (_retryAfterMs == null) {
+  const ra = lastErr?.response?.headers?.["retry-after"] ?? lastErr?.response?.headers?.["Retry-After"];
+  if (ra != null) {
+    const sec = parseFloat(String(ra).trim());
+    if (Number.isFinite(sec)) _retryAfterMs = Math.max(0, Math.ceil(sec * 1000));
+  }
+}
+
+err.code = _is429 ? "GEMINI_RATE_LIMIT" : "GEMINI_KEY_EXHAUSTED";
+
+err.detail = {
+  keysCount: (_keysStoredCount ?? tried.size),   // 기존 필드 유지(호환)
+  keysTriedCount: tried.size,                    // ✅ 이번 요청에서 실제 시도한 키 수
+  pt_date: pt_date_now,
+  next_reset_utc: pac.next_reset_utc,
+  last_error: _lastMsg,
+  last_status: _lastStatus,
+  retry_after_ms: _retryAfterMs,
+};
+
+throw err;
 }
 
 // ─────────────────────────────
@@ -5073,7 +5260,13 @@ switch (safeMode) {
       };
       partial_scores.qv_answer = safeMode === "qv" ? pre.answer_ko : null;
     } catch (e) {
-      if (e?.code === "INVALID_GEMINI_KEY" || e?.code === "GEMINI_KEY_EXHAUSTED" || e?.code === "GEMINI_KEY_MISSING") throw e;
+      if (
+  e?.code === "INVALID_GEMINI_KEY" ||
+  e?.code === "GEMINI_KEY_EXHAUSTED" ||
+  e?.code === "GEMINI_KEY_MISSING" ||
+  e?.code === "GEMINI_RATE_LIMIT"
+) throw e;
+
       qvfvPre = null;
       qvfvPreDone = false;
       if (DEBUG) console.warn("⚠️ QV/FV preprocess one-shot fail:", e.message);
@@ -6114,7 +6307,13 @@ ${JSON.stringify(external.klaw).slice(0, 6000)}
         recordTime(geminiTimes, "lv_flash_lite_summary_ms", ms_lv);
         recordMetric(geminiMetrics, "lv_flash_lite_summary", ms_lv);
       } catch (e) {
-        if (e?.code === "INVALID_GEMINI_KEY" || e?.code === "GEMINI_KEY_EXHAUSTED" || e?.code === "GEMINI_KEY_MISSING") throw e;
+        if (
+  e?.code === "INVALID_GEMINI_KEY" ||
+  e?.code === "GEMINI_KEY_EXHAUSTED" ||
+  e?.code === "GEMINI_KEY_MISSING" ||
+  e?.code === "GEMINI_RATE_LIMIT"
+) throw e;
+
         if (DEBUG) console.warn("⚠️ LV Flash-Lite summary fail:", e.message);
         lvSummary = null;
       }
@@ -6911,7 +7110,13 @@ verifyModelUsed = m;
       verifyModelUsed = m; // ✅ 실제 성공 모델 기록
       break;
     } catch (e) {
-      if (e?.code === "INVALID_GEMINI_KEY" || e?.code === "GEMINI_KEY_EXHAUSTED" || e?.code === "GEMINI_KEY_MISSING") throw e;
+      if (
+  e?.code === "INVALID_GEMINI_KEY" ||
+  e?.code === "GEMINI_KEY_EXHAUSTED" ||
+  e?.code === "GEMINI_KEY_MISSING" ||
+  e?.code === "GEMINI_RATE_LIMIT"
+) throw e;
+
       const status = e?.response?.status;
 
       if (status === 429) throw e; // ✅ 쿼터 소진은 즉시 상위로
@@ -6970,7 +7175,13 @@ if (!verify || !String(verify).trim()) {
   }
 }
     } catch (e) {
-      if (e?.code === "INVALID_GEMINI_KEY" || e?.code === "GEMINI_KEY_EXHAUSTED" || e?.code === "GEMINI_KEY_MISSING") throw e;
+      if (
+  e?.code === "INVALID_GEMINI_KEY" ||
+  e?.code === "GEMINI_KEY_EXHAUSTED" ||
+  e?.code === "GEMINI_KEY_MISSING" ||
+  e?.code === "GEMINI_RATE_LIMIT"
+) throw e;
+
       const status = e.response?.status;
 
       if (status === 429) {
@@ -7407,6 +7618,16 @@ if (e?.code === "INVALID_GEMINI_KEY") {
       e?.detail || e?.message
     )
   );
+}
+
+if (e?.code === "GEMINI_RATE_LIMIT") {
+  return res.status(200).json({
+    success: false,
+    code: "GEMINI_RATE_LIMIT",
+    message: "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.",
+    timestamp: new Date().toISOString(),
+    detail: e.detail || null,
+  });
 }
 
 // ✅ Gemini 키링 모두 소진(쿼터/인증 등)도 코드 유지해서 그대로 반환
