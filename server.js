@@ -1644,8 +1644,9 @@ async function ensureGeminiResetIfNeeded(userId, secrets) {
   const state = secrets?.gemini?.keyring?.state || {};
   const last = state.last_reset_pt_date;
 
-  // PT 날짜가 바뀌면 "소진표시(exhausted)" 전부 해제
-  if (pt_date_now && last && last !== pt_date_now) {
+    // PT 날짜가 바뀌면 exhausted 초기화
+  // (last가 null이어도 날짜가 잡히면 바로 초기화되게)
+  if (pt_date_now && last !== pt_date_now) {
     state.exhausted_ids = {};
     state.last_reset_pt_date = pt_date_now;
     secrets.gemini.keyring.state = state;
@@ -1725,12 +1726,13 @@ async function getGeminiKeyFromDB(userId) {
     const cand = pickGeminiKeyCandidate(secrets);
     if (!cand.keyId || !cand.enc) break;
 
-    // 무한루프 방지
-        if (tried.has(cand.keyId)) {
-      // ✅ 같은 키만 반복 선택되는 경우: active_id를 다음으로 넘기고 계속
-      await setGeminiActiveId(userId, secrets, cand.keyId);
+        // 무한루프 방지: 같은 키가 다시 나오면 active_id를 "다음 키"로 넘기고 계속
+    if (tried.has(cand.keyId)) {
+      const nextId = _rotateKeyId(keys, cand.keyId) || keys[0]?.id || null;
+      await setGeminiActiveId(userId, secrets, nextId);
       continue;
     }
+
     tried.add(cand.keyId);
 
         let keyPlain = null;
@@ -3540,10 +3542,18 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
   // 2) 여기까지 오면: hint도 실패 + keyring 키도 전부 실패
   const err = new Error("Gemini keys are not usable. (keyring)");
   err.code = "GEMINI_KEY_EXHAUSTED";
+    const _keysStoredCount =
+    (typeof userSecrets !== "undefined" && Array.isArray(userSecrets?.gemini?.keyring?.keys))
+      ? userSecrets.gemini.keyring.keys.length
+      : (typeof secrets !== "undefined" && Array.isArray(secrets?.gemini?.keyring?.keys))
+        ? secrets.gemini.keyring.keys.length
+        : null;
+
   err.detail = {
-    keysCount: tried.size,
-    pt_date: lastKctx?.pt_date ?? null,
-    next_reset_utc: lastKctx?.next_reset_utc ?? null,
+    keysCount: (_keysStoredCount ?? tried.size),   // 기존 필드 유지(호환) + 의미 개선
+    keysTriedCount: tried.size,                    // ✅ 이번 요청에서 실제 시도한 키 수
+    pt_date: pt_date_now,
+    next_reset_utc: pac.next_reset_utc,
     last_error: lastErr ? String(lastErr?.message || lastErr) : null,
   };
   throw err;
@@ -6808,128 +6818,68 @@ const coreText =
         partial_scores,
       };
 
-      const verifyPrompt = `
-당신은 "Cross-Verified AI" 시스템의 메타 검증 엔진입니다.
+            const verifyPrompt = `
+You are the evaluation module of "Cross-Verified AI".
 
-목표:
-- 하나의 요청으로 아래 작업을 모두 수행합니다.
-  1) (필요한 경우에만) core_text를 의미 단위 블록으로 나누기
-  2) 각 블록을 외부 검증엔진 결과 및 blocks[i].evidence와 비교하여 부분 TruthScore(0~1) 계산
-  3) 전체 문장/코드에 대한 종합 TruthScore(0~1 구간, raw) 계산
-  4) 각 검증엔진별로 이번 질의에 대한 국소 보정값(0.9~1.1) 제안
+RETURN ONLY VALID JSON.
+- No markdown, no triple backticks, no code fences, no extra text.
+- Must start with "{" and end with "}".
+- Strict JSON: double quotes for keys/strings, no trailing commas.
 
-[입력 JSON]
+[INPUT JSON]
 ${safeVerifyInputForGemini(verifyInput, VERIFY_INPUT_CHARS)}
 
-[출력 규칙(매우 중요)]
-반드시 "JSON만" 출력하세요. (\`\`\`json 같은 코드펜스/설명문 금지)
-문자열 값 안에 쌍따옴표(")를 쓰지 마세요. 필요하면 작은따옴표(') 또는 다른 표현으로 바꾸세요.
+[TASK]
+1) Blocks
+- If input.blocks is a non-empty array: evaluate each block in order.
+- If input.blocks is empty: split input.core_text into 2~8 short blocks (keep meaning) and evaluate.
 
-입력 필드 설명(요약):
-- mode: "qv" | "fv" | "dv" | "cv" 중 하나
-- query: 사용자가 입력한 질문 또는 사실 문장
-- core_text:
-    - QV: Gemini가 생성한 "답변" (검증 대상)
-    - FV: 사용자가 입력한 "사실 문장" (검증 대상)
-    - DV: "어떤 개발 과제를 하려는지"에 대한 설명
-    - CV: 실제 검증 대상 코드/설계 또는 요약
-- blocks:
-    - QV/FV: 전처리 단계에서 이미 생성된 의미 블록 배열
-      (각 요소는 id, text, queries, evidence(crossref/openalex/wikidata/gdelt/naver) 를 포함)
-    - DV/CV: 서버에서 비워둘 수 있음([])
-- external: crossref / openalex / wikidata / gdelt / naver / github / klaw 등 외부 엔진 결과
-- partial_scores: 서버에서 미리 계산된 전역 스코어
-    (예: recency, validity, consistency, engine_factor, naver_tier_factor 등)
-// ✅ JSON 출력 안정화 규칙(중요)
-// - 출력은 오직 JSON 1개(마크다운/코드펜스 금지)
-// - 문자열 값 내부에 쌍따옴표(") 사용 금지 (필요하면 작은따옴표(') 쓰거나 단어로 풀어서)
-// - 반드시 JSON.parse 가능한 형태로만 출력(escape 포함)
-// - trailing comma 금지    
-- partial_scores.engines_used: (QV/FV) 실제로 evidence가 남아있는 엔진 목록(E_eff)입니다.
-  engines_used에 없는 엔진은 "근거 없음"이므로 support/conflict 판단에 포함하지 말고, engine_adjust도 1.0 근처로 두세요.
+For each block output:
+- id: number (keep given id if present, otherwise 1..N)
+- text: block text
+- block_truthscore: number in [0,1]
+- irrelevant_urls: array of URLs (strings). If evidence URLs are irrelevant to the block meaning, put them here.
+- evidence: { support: string[], conflict: string[] } (engine names only, e.g. "naver","crossref","openalex","wikidata","gdelt","github","klaw")
+- comment: 1~2 Korean sentences explaining why.
+  - If you can, cite at least one evidence item briefly like: [host] title (url)
 
-// ✅ [ADD] Irrelevant URL handling (context-based disambiguation)
-// - evidence item이 문맥상 무관하면(예: "수도"=capital 질문인데 "수도사업소/상수도/아리수" 같은 waterworks)
-//   support/conflict 판단에 포함하지 말고, blocks[i].irrelevant_urls에 URL을 넣으세요.
-// - irrelevant로 분류한 근거만 존재하는 경우: block_truthscore를 0.55 이하로 낮추고 comment에 "근거 무관/의미혼동"을 명시하세요.
-// - irrelevant_urls는 verify 한 번에서 같이 출력(추가 호출 없음)
+Rules:
+- If evidence looks irrelevant/ambiguous for this block: include those URLs in irrelevant_urls AND set block_truthscore <= 0.55 and explain in comment.
+- If there is no usable evidence: set block_truthscore around 0.55 and explain "근거 부족".
 
-[작업 지침]
+2) Overall
+- overall_truthscore_raw: number in [0,1], aggregate based on block_truthscore (you may lightly consider input.partial_scores like recency/validity).
+- summary: 1~3 Korean sentences.
 
-1. 블록 사용 규칙
-   - blocks 배열이 "비어있지 않은 경우"(QV/FV):
-     - blocks[i]를 그대로 사용하고, 절대 재분해/병합/삭제하지 마세요.
-     - 각 blocks[i].text가 이미 의미 단위로 분리된 상태입니다.
-      - 각 blocks[i].evidence 안의 엔진별 결과를 근거로 block_truthscore를 계산하세요.
-         - (중요) evidence 항목에 evidence_text가 있으면, 해당 URL에서 추출한 짧은 본문 발췌입니다. 수치/팩트 검증에 우선 사용하세요.
-                  - (필수) comment에는 실제 근거 조각을 1~2개 반드시 명시하세요.
-           형식 예:
-             - [host] "핵심 문장/구절/숫자" (url)
-         - (필수) 숫자/연도 주장(예: 2022=0.78)은 evidence_text/desc/snippet 어디에도 해당 숫자/연도가 실제로 없으면
-           support로 두지 말고 block_truthscore를 0.55 이하로 낮추고 "근거 미확인"을 comment에 쓰세요.
-   - blocks 배열이 "비어있는 경우"(주로 DV/CV):
-     - core_text를 의미적으로 자연스러운 2~8개 블록으로 직접 분할해도 좋습니다.
-     - 이때 evidence는 external 전체를 참고하여 간접적으로 판단합니다.
+3) Engine adjust
+- engine_adjust: object of per-engine factor in [0.90, 1.10]
+- Prefer engines in input.partial_scores.engines_used (if present). Otherwise use input.engines_requested or known engines.
+- If an engine has no usable evidence for this request, keep it at 1.00.
 
-2. 블록별 TruthScore(block_truthscore, 0~1)
-   - 각 블록에 대해 외부 증거와 비교하여 0~1 사이 점수를 매기십시오.
-   - 기준:
-     - 0.90~1.00: 강하게 뒷받침됨 (여러 엔진에서 일관되게 지지)
-     - 0.70~0.89: 대체로 타당 (직접적인 증거는 일부지만, 방향성 일치)
-     - 0.40~0.69: 불확실 / 부분적으로만 지지 (간접적이거나 단편적인 근거)
-     - 0.10~0.39: 근거 부족 또는 논쟁적 (명확한 지지가 없거나 모순 가능성)
-     - 0.00~0.09: 명백히 잘못되었거나 반대 증거 존재
-   - 각 블록마다 어떤 엔진이 지지(support) / 충돌(conflict)하는지 기록하십시오.
-
-3. 종합 TruthScore(overall_truthscore_raw, 0~1)
-   - 블록별 점수와 partial_scores(recency, validity, consistency 등)를 종합하여
-     0~1 사이의 overall_truthscore_raw를 계산하십시오.
-   - 이 값은 "순수 0~1 척도"이며, 서버에서는
-     truthscore = overall_truthscore_raw
-     와 같이 0~1 범위 그대로 사용합니다.
-   - overall_truthscore_raw가 1에 가까울수록 전체 내용이 매우 잘 뒷받침됨을 의미합니다.
-
-4. 엔진별 보정 제안(engine_adjust)
-   - external과 partial_scores를 참고하여,
-     이번 질의에서 각 엔진의 신뢰도를 0.9~1.1 범위로 제안하십시오.
-   - 키: "crossref", "openalex", "wikidata", "gdelt", "naver", "github"
-   - 값:
-     - 1.0 = 중립
-     - 1.02~1.08: 이번 질의에서는 특히 품질이 좋음
-     - 0.92~0.98: 품질/일관성이 떨어지므로 약간 낮게
-   - 해당 엔진 데이터가 거의 없거나 의미가 없으면 1.0 근처로 설정하십시오.
-
-5. 설명은 한국어로 간단하게 작성하세요.
-   - block별 comment, overall.summary는 한국어 1~3문장 정도로 충분합니다.
-
-[출력 형식]
-반드시 아래 JSON 형식 **그대로**만 출력하고, 추가 텍스트를 절대 넣지 마십시오.
-
+[OUTPUT JSON SCHEMA]
 {
   "blocks": [
     {
       "id": 1,
-      "text": "이 블록에 해당하는 텍스트",
+      "text": "…",
       "block_truthscore": 0.85,
-      "irrelevant_urls": []
-      "evidence": {
-        "support": ["crossref","naver"],
-        "conflict": ["wikidata"]
-      },
-      "comment": "이 블록에 이런 점수를 준 이유를 한국어로 한두 문장 설명"
+      "irrelevant_urls": [],
+      "evidence": { "support": ["naver"], "conflict": [] },
+      "comment": "…"
     }
   ],
   "overall": {
     "overall_truthscore_raw": 0.82,
-    "summary": "전체적으로 어떤 부분은 잘 뒷받침되고, 어떤 부분은 불확실한지 한국어로 2~3문장 설명"
+    "summary": "…"
   },
   "engine_adjust": {
-    "crossref": 1.03,
+    "crossref": 1.00,
     "openalex": 1.00,
-    "wikidata": 0.97,
-    "gdelt": 1.05,
-    "naver": 0.99,
-    "github": 1.04
+    "wikidata": 1.00,
+    "gdelt": 1.00,
+    "naver": 1.00,
+    "github": 1.00,
+    "klaw": 1.00
   }
 }
 `.trim();
