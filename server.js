@@ -6588,104 +6588,168 @@ let answerModelUsed = "gemini-2.5-flash";
       // - 숫자 블록일 때만, TOPK URL만, 총 fetch 수 제한
             // ✅ (패치) 숫자/연도 블록이면: 블록별로 "가장 맞는" Naver URL을 골라 evidence_text를 채움
             if (NAVER_NUMERIC_FETCH && (safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
-        let budget = NAVER_NUMERIC_FETCH_MAX;
+  let budget = NAVER_NUMERIC_FETCH_MAX;
 
-        // ✅ 같은 URL 중복 fetch 방지(요청 단위)
-        const __nfSeen = new Set();
+  // 이미 본 URL 중복 fetch 방지(성능/부하)
+  const __nfSeen = new Set();
 
-        for (const b of blocksForVerify) {
-          if (budget <= 0) break;
-          if (!hasNumberLike(b?.text) && !hasNumberLike(query)) continue;
+  // 통계청·KOSIS·국가통계 등 "핵심 통계 도메인" 우선 보호
+  const __coreStatDomains = [
+    "kostat.go.kr",
+    "kosis.kr",
+    "index.go.kr",
+    "worldbank.org",
+    "oecd.org",
+  ];
+  const __isCoreStatHost = (host = "") =>
+    __coreStatDomains.some((d) => host.endsWith(d));
 
-          const evsAll = Array.isArray(b?.evidence?.naver) ? b.evidence.naver : [];
-          if (evsAll.length === 0) continue;
+  const __getHostFromUrl = (u = "") => {
+    try {
+      const _u = new URL(u);
+      return String(_u.hostname || "").toLowerCase();
+    } catch {
+      return "";
+    }
+  };
 
-          const needle = `${String(b?.text || "")} ${String(query || "")}`.trim();
-          const years = Array.from(needle.matchAll(/\b(19\d{2}|20\d{2})\b/g)).map(m => m[1]);
-          const nums  = Array.from(needle.matchAll(/(\d+(?:\.\d+)?)/g)).map(m => m[1]).filter(x => x && x.length <= 10);
-          const kw = extractKeywords(needle, 12);
+  for (const b of blocksForVerify) {
+    if (budget <= 0) break;
+    if (!hasNumberLike(b?.text) && !hasNumberLike(query)) continue;
 
-          // ✅ fetch 후보 3개를 "연도/숫자 매칭 + 관련도"로 랭킹
-          const scored = [];
-          for (const ev of evsAll) {
-            const urlCand = String(ev?.source_url || ev?.link || "").trim();
-            if (!urlCand) continue;
-            if (!isSafeExternalHttpUrl(urlCand)) continue;
+    const evsAll = Array.isArray(b?.evidence?.naver) ? b.evidence.naver : [];
+    if (evsAll.length === 0) continue;
 
-            const text = `${String(ev?.title || "")} ${String(ev?.desc || "")}`;
-            const rel = keywordHitRatio(text, kw);
+    const needle = `${String(b?.text || "")} ${String(query || "")}`.trim();
+    const years = Array.from(needle.matchAll(/\b(19\d{2}|20\d{2})\b/g)).map(m => m[1]);
+    const nums  = Array.from(needle.matchAll(/(\d+(?:\.\d+)?)/g)).map(m => m[1]).filter(x => x && x.length <= 10);
+    const kw = extractKeywords(needle, 12);
 
-            const isWhitelisted = (ev?.whitelisted === true) || !!ev?.tier;
-            const isInferred = (ev?.inferred === true);
+    // URL별 fetch 후보 3개 정도만: 연도/숫자 매칭 + 관련도 + 화이트리스트/도메인 가중치
+    const scored = [];
+    for (const ev of evsAll) {
+      const urlCand = String(ev?.source_url || ev?.link || "").trim();
+      if (!urlCand) continue;
+      if (!isSafeExternalHttpUrl(urlCand)) continue;
 
-            const hasYear = years.length ? years.some(y => text.includes(y)) : false;
-            const hasExactNum = nums.length ? nums.some(n => text.includes(n)) : false;
-            const hasAnyNum = hasNumberLike(text);
+      const text = `${String(ev?.title || "")} ${String(ev?.desc || "")}`;
+      const rel = keywordHitRatio(text, kw);
 
-            const allowInferred = isInferred && rel >= 0.25;
-            const allowNonWhitelist =
-              !isWhitelisted && !isInferred &&
-              (hasYear || hasExactNum || (hasAnyNum && rel >= 0.35));
+      const isWhitelisted = (ev?.whitelisted === true) || !!ev?.tier;
+      const isInferred = (ev?.inferred === true);
 
-            if (!isWhitelisted && !allowInferred && !allowNonWhitelist) continue;
+      const hasYear = years.length ? years.some(y => text.includes(y)) : false;
+      const hasExactNum = nums.length ? nums.some(n => text.includes(n)) : false;
+      const hasAnyNum = hasNumberLike(text);
 
-            let baseW = 1.0;
-            if (typeof ev?.tier_weight === "number" && Number.isFinite(ev.tier_weight)) baseW *= ev.tier_weight;
-            if (typeof ev?.type_weight === "number" && Number.isFinite(ev.type_weight)) baseW *= ev.type_weight;
-// ✅ (중복 감점 방지) selection 단계와 동일: 여기서는 baseW 추가 곱셈을 하지 않음
+      const allowInferred = isInferred && rel >= 0.25;
+      const allowNonWhitelist =
+        !isWhitelisted && !isInferred &&
+        (hasYear || hasExactNum || (hasAnyNum && rel >= 0.35));
 
-            let bonus = 1.0;
-            if (years.length || nums.length) {
-              if (hasYear) bonus *= 1.10;
-              if (hasExactNum) bonus *= NAVER_NUM_MATCH_BOOST;
-              if (!hasYear && !hasExactNum) bonus *= 0.85;
-            }
-            if (hasAnyNum) bonus *= 1.10;
+      if (!isWhitelisted && !allowInferred && !allowNonWhitelist) continue;
 
-            const score = baseW * (0.55 + 0.45 * rel) * bonus;
-            scored.push({ ev, score });
-          }
+      let baseW = 1.0;
+      if (typeof ev?.tier_weight === "number" && Number.isFinite(ev.tier_weight)) baseW *= ev.tier_weight;
+      if (typeof ev?.type_weight === "number" && Number.isFinite(ev.type_weight)) baseW *= ev.type_weight;
 
-          scored.sort((a, b) => b.score - a.score);
-          const candidates = scored.slice(0, 3).map(x => x.ev);
+      // (추가) 도메인 기준 가중치 – 통계청/KOSIS 계열은 강하게 우대
+      const hostRaw = String(ev?.host || ev?.source_host || "").toLowerCase();
+      const hostFromUrl = __getHostFromUrl(urlCand);
+      const host = hostRaw || hostFromUrl;
 
-          for (const ev of candidates) {
-            if (budget <= 0) break;
-            if (ev?.evidence_text) continue;
-
-            // ✅ url은 여기서 "한 번만" 선언
-            const url = String(ev?.source_url || ev?.link || "").trim();
-            if (!url) continue;
-
-            // ✅ dedupe는 url 선언 "다음" + 루프 안에서만
-            if (__nfSeen.has(url)) continue;
-            __nfSeen.add(url);
-
-            let pageText = null;
-            try {
-              pageText = await withTimebox(
-                ({ signal }) => fetchReadableText(url, NAVER_FETCH_TIMEOUT_MS, { signal }),
-                NAVER_FETCH_TIMEOUT_MS,
-                "naver_numeric_fetch"
-              );
-            } catch {
-              continue;
-            }
-            if (!pageText) continue;
-
-            // ✅ blockText만 말고 (block+query) needle로 발췌하면 매칭률↑
-            const excerpt = extractExcerptContainingNumbers(pageText, needle, EVIDENCE_EXCERPT_CHARS);
-            if (!excerpt) continue;
-
-            if (NAVER_STRICT_YEAR_MATCH && years.length) {
-              if (!years.some(y => excerpt.includes(y))) continue;
-            }
-
-            ev.evidence_text = excerpt;
-            budget -= 1;
-          }
-        }
+      let hostBonus = 1.0;
+      if (host && __isCoreStatHost(host)) {
+        hostBonus *= 1.35;        // 통계청/KOSIS/국가통계/국제통계 사이트 강한 우대
+      } else if (host && host.endsWith("un.org")) {
+        hostBonus *= 1.15;        // UN 계열(인구 DB 등)
+      } else if (host && host.includes("blog.naver.com")) {
+        // 블로그는 기본적으로 숫자가 잘 맞아도 살짝 디스카운트
+        hostBonus *= 0.9;
       }
+
+      let bonus = 1.0;
+      if (years.length || nums.length) {
+        if (hasYear) bonus *= 1.10;
+        if (hasExactNum) bonus *= NAVER_NUM_MATCH_BOOST;
+        if (!hasYear && !hasExactNum) bonus *= 0.85;
+      }
+      if (hasAnyNum) bonus *= 1.10;
+
+      const score = baseW * hostBonus * (0.55 + 0.45 * rel) * bonus;
+      scored.push({ ev, score, host });
+    }
+
+    if (scored.length === 0) continue;
+
+    scored.sort((a, b) => b.score - a.score);
+
+    // (추가) 핵심 통계 도메인에서 최소 1개는 보호 슬롯으로 확보
+    let corePreferred = null;
+    for (const item of scored) {
+      if (item.host && __isCoreStatHost(item.host)) {
+        corePreferred = item;
+        break;
+      }
+    }
+
+    const candidates = [];
+    const candSeen = new Set();
+
+    if (corePreferred && corePreferred.ev) {
+      const ev = corePreferred.ev;
+      const u = String(ev?.source_url || ev?.link || "").trim();
+      candidates.push(ev);
+      if (u) candSeen.add(u);
+    }
+
+    for (const item of scored) {
+      if (candidates.length >= 3) break;
+      const ev = item.ev;
+      if (!ev) continue;
+      if (corePreferred && ev === corePreferred.ev) continue;
+
+      const u = String(ev?.source_url || ev?.link || "").trim();
+      if (u && candSeen.has(u)) continue;
+
+      candidates.push(ev);
+      if (u) candSeen.add(u);
+    }
+
+    for (const ev of candidates) {
+      if (budget <= 0) break;
+      if (ev?.evidence_text) continue;
+
+      const url = String(ev?.source_url || ev?.link || "").trim();
+      if (!url) continue;
+
+      if (__nfSeen.has(url)) continue;
+      __nfSeen.add(url);
+
+      let pageText = null;
+      try {
+        pageText = await withTimebox(
+          ({ signal }) => fetchReadableText(url, NAVER_FETCH_TIMEOUT_MS, { signal }),
+          NAVER_FETCH_TIMEOUT_MS,
+          "naver_numeric_fetch"
+        );
+      } catch {
+        continue;
+      }
+      if (!pageText) continue;
+
+      const excerpt = extractExcerptContainingNumbers(pageText, needle, EVIDENCE_EXCERPT_CHARS);
+      if (!excerpt) continue;
+
+      if (NAVER_STRICT_YEAR_MATCH && years.length) {
+        if (!years.some(y => excerpt.includes(y))) continue;
+      }
+
+      ev.evidence_text = excerpt;
+      budget -= 1;
+    }
+  }
+}
 
 // ✅ S-12: evidence-aware block pruning (no-evidence blocks removed BEFORE Gemini verify)
 // - blocksForVerify는 "검증 입력"이므로 여기서 잘라내면 (1) 환각 블록 방지 (2) verify 시간 단축
@@ -6755,6 +6819,36 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
     dropped,
     numeric_soft_warnings,
   };
+}
+
+// (log) numeric_evidence_match 직전: 숫자 claim 블록/엔진 개괄 로그
+if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
+  try {
+    const numericCandidates = [];
+
+    for (const b of blocksForVerify) {
+      const txt = `${b?.text || ""} ${query || ""}`;
+      if (!hasStrongNumberLike(txt)) continue;
+
+      const ev = b?.evidence || {};
+      const enginesWithEvidence = Object.keys(ev).filter(
+        (k) => Array.isArray(ev[k]) && ev[k].length > 0
+      );
+
+      numericCandidates.push({
+        id: b?.id,
+        text: String(b?.text || "").slice(0, 200),
+        engines: enginesWithEvidence,
+      });
+    }
+
+    partial_scores.numeric_evidence_match_pre = {
+      blocks_total: blocksForVerify.length,
+      numeric_candidates: numericCandidates,
+    };
+  } catch (_e) {
+    // logging 실패는 무시
+  }
 }
 
 // ✅ S-13/S-12: numeric/year strict evidence match + (optional) drop no-evidence claim blocks (QV/FV)
