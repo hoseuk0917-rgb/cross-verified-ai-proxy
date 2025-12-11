@@ -7876,110 +7876,73 @@ if (snippetMeta) {
   payload.snippet_meta = snippetMeta;
 }
 
-  // ✅ diagnostics: 점수가 이렇게 나온 이유를 한 번에 보기 위한 요약 정보
-  //   - effective_engines / coverage_factor / conflict_meta
-  //   - numeric_evidence_match_pre / numeric_evidence_match
-  try {
-    const ps = partial_scores || {};
-
-    const effEngines = Array.isArray(ps.effective_engines)
-      ? ps.effective_engines
-      : [];
-    const effCount =
-      typeof ps.effective_engines_count === "number"
-        ? ps.effective_engines_count
-        : effEngines.length;
-
-    const coverage =
-      typeof ps.coverage_factor === "number" ? ps.coverage_factor : null;
-
-    const conflictMeta =
-      ps.conflict_meta && typeof ps.conflict_meta === "object"
-        ? ps.conflict_meta
-        : null;
-
-    const numericPre =
-      ps.numeric_evidence_match_pre &&
-      typeof ps.numeric_evidence_match_pre === "object"
-        ? ps.numeric_evidence_match_pre
-        : null;
-
-    const numericFinal =
-      ps.numeric_evidence_match &&
-      typeof ps.numeric_evidence_match === "object"
-        ? ps.numeric_evidence_match
-        : null;
-
-    payload.diagnostics = {
-      effective_engines: effEngines,
-      effective_engines_count: effCount,
-      coverage_factor: coverage,
-      conflict_meta: conflictMeta,
-      numeric_evidence_match_pre: numericPre,
-      numeric_evidence_match: numericFinal,
-    };
-  } catch {
-    // diagnostics 구성 중 에러는 무시 (응답 자체에는 영향 주지 않음)
-  }
-
-// ✅ verdict_label / verdict_detail 계산 (truthscore + conflict_meta 기반)
+// ✅ diagnostics: 점수가 이렇게 나온 이유를 한 번에 보기 위한 요약 정보
+//   - effective_engines / coverage_factor / conflict_meta
+//   - numeric_evidence_match_pre / numeric_evidence_match
 try {
-  // 0~1 스코어 가져오기
-  const ts01 =
-    Number.isFinite(payload?.truthscore_01)
-      ? Number(payload.truthscore_01)
-      : typeof truthscore === "number"
-      ? truthscore
-      : NaN;
+  const ps = partial_scores || {};
 
-  // conflict_meta: diagnostics 또는 partial_scores 에서 찾아오기
-  const cm =
-    (payload?.diagnostics &&
-      payload.diagnostics.conflict_meta &&
-      typeof payload.diagnostics.conflict_meta === "object"
-      ? payload.diagnostics.conflict_meta
-      : partial_scores?.conflict_meta &&
-        typeof partial_scores.conflict_meta === "object"
-      ? partial_scores.conflict_meta
-      : null);
+  const effEngines = Array.isArray(ps.effective_engines)
+    ? ps.effective_engines
+    : [];
+  const effCount =
+    typeof ps.effective_engines_count === "number"
+      ? ps.effective_engines_count
+      : effEngines.length;
 
-  const conflictIndex =
-    cm && typeof cm.conflict_index === "number" ? cm.conflict_index : null;
+  const coverage =
+    typeof ps.coverage_factor === "number" ? ps.coverage_factor : null;
 
-  let verdictLabel = null;
+  const conflictMeta =
+    ps.conflict_meta && typeof ps.conflict_meta === "object"
+      ? ps.conflict_meta
+      : null;
 
-  if (Number.isFinite(ts01)) {
-    // 1) 근거가 전부 conflict 쪽으로 몰렸고 점수도 낮으면 → "likely_false_conflict"
-    if (conflictIndex === 1 && ts01 <= 0.5) {
-      verdictLabel = "likely_false_conflict";
+  const numericPre =
+    ps.numeric_evidence_match_pre &&
+    typeof ps.numeric_evidence_match_pre === "object"
+      ? ps.numeric_evidence_match_pre
+      : null;
+
+  const numericFinal =
+    ps.numeric_evidence_match &&
+    typeof ps.numeric_evidence_match === "object"
+      ? ps.numeric_evidence_match
+      : null;
+
+  payload.diagnostics = {
+    effective_engines: effEngines,
+    effective_engines_count: effCount,
+    coverage_factor: coverage,
+    conflict_meta: conflictMeta,
+    numeric_evidence_match_pre: numericPre,
+    numeric_evidence_match: numericFinal,
+  };
+} catch {
+  // diagnostics 구성 중 에러는 무시 (응답 자체에는 영향 주지 않음)
+}
+
+// ✅ verdict_label 기반 한국어 요약 메시지 추가
+try {
+  const vLabel = payload && payload.verdict_label;
+
+  if (vLabel) {
+    let vMessage = null;
+
+    if (vLabel === "likely_true") {
+      vMessage = "대체로 사실일 가능성이 높습니다.";
+    } else if (vLabel === "likely_false_conflict") {
+      vMessage =
+        "사실이 아닐 가능성이 높고, 검색된 근거들과 상충합니다.";
+    } else {
+      // borderline_uncertain 등 그 외 레이블
+      vMessage = "불확실하거나 추가 검증이 필요합니다.";
     }
-    // 2) 충분히 높은 점수 → 사실일 가능성 높음
-    else if (ts01 >= 0.7) {
-      verdictLabel = "likely_true";
-    }
-    // 3) 충분히 낮은 점수 → 거짓일 가능성 높음
-    else if (ts01 <= 0.3) {
-      verdictLabel = "likely_false";
-    }
-    // 4) 중간대 → 일부만 맞거나 혼재된 경우
-    else {
-      verdictLabel = "uncertain_or_mixed";
-    }
 
-    payload.verdict_label = verdictLabel;
-    payload.verdict_detail = {
-      mode: safeMode,
-      truthscore_01: Number(ts01.toFixed(4)),
-      conflict_index: conflictIndex,
-      effective_engines: Array.isArray(payload?.diagnostics?.effective_engines)
-        ? payload.diagnostics.effective_engines
-        : Array.isArray(partial_scores?.effective_engines)
-        ? partial_scores.effective_engines
-        : [],
-    };
+    payload.verdict_message_ko = vMessage;
   }
 } catch {
-  // verdict 계산 실패해도 전체 응답에는 영향 없게 무시
+  // verdict 메시지 생성 중 오류는 무시 (응답 자체에는 영향 주지 않음)
 }
 
 // ✅ (필수) QV/FV/DV/CV에서 Gemini가 0ms 스킵인데 success:true로 나가는 것 방지
@@ -8002,6 +7965,7 @@ if (NEED_GEMINI) {
     });
   }
 }
+
 
 // ✅ debug: effective config & whitelist meta (Render env: DEBUG_EFFECTIVE_CONFIG=1)
 if (process.env.DEBUG_EFFECTIVE_CONFIG === "1") {
