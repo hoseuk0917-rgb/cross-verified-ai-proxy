@@ -7775,21 +7775,77 @@ await supabase.from("verification_logs").insert([
   },
 ]);
 
-// ?????????????????????????????
-// ??寃곌낵 諛섑솚 (?⒱뀮 洹쒖빟 ?뺥깭濡??섑븨)
-// ?????????????????????????????
-const truthscore_pct = Math.round(truthscore * 10000) / 100; // 2 decimals
-const truthscore_text = `${truthscore_pct.toFixed(2)}%`;
+  // ?????????????????????????????
+  // ??野껉퀗??獄쏆꼹??(??깅?域뱀뮇鍮??類κ묶嚥???묐릅)
+  //   - truthscore(0~1)를 바로 퍼센트로 쓰지 않고
+  //   - conflict_meta / effective_engines / coverage_factor 기반으로
+  //     한번 더 "안전하게" 스무딩해서 truthscore_01을 만든다.
+  // ?????????????????????????????
 
-// ??normalizedPartial???곕줈 ?놁쑝???쇰떒 ?숈씪?섍쾶 ?ъ슜
-const normalizedPartial = partial_scores;
+  // 1) raw truthscore → 0~1 스케일 기본값
+  let truthscore_01_raw = Number(truthscore.toFixed(4));
+  let truthscore_01 = truthscore_01_raw;
 
-const payload = {
-  mode: safeMode,
-  truthscore: truthscore_text,
-  truthscore_pct,
-  truthscore_01: Number(truthscore.toFixed(4)),
-  elapsed,
+  try {
+    const effEngines = Array.isArray(partial_scores?.effective_engines)
+      ? partial_scores.effective_engines
+      : [];
+    const effCount =
+      typeof partial_scores?.effective_engines_count === "number"
+        ? partial_scores.effective_engines_count
+        : effEngines.length;
+
+    const coverage =
+      typeof partial_scores?.coverage_factor === "number"
+        ? partial_scores.coverage_factor
+        : 1;
+
+    const conflictIdx =
+      typeof partial_scores?.conflict_meta?.conflict_index === "number"
+        ? partial_scores.conflict_meta.conflict_index
+        : 0;
+
+    const hasStrongConflict = conflictIdx >= 0.8;          // (예) 대부분 conflict일 때
+    const lowCoverage = coverage < 0.5 || effCount <= 1;   // 엔진이 너무 적거나 coverage가 낮을 때
+
+    let t = truthscore_01;
+
+    // 1-A) 강한 상충(conflict) + 낮은 점수(≤0.5)면 false 쪽으로 조금 더 눌러줌
+    //      - 예: 0.15 → 0.12 정도로 내려가서 "거짓 + 상충"이 더 분명해짐
+    if (hasStrongConflict && t <= 0.5) {
+      t *= 0.8;
+    }
+
+    // 1-B) coverage가 낮고 엔진도 1~2개뿐이면 "불확실 → 0.5 근처"로 가볍게 스무딩
+    //      - 너무 낮은 점수/높은 점수를 0.5 쪽으로 살짝 당겨서
+    //        "엔진 부족한 상황에서의 과신"을 줄이기 위함
+    if (lowCoverage) {
+      t = 0.5 * t + 0.25;   //  t ← 0.5·t + 0.25   (0 → 0.25, 1 → 0.75 쪽으로)
+    }
+
+    // 1-C) 최종 클램프
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+
+    truthscore_01 = Number(t.toFixed(4));
+  } catch (_e) {
+    // 스무딩 중 에러가 나면 raw 그대로 사용
+    truthscore_01 = truthscore_01_raw;
+  }
+
+  // 2) 퍼센트 변환은 항상 최종 truthscore_01 기준으로
+  const truthscore_pct = Math.round(truthscore_01 * 10000) / 100; // 2 decimals
+  const truthscore_text = `${truthscore_pct.toFixed(2)}%`;
+
+  // ??normalizedPartial???怨뺤쨮 ??곸몵????곕뼊 ??덉뵬??띿쓺 ????
+  const normalizedPartial = partial_scores;
+
+  const payload = {
+    mode: safeMode,
+    truthscore: truthscore_text,
+    truthscore_pct,
+    truthscore_01,
+    elapsed,
 
   // ??S-15: engines_used ?먮룞 ?곗텧(紐낆떆 ?몄텧)
   engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
@@ -7819,6 +7875,52 @@ const payload = {
 if (snippetMeta) {
   payload.snippet_meta = snippetMeta;
 }
+
+  // ✅ diagnostics: 점수가 이렇게 나온 이유를 한 번에 보기 위한 요약 정보
+  //   - effective_engines / coverage_factor / conflict_meta
+  //   - numeric_evidence_match_pre / numeric_evidence_match
+  try {
+    const ps = partial_scores || {};
+
+    const effEngines = Array.isArray(ps.effective_engines)
+      ? ps.effective_engines
+      : [];
+    const effCount =
+      typeof ps.effective_engines_count === "number"
+        ? ps.effective_engines_count
+        : effEngines.length;
+
+    const coverage =
+      typeof ps.coverage_factor === "number" ? ps.coverage_factor : null;
+
+    const conflictMeta =
+      ps.conflict_meta && typeof ps.conflict_meta === "object"
+        ? ps.conflict_meta
+        : null;
+
+    const numericPre =
+      ps.numeric_evidence_match_pre &&
+      typeof ps.numeric_evidence_match_pre === "object"
+        ? ps.numeric_evidence_match_pre
+        : null;
+
+    const numericFinal =
+      ps.numeric_evidence_match &&
+      typeof ps.numeric_evidence_match === "object"
+        ? ps.numeric_evidence_match
+        : null;
+
+    payload.diagnostics = {
+      effective_engines: effEngines,
+      effective_engines_count: effCount,
+      coverage_factor: coverage,
+      conflict_meta: conflictMeta,
+      numeric_evidence_match_pre: numericPre,
+      numeric_evidence_match: numericFinal,
+    };
+  } catch {
+    // diagnostics 구성 중 에러는 무시 (응답 자체에는 영향 주지 않음)
+  }
 
 // ✅ (필수) QV/FV/DV/CV에서 Gemini가 0ms 스킵인데 success:true로 나가는 것 방지
 const NEED_GEMINI =
