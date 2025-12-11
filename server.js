@@ -745,12 +745,6 @@ const VERIFY_MAX_QUERY_CHARS = parseInt(process.env.VERIFY_MAX_QUERY_CHARS || "2
 const VERIFY_MAX_CORE_TEXT_CHARS = parseInt(process.env.VERIFY_MAX_CORE_TEXT_CHARS || "4000", 10);
 const VERIFY_MAX_USER_ANSWER_CHARS = parseInt(process.env.VERIFY_MAX_USER_ANSWER_CHARS || "8000", 10);
 
-function getClientIp(req) {
-  const xf = req.headers["x-forwarded-for"];
-  if (xf) return String(xf).split(",")[0].trim();
-  return req.ip || req.socket?.remoteAddress || "unknown";
-}
-
 function hash16(s) {
   try {
     return crypto.createHash("sha256").update(String(s)).digest("hex").slice(0, 16);
