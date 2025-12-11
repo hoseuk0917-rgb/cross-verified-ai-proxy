@@ -7407,28 +7407,98 @@ if (!verify || !String(verify).trim()) {
 
     verifyMeta = JSON.parse(jsonText);
 
-    // ✅ (optional) normalize if helper exists
-    if (typeof normalizeVerifyMeta === "function") {
-      try { verifyMeta = normalizeVerifyMeta(verifyMeta, verifyEvidenceLookup); } catch (_) {}
+// ✅ (optional) normalize if helper exists
+if (typeof normalizeVerifyMeta === "function") {
+  try {
+    verifyMeta = normalizeVerifyMeta(verifyMeta, verifyEvidenceLookup);
+  } catch (_) {}
+}
+
+// ✅ irrelevant_urls는 "딱 1번만" 수집
+try {
+  const _blocks = Array.isArray(verifyMeta?.blocks) ? verifyMeta.blocks : [];
+  const _urls = _blocks
+    .flatMap(b => (Array.isArray(b?.irrelevant_urls) ? b.irrelevant_urls : []))
+    .map(u => String(u || "").trim())
+    .filter(Boolean);
+
+  __irrelevant_urls = Array.from(new Set(_urls));
+} catch (_) {
+  __irrelevant_urls = [];
+}
+
+// ✅ NEW: conflict_meta 요약 (support/conflict 구조만 집계, TruthScore에는 아직 미반영)
+try {
+  if (verifyMeta && Array.isArray(verifyMeta.blocks)) {
+    const blocks = verifyMeta.blocks;
+
+    const byEngine = {};
+    let total_blocks = 0;
+    let support_blocks = 0;
+    let conflict_blocks = 0;
+
+    for (const b of blocks) {
+      if (!b) continue;
+      total_blocks += 1;
+
+      const ev = b.evidence || {};
+      const supportList = Array.isArray(ev.support) ? ev.support.filter(Boolean) : [];
+      const conflictList = Array.isArray(ev.conflict) ? ev.conflict.filter(Boolean) : [];
+
+      const hasSupport = supportList.length > 0;
+      const hasConflict = conflictList.length > 0;
+
+      if (hasSupport) support_blocks += 1;
+      if (hasConflict) conflict_blocks += 1;
+
+      const engines = new Set([...supportList, ...conflictList]);
+      for (const name of engines) {
+        if (!name) continue;
+        if (!byEngine[name]) {
+          byEngine[name] = { support: 0, conflict: 0, blocks: 0 };
+        }
+        byEngine[name].blocks += 1;
+      }
+
+      for (const name of supportList) {
+        if (!name) continue;
+        if (!byEngine[name]) {
+          byEngine[name] = { support: 0, conflict: 0, blocks: 0 };
+        }
+        byEngine[name].support += 1;
+      }
+
+      for (const name of conflictList) {
+        if (!name) continue;
+        if (!byEngine[name]) {
+          byEngine[name] = { support: 0, conflict: 0, blocks: 0 };
+        }
+        byEngine[name].conflict += 1;
+      }
     }
 
-    // ✅ irrelevant_urls는 "딱 1번만" 수집
-    try {
-      const _blocks = Array.isArray(verifyMeta?.blocks) ? verifyMeta.blocks : [];
-      const _urls = _blocks
-        .flatMap(b => (Array.isArray(b?.irrelevant_urls) ? b.irrelevant_urls : []))
-        .map(u => String(u || "").trim())
-        .filter(Boolean);
+    const denom = support_blocks + conflict_blocks;
+    const conflict_index =
+      denom > 0 ? Math.max(0, Math.min(1, conflict_blocks / denom)) : null;
 
-      __irrelevant_urls = Array.from(new Set(_urls));
-    } catch (_) {
-      __irrelevant_urls = [];
+    if (partial_scores && typeof partial_scores === "object") {
+      partial_scores.conflict_meta = {
+        total_blocks,
+        support_blocks,
+        conflict_blocks,
+        conflict_index,
+        by_engine: byEngine,
+      };
     }
-  } catch {
-    verifyMeta = null;
-    __irrelevant_urls = [];
-    if (DEBUG) console.warn("⚠️ verifyMeta JSON parse fail");
   }
+} catch (e) {
+  if (DEBUG) console.warn("⚠️ conflict_meta summarize error:", e.message || e);
+}
+} catch {
+  verifyMeta = null;
+  __irrelevant_urls = [];
+  if (DEBUG) console.warn("⚠️ verifyMeta JSON parse fail");
+}
 }
     } catch (e) {
       if (
