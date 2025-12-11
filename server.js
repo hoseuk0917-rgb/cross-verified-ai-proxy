@@ -6977,6 +6977,35 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
     };
   }
 
+  // [DEBUG] NAVER raw evidence + block-level evidence just before numeric_evidence_match
+if (DEBUG) {
+  try {
+    console.log("=== NAVER RAW EVIDENCE (external.naver) ===");
+    for (const ev of (external?.naver || [])) {
+      console.log({
+        host: ev?.source_host || ev?.host || null,
+        type: ev?.naver_type || null,
+        title: ev?.title || null,
+        link: ev?.link || ev?.source_url || ev?.url || null,
+      });
+    }
+
+    console.log("=== NAVER BLOCK EVIDENCE (blocksForVerify.evidence.naver) ===");
+    const __blocksForLog = Array.isArray(blocksForVerify) ? blocksForVerify : [];
+    for (const b of __blocksForLog) {
+      const evs = Array.isArray(b?.evidence?.naver) ? b.evidence.naver : [];
+      console.log({
+        block_id: b?.id ?? null,
+        block_text_preview: String(b?.text || "").slice(0, 80),
+        evidence_count: evs.length,
+        links: evs.map(ev => ev?.link || ev?.source_url || ev?.url).filter(Boolean),
+      });
+    }
+  } catch (logErr) {
+    console.warn("numeric_evidence_match debug log failed:", logErr?.message || logErr);
+  }
+}
+
   partial_scores.numeric_evidence_match = {
     strict_prune: STRICT_NUMERIC_PRUNE,
     items_before: itemsBefore,
