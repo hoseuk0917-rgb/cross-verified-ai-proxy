@@ -8311,6 +8311,19 @@ app.post(
   verifyCoreHandler
 );
 
+// ✅ QV/FV/DV/CV 공통 검증 엔드포인트
+//   - 기존 /api/verify 호출(앱의 QV/FV/DV/CV 모드)이 여기로 들어옴
+app.post("/api/verify", verifyCoreHandler);
+
+// ✅ Snippet 전용 검증 엔드포인트
+//   - /api/verify-snippet → snippetToVerifyBody가 snippet 전용 payload로 변환
+//   - 변환된 body를 verifyCoreHandler로 넘김
+app.post(
+  "/api/verify-snippet",
+  snippetToVerifyBody,
+  verifyCoreHandler
+);
+
 // ✅ /api/verify에서는 lv 금지 (LV는 /api/lv 전용)
 function rejectLvOnVerify(req, res, next) {
   const m = String(req.body?.mode || "").trim().toLowerCase();
