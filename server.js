@@ -7922,6 +7922,66 @@ if (snippetMeta) {
     // diagnostics 구성 중 에러는 무시 (응답 자체에는 영향 주지 않음)
   }
 
+// ✅ verdict_label / verdict_detail 계산 (truthscore + conflict_meta 기반)
+try {
+  // 0~1 스코어 가져오기
+  const ts01 =
+    Number.isFinite(payload?.truthscore_01)
+      ? Number(payload.truthscore_01)
+      : typeof truthscore === "number"
+      ? truthscore
+      : NaN;
+
+  // conflict_meta: diagnostics 또는 partial_scores 에서 찾아오기
+  const cm =
+    (payload?.diagnostics &&
+      payload.diagnostics.conflict_meta &&
+      typeof payload.diagnostics.conflict_meta === "object"
+      ? payload.diagnostics.conflict_meta
+      : partial_scores?.conflict_meta &&
+        typeof partial_scores.conflict_meta === "object"
+      ? partial_scores.conflict_meta
+      : null);
+
+  const conflictIndex =
+    cm && typeof cm.conflict_index === "number" ? cm.conflict_index : null;
+
+  let verdictLabel = null;
+
+  if (Number.isFinite(ts01)) {
+    // 1) 근거가 전부 conflict 쪽으로 몰렸고 점수도 낮으면 → "likely_false_conflict"
+    if (conflictIndex === 1 && ts01 <= 0.5) {
+      verdictLabel = "likely_false_conflict";
+    }
+    // 2) 충분히 높은 점수 → 사실일 가능성 높음
+    else if (ts01 >= 0.7) {
+      verdictLabel = "likely_true";
+    }
+    // 3) 충분히 낮은 점수 → 거짓일 가능성 높음
+    else if (ts01 <= 0.3) {
+      verdictLabel = "likely_false";
+    }
+    // 4) 중간대 → 일부만 맞거나 혼재된 경우
+    else {
+      verdictLabel = "uncertain_or_mixed";
+    }
+
+    payload.verdict_label = verdictLabel;
+    payload.verdict_detail = {
+      mode: safeMode,
+      truthscore_01: Number(ts01.toFixed(4)),
+      conflict_index: conflictIndex,
+      effective_engines: Array.isArray(payload?.diagnostics?.effective_engines)
+        ? payload.diagnostics.effective_engines
+        : Array.isArray(partial_scores?.effective_engines)
+        ? partial_scores.effective_engines
+        : [],
+    };
+  }
+} catch {
+  // verdict 계산 실패해도 전체 응답에는 영향 없게 무시
+}
+
 // ✅ (필수) QV/FV/DV/CV에서 Gemini가 0ms 스킵인데 success:true로 나가는 것 방지
 const NEED_GEMINI =
   safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "cv";
