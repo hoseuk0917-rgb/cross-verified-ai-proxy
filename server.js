@@ -7922,27 +7922,102 @@ try {
   // diagnostics 구성 중 에러는 무시 (응답 자체에는 영향 주지 않음)
 }
 
-// ✅ verdict_label 기반 한국어 요약 메시지 추가
+// ✅ verdict_label & verdict_detail: truthscore_01 + conflict_meta 기반 요약 라벨
 try {
-  const vLabel = payload && payload.verdict_label;
+  // 0~1 구간 점수
+  const t01 =
+    typeof payload.truthscore_01 === "number"
+      ? payload.truthscore_01
+      : typeof truthscore === "number"
+        ? Number(truthscore.toFixed(4))
+        : null;
+
+  const diag = payload.diagnostics || {};
+  const effEngines = Array.isArray(diag.effective_engines)
+    ? diag.effective_engines
+    : [];
+  const effCount =
+    typeof diag.effective_engines_count === "number"
+      ? diag.effective_engines_count
+      : effEngines.length;
+
+  // conflict_index는 diagnostics.conflict_meta 또는 partial_scores.conflict_meta에서 가져옴
+  let cMeta = null;
+  if (diag.conflict_meta && typeof diag.conflict_meta === "object") {
+    cMeta = diag.conflict_meta;
+  } else if (
+    partial_scores &&
+    typeof partial_scores.conflict_meta === "object"
+  ) {
+    cMeta = partial_scores.conflict_meta;
+  }
+
+  const cIndex =
+    cMeta && typeof cMeta.conflict_index === "number"
+      ? cMeta.conflict_index
+      : null;
+
+  let vLabel = null;
+
+  if (t01 != null) {
+    // 매우 높은 점수 + 충돌 없음/약함 → likely_true
+    if (t01 >= 0.75 && (cIndex == null || cIndex <= 0.2)) {
+      vLabel = "likely_true";
+    }
+    // 매우 낮은 점수 + 충돌 강함 → likely_false_conflict
+    else if (t01 <= 0.25 && cIndex != null && cIndex >= 0.5) {
+      vLabel = "likely_false_conflict";
+    }
+    // 매우 낮은 점수 + 명시적 conflict는 없지만 사실상 거짓에 가까움
+    else if (t01 <= 0.25) {
+      vLabel = "likely_false";
+    }
+    // 중간 이하 점수지만 conflict_index가 거의 1에 가까움 → conflict 쪽으로 해석
+    else if (t01 < 0.5 && cIndex != null && cIndex >= 0.9) {
+      vLabel = "likely_false_conflict";
+    }
+    // 점수는 중간 이상인데 conflict도 큰 편 → 혼재/논쟁적
+    else if (t01 >= 0.5 && cIndex != null && cIndex >= 0.6) {
+      vLabel = "controversial_or_mixed";
+    }
+    // 그 외 애매한 구간 → borderline_uncertain
+    else {
+      vLabel = "borderline_uncertain";
+    }
+  }
 
   if (vLabel) {
-    let vMessage = null;
+    payload.verdict_label = vLabel;
+    payload.verdict_detail = {
+      mode: safeMode,
+      truthscore_01: t01,
+      conflict_index: cIndex,
+      effective_engines: effEngines,
+      effective_engines_count: effCount,
+    };
 
+    let vMessage = null;
     if (vLabel === "likely_true") {
       vMessage = "대체로 사실일 가능성이 높습니다.";
     } else if (vLabel === "likely_false_conflict") {
       vMessage =
         "사실이 아닐 가능성이 높고, 검색된 근거들과 상충합니다.";
-    } else {
-      // borderline_uncertain 등 그 외 레이블
-      vMessage = "불확실하거나 추가 검증이 필요합니다.";
+    } else if (vLabel === "likely_false") {
+      vMessage = "사실이 아닐 가능성이 높습니다.";
+    } else if (vLabel === "borderline_uncertain") {
+      vMessage =
+        "근거가 충분하지 않아 불확실하거나 추가 검증이 필요합니다.";
+    } else if (vLabel === "controversial_or_mixed") {
+      vMessage =
+        "서로 다른 방향의 근거가 섞여 있어 해석에 주의가 필요합니다.";
     }
 
-    payload.verdict_message_ko = vMessage;
+    if (vMessage) {
+      payload.verdict_message_ko = vMessage;
+    }
   }
 } catch {
-  // verdict 메시지 생성 중 오류는 무시 (응답 자체에는 영향 주지 않음)
+  // verdict 계산 실패해도 전체 응답은 그대로 유지
 }
 
 // ✅ (필수) QV/FV/DV/CV에서 Gemini가 0ms 스킵인데 success:true로 나가는 것 방지
@@ -7965,7 +8040,6 @@ if (NEED_GEMINI) {
     });
   }
 }
-
 
 // ✅ debug: effective config & whitelist meta (Render env: DEBUG_EFFECTIVE_CONFIG=1)
 if (process.env.DEBUG_EFFECTIVE_CONFIG === "1") {
