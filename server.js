@@ -4773,7 +4773,6 @@ function computeEngineCorrectionFactor(engines = [], statsMap = {}) {
 // =======================================================
 // Snippet Verification Shim (/api/verify-snippet)
 //   - Convert snippet payload -> FV verify payload
-// =======================================================
 function snippetToVerifyBody(req, res, next) {
   const b = getJsonBody(req);
 
@@ -4789,11 +4788,11 @@ function snippetToVerifyBody(req, res, next) {
     return res.status(400).json(buildError("VALIDATION_ERROR", "snippet is required"));
   }
 
-  // ✅ hard clip to match enforceVerifyPayloadLimits
+  // ??hard clip to match enforceVerifyPayloadLimits
   const clippedCore = snippetRaw.slice(0, VERIFY_MAX_CORE_TEXT_CHARS);
   const fallbackQuery = (question || snippetRaw.slice(0, 280)).trim();
 
-  // ✅ drop raw snippet fields to avoid collisions
+  // ??drop raw snippet fields to avoid collisions
   const {
     snippet: __drop_snippet,
     snippet_text: __drop_snippet_text,
@@ -4806,24 +4805,34 @@ function snippetToVerifyBody(req, res, next) {
   const clippedUserAnswer = String(rest.user_answer ?? clippedCore)
     .slice(0, VERIFY_MAX_USER_ANSWER_CHARS);
 
+  // 🔍 snippet 전용 메타 (응답에서 is_snippet / input_snippet / snippet_core로 내려줄 재료)
+  const snippetMeta = {
+    is_snippet: true,
+    input_snippet: snippetRaw,
+    snippet_core: clippedCore,
+  };
+
   req.body = {
     ...rest,
 
-    // ✅ force FV
+    // ??force FV
     mode: "fv",
 
-    // ✅ FV core_text = snippet
+    // ??FV core_text = snippet
     core_text: clippedCore,
 
-    // ✅ keep/clip user_answer
+    // ??keep/clip user_answer
     user_answer: clippedUserAnswer,
 
-    // ✅ preserve original intent
+    // ??preserve original intent
     rawQuery: String(rest.rawQuery ?? (question || rest.query || "")).trim(),
     query: String(rest.query ?? fallbackQuery).trim(),
 
-    // ✅ default model for snippet verify
+    // ??default model for snippet verify
     gemini_model: rest.gemini_model ?? "flash",
+
+    // 🔍 여기서 verifyCoreHandler로 snippet 메타 전달
+    snippet_meta: snippetMeta,
   };
 
   return next();
@@ -4908,7 +4917,7 @@ const verifyCoreHandler = async (req, res) => {
   let logUserId = null;   // ✅ 요청마다 독립
   let authUser = null;    // ✅ 요청마다 독립
 
-  const {
+      const {
     query,
     mode,
     gemini_key,
@@ -4919,12 +4928,15 @@ const verifyCoreHandler = async (req, res) => {
     github_token,
     gemini_model,
 
-    // ✅ FV에서 "사실 문장"을 query와 분리해서 보내고 싶을 때 사용
+    // ??FV?먯꽌 "?ъ떎 臾몄옣"??query? 遺꾨━?댁꽌 蹂대궡怨??띠쓣 ???ъ슜
     core_text,
 
     user_id,
     user_email,
     user_name,
+
+    // 🔍 /api/verify-snippet → snippetToVerifyBody에서 실어주는 메타
+    snippet_meta,
   } = req.body;
 
   const safeMode = (mode || "").trim().toLowerCase();
@@ -4932,38 +4944,55 @@ const verifyCoreHandler = async (req, res) => {
 const rawQuery = String(req.body?.rawQuery ?? "").trim();
 const key_uuid = String(req.body?.key_uuid ?? req.body?.keyUuid ?? "").trim();
 
-// ✅ S-17: cache hit (QV/FV heavy path) — MUST be before heavy work/switch
-let __cacheKey = null;
-if (safeMode === "qv" || safeMode === "fv") {
-  __cacheKey = makeVerifyCacheKey({
-    mode: safeMode,
-    query,
-    rawQuery,
-    core_text,
-    user_answer,
-    answerText: __answerText0,
-    key_uuid,
-  });
+  // ??S-17: cache hit (QV/FV heavy path) ??MUST be before heavy work/switch
+  let __cacheKey = null;
+  if (safeMode === "qv" || safeMode === "fv") {
+    __cacheKey = makeVerifyCacheKey({
+      mode: safeMode,
+      query,
+      rawQuery,
+      core_text,
+      user_answer,
+      answerText: __answerText0,
+      key_uuid,
+    });
 
-  const __cachedPayload = __cacheKey ? verifyCacheGet(__cacheKey) : null;
-  if (__cachedPayload) {
-    const elapsedMs = Date.now() - start;
+    const __cachedPayload = __cacheKey ? verifyCacheGet(__cacheKey) : null;
+    if (__cachedPayload) {
+      const elapsedMs = Date.now() - start;
 
-    const out = {
-      ...__cachedPayload,
-      elapsed: elapsedMs,
-      cached: true,
-    };
+      const out = {
+        ...__cachedPayload,
+        elapsed: elapsedMs,
+        cached: true,
+      };
 
-    if (out.partial_scores && typeof out.partial_scores === "object") {
-      out.partial_scores = { ...out.partial_scores, cache_hit: true };
-    } else {
-      out.partial_scores = { cache_hit: true };
+      if (out.partial_scores && typeof out.partial_scores === "object") {
+        out.partial_scores = { ...out.partial_scores, cache_hit: true };
+      } else {
+        out.partial_scores = { cache_hit: true };
+      }
+
+      // 🔍 스니펫 요청이면 응답에 메타 필드 추가
+      if (snippet_meta && typeof snippet_meta === "object") {
+        const { is_snippet, input_snippet, snippet_core } = snippet_meta;
+
+        if (is_snippet) {
+          out.is_snippet = true;
+        }
+
+        if (typeof input_snippet === "string" && input_snippet.trim()) {
+          out.input_snippet = input_snippet;
+        }
+
+        if (typeof snippet_core === "string" && snippet_core.trim()) {
+          out.snippet_core = snippet_core;
+        }
+      }
+
+      return res.json(buildSuccess(out));
     }
-
-    return res.json(buildSuccess(out));
   }
-}
 
 // ✅ (B안 보강) Gemini sentinel이 가끔 뚫려도 "명백한 비코드(통계/정책/일반사실)"는 DV/CV에서 차단
 const looksObviouslyNonCode = (s) => {
@@ -7481,9 +7510,30 @@ const keywordsForLog =
           .slice(0, 12)
       : null;
 
+// snippet_meta(for snippet-FV/QV) – attach snippet/question info if provided
+let snippetMeta = null;
+if (safeMode === "fv" || safeMode === "qv") {
+  const __b = (req && req.body && typeof req.body === "object") ? req.body : {};
+  const __snippet = typeof __b.snippet === "string" ? __b.snippet : null;
+  const __question = typeof __b.question === "string" ? __b.question : null;
+  const __snippetId = __b.snippet_id ?? null;
+  const __snippetHash = __b.snippet_hash ?? null;
+
+  if (__snippet || __question || __snippetId || __snippetHash) {
+    snippetMeta = {
+      snippet: __snippet,
+      question: __question,
+      snippet_id: __snippetId,
+      snippet_hash: __snippetHash,
+    };
+    // DB sourcesText/로그에도 같이 들어가도록 partial_scores에 심어둠
+    partial_scores.snippet_meta = snippetMeta;
+  }
+}
+
 const sourcesText = safeSourcesForDB(
   {
-    meta: { mode: safeMode },
+    meta: { mode: safeMode, snippet_meta: snippetMeta || null },
     external,
     partial_scores,
     verify_meta: verifyMeta || null,
@@ -7497,34 +7547,34 @@ await supabase.from("verification_logs").insert([
     question: query,
     query: query,
 
-    truth_score: Number(truthscore),     // ✅ double precision
+    truth_score: Number(truthscore),     // ??double precision
     summary: summaryText,
 
-    cross_score: Number(G),              // ✅ raw(0~1)
-    adjusted_score: Number(hybrid),      // ✅ adjusted(0~1)
+    cross_score: Number(G),              // ??raw(0~1)
+    adjusted_score: Number(hybrid),      // ??adjusted(0~1)
 
-    status: safeMode,                    // ✅ mode 컬럼 없으니 여기 저장
+    status: safeMode,                    // ??mode 而щ읆 ?놁쑝???ш린 ???
     engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
-    keywords: keywordsForLog,            // ✅ array(text[])
-    elapsed: String(elapsed),            // ✅ text
+    keywords: keywordsForLog,            // ??array(text[])
+    elapsed: String(elapsed),            // ??text
 
-    model_main: answerModelUsed,  // ✅ QV/FV 토글 반영 (또는 기본 flash)
-model_eval: verifyModelUsed,  // ✅ 실제 성공한 verify 모델
-sources: sourcesText,
+    model_main: answerModelUsed,         // ??QV/FV ?좉? 諛섏쁺 (?먮뒗 湲곕낯 flash)
+    model_eval: verifyModelUsed,         // ???ㅼ젣 ?깃났??verify 紐⑤뜽
+    sources: sourcesText,
 
-gemini_model: verifyModelUsed, // ✅ 실제 성공한 verify 모델
-error: null,
-created_at: new Date(),
+    gemini_model: verifyModelUsed,       // ???ㅼ젣 ?깃났??verify 紐⑤뜽
+    error: null,
+    created_at: new Date(),
   },
 ]);
 
-// ─────────────────────────────
-// ⑦ 결과 반환 (ⅩⅤ 규약 형태로 래핑)
-// ─────────────────────────────
+// ?????????????????????????????
+// ??寃곌낵 諛섑솚 (?⒱뀮 洹쒖빟 ?뺥깭濡??섑븨)
+// ?????????????????????????????
 const truthscore_pct = Math.round(truthscore * 10000) / 100; // 2 decimals
 const truthscore_text = `${truthscore_pct.toFixed(2)}%`;
 
-// ✅ normalizedPartial이 따로 없으니 일단 동일하게 사용
+// ??normalizedPartial???곕줈 ?놁쑝???쇰떒 ?숈씪?섍쾶 ?ъ슜
 const normalizedPartial = partial_scores;
 
 const payload = {
@@ -7532,31 +7582,36 @@ const payload = {
   truthscore: truthscore_text,
   truthscore_pct,
   truthscore_01: Number(truthscore.toFixed(4)),
-    elapsed,
+  elapsed,
 
-  // ✅ S-15: engines_used 자동 산출(명시 노출)
+  // ??S-15: engines_used ?먮룞 ?곗텧(紐낆떆 ?몄텧)
   engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
   engines_requested: (partial_scores.engines_requested || engines),
   engines_used: (Array.isArray(partial_scores.engines_used)
-  ? partial_scores.engines_used
-  : (Array.isArray(partial_scores.engines_used_pre) ? partial_scores.engines_used_pre : [])),
+    ? partial_scores.engines_used
+    : (Array.isArray(partial_scores.engines_used_pre) ? partial_scores.engines_used_pre : [])),
 
-engines_excluded: (Array.isArray(partial_scores.engines_excluded)
-  ? partial_scores.engines_excluded
-  : (Array.isArray(partial_scores.engines_requested)
-      ? partial_scores.engines_requested.filter(x => x && !(Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : []).includes(x))
-      : (partial_scores.engines_excluded_pre && typeof partial_scores.engines_excluded_pre === "object"
-          ? Object.keys(partial_scores.engines_excluded_pre)
-          : []))),
+  engines_excluded: (Array.isArray(partial_scores.engines_excluded)
+    ? partial_scores.engines_excluded
+    : (Array.isArray(partial_scores.engines_requested)
+        ? partial_scores.engines_requested.filter(x => x && !(Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : []).includes(x))
+        : (partial_scores.engines_excluded_pre && typeof partial_scores.engines_excluded_pre === "object"
+            ? Object.keys(partial_scores.engines_excluded_pre)
+            : []))),
 
   partial_scores: normalizedPartial,
 
   flash_summary: flash,
   verify_raw: verify,
-  gemini_verify_model: verifyModelUsed, // ✅ 실제로 성공한 모델
+  gemini_verify_model: verifyModelUsed, // ???ㅼ젣濡??깃났??紐⑤뜽
   engine_times: engineTimes,
   engine_metrics: engineMetrics,
 };
+
+// snippet_meta를 최종 payload top-level에도 노출
+if (snippetMeta) {
+  payload.snippet_meta = snippetMeta;
+}
 
 // ✅ (필수) QV/FV/DV/CV에서 Gemini가 0ms 스킵인데 success:true로 나가는 것 방지
 const NEED_GEMINI =
