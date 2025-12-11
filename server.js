@@ -6593,16 +6593,18 @@ let answerModelUsed = "gemini-2.5-flash";
   // 이미 본 URL 중복 fetch 방지(성능/부하)
   const __nfSeen = new Set();
 
-  // 통계청·KOSIS·국가통계 등 "핵심 통계 도메인" 우선 보호
-  const __coreStatDomains = [
-    "kostat.go.kr",
-    "kosis.kr",
-    "index.go.kr",
-    "worldbank.org",
-    "oecd.org",
-  ];
+    // (일반화) 화이트리스트 tier1 전체를 "핵심 공공/국제 도메인"으로 보고
+  // 숫자 검증 시 우선순위를 조금 더 올려 줌.
+  //
+  // - 도메인은 naver_whitelist.json 의 tiers.tier1.domains 에서만 관리
+  // - 코드는 "tier1에 속해 있냐?"만 본다.
+  const wlForNumeric = loadNaverWhitelist();
+  const __numericPriorityDomains = Array.isArray(wlForNumeric?.tiers?.tier1?.domains)
+    ? wlForNumeric.tiers.tier1.domains
+    : [];
+
   const __isCoreStatHost = (host = "") =>
-    __coreStatDomains.some((d) => host.endsWith(d));
+    __numericPriorityDomains.some((d) => host.endsWith(d));
 
   const __getHostFromUrl = (u = "") => {
     try {
