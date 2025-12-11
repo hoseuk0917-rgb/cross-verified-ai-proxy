@@ -643,6 +643,7 @@ app.use((err, req, res, next) => {
 // ===== Rate limit & body size config =====
 const RATE_LIMIT_MAX_VERIFY = 40;        // /api/verify, /api/verify-snippet
 const RATE_LIMIT_MAX_TRANSLATE = 40;     // /api/translate
+const RATE_LIMIT_MAX_DOCS_ANALYZE = 20;  // /api/docs/analyze   ← 새로 추가
 
 const BODY_JSON_LIMIT = process.env.BODY_JSON_LIMIT || "4mb";
 const BODY_URLENC_LIMIT = process.env.BODY_URLENC_LIMIT || BODY_JSON_LIMIT;
@@ -1948,6 +1949,24 @@ function getJsonBody(req) {
   return {};
 }
 
+// ✅ 추후 어드민/로그 용: 클라이언트 IP 추출 헬퍼
+function getClientIp(req) {
+  // Render / 프록시 뒤에 있을 때 X-Forwarded-For 우선
+  const xfwd = req.headers?.["x-forwarded-for"];
+  if (typeof xfwd === "string" && xfwd.trim()) {
+    // "ip1, ip2, ip3" 형태면 첫 번째가 실 클라이언트
+    return xfwd.split(",")[0].trim();
+  }
+
+  // 로컬/직접 접속일 때
+  return (
+    req.ip ||
+    req.connection?.remoteAddress ||
+    req.socket?.remoteAddress ||
+    null
+  );
+}
+
 // === Admin runtime stats & whitelist status (in-memory) ===
 const ADMIN_MAX_RECENT_ERRORS = 200;
 
@@ -2020,9 +2039,6 @@ function getNaverWhitelistStatus() {
 //   - 1분 슬라이딩 윈도우
 // =======================================
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
-
-// 엔드포인트별 기본 상한
-const RATE_LIMIT_MAX_DOCS_ANALYZE = 20;    // /api/docs/analyze
 
 // key => { windowStart, count }
 const _rateLimitBuckets = new Map();
