@@ -5172,14 +5172,35 @@ function __uniqStrings(arr) {
   return out;
 }
 
-function __expandNaverQueries(baseQueries, { korean_core, english_core }) {
-  const base = Array.isArray(baseQueries) ? baseQueries : (baseQueries ? [baseQueries] : []);
-  const cand = [
-    ...base,
-    korean_core,
-    english_core,
-  ];
-  return __uniqStrings(cand).slice(0, (typeof NAVER_QUERY_MAX === "number" ? NAVER_QUERY_MAX : 3));
+function __expandNaverQueries(baseQueries, seedInfo = {}) {
+  // baseQueries: 기본 Naver 쿼리 배열
+  const base = Array.isArray(baseQueries)
+    ? baseQueries.map(q => String(q || "").trim()).filter(Boolean)
+    : [];
+
+  // seedInfo: { korean_core, english_core } 같은 구조
+  const ko = String(seedInfo.korean_core || "").trim();
+  const en = String(seedInfo.english_core || "").trim();
+
+  const extraSeeds = [];
+  if (ko) extraSeeds.push(ko);
+  if (en) extraSeeds.push(en);
+
+  const expanded = [...base];
+
+  for (const s of extraSeeds) {
+    if (!s) continue;
+    expanded.push(s);
+
+    // 괄호, 중복 공백 제거한 버전도 한 번 더 추가
+    const stripped = s.replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
+    if (stripped && stripped !== s) {
+      expanded.push(stripped);
+    }
+  }
+
+  // uniqStrings는 이미 서버에 있는 헬퍼 그대로 사용
+  return uniqStrings(expanded, 12);
 }
 
   let qvfvBlocksForVerifyFull = null; // [{id,text,queries,evidence...}, ...]
@@ -5442,48 +5463,61 @@ if (!naverQueries.length) {
       engineMetrics
     );
     if (Array.isArray(result) && result.length) naverItemsAll.push(...result);
-  }
+    }
   naverItemsAll = dedupeByLink(naverItemsAll).slice(0, BLOCK_NAVER_MAX_ITEMS);
 
-  // ✅ 시사성(최신/발표/연도/가격 등)일 때만 news evidence 허용
+  // ----- Naver evidence 선택 준비 -----
   const allowNewsEvidence = isTimeSensitiveText(`${query} ${b?.text || ""}`);
 
-  // ✅ verify에 넣을 naver evidence는:
-  //  - 화이트리스트(tier 있음)만
-  //  - news는 시사성일 때만
-  //  - 관련도 최소치 이상만
-  //  - 상위 K개만
+  // ✅ qvfvPre에서 korean_core / english_core를 안전하게 꺼냄
+  const qvfvKoreanCore = String(qvfvPre?.korean_core ?? "").trim();
+  const qvfvEnglishCore = String(qvfvPre?.english_core ?? "").trim();
+
+  // ✅ Naver용 확장 쿼리: 여기서 한 번만 계산
+  const naverQueriesExpanded = __expandNaverQueries(naverQueries, {
+    korean_core: qvfvKoreanCore,
+    english_core: qvfvEnglishCore,
+  });
+
+  // ✅ 확장된 쿼리를 기준으로 evidence 선택
   let naverItemsForVerify = pickTopNaverEvidenceForVerify({
-  items: naverItemsAll,
-  query,
-  blockText: b?.text || "",
-  naverQueries,
-  allowNews: allowNewsEvidence,
-  topK: BLOCK_NAVER_EVIDENCE_TOPK,
-  minRelevance: NAVER_RELEVANCE_MIN,
-});
+    items: naverItemsAll,
+    query,
+    blockText: b?.text || "",
+    naverQueries: naverQueriesExpanded,
+    allowNews: allowNewsEvidence,
+    topK: BLOCK_NAVER_EVIDENCE_TOPK,
+    minRelevance: NAVER_RELEVANCE_MIN,
+  });
 
-// ✅ fallback: strict 필터로 0개가 되면, "후처리(Gemini)가 문맥으로 irrelevant_urls를 만들 수 있도록"
-//            이미 받아온 naverItemsAll에서 TOPK만 최소로 태움(추가 호출 0)
-if ((!Array.isArray(naverItemsForVerify) || naverItemsForVerify.length === 0) && Array.isArray(naverItemsAll) && naverItemsAll.length > 0) {
-  // 1) 원칙: 시사성 아니면 news는 우선 제외
-  const __poolNoNews = allowNewsEvidence ? naverItemsAll : naverItemsAll.filter(r => (r?.naver_type !== "news"));
+  // ----- fallback: strict 필터로 0개 나오면 그래도 뭔가 채워주기 -----
+  if (
+    (!Array.isArray(naverItemsForVerify) || naverItemsForVerify.length === 0) &&
+    Array.isArray(naverItemsAll) &&
+    naverItemsAll.length > 0
+  ) {
+    // 1) 먼저 news 제외 풀
+    const __poolNoNews = allowNewsEvidence
+      ? naverItemsAll
+      : naverItemsAll.filter((r) => r?.naver_type !== "news");
 
-  // 2) tier/whitelisted/inferred(공식추정) 우선
-  const __poolPrefer = (__poolNoNews.length ? __poolNoNews : naverItemsAll).filter(r =>
-    !!(r?.tier || r?.whitelisted || r?._whitelist_inferred || r?.inferred)
-  );
+    // 2) tier/whitelisted/inferred 우선
+    const __poolPrefer = (__poolNoNews.length ? __poolNoNews : naverItemsAll).filter((r) =>
+      !!(r?.tier || r?.whitelisted || r?._whitelist_inferred || r?.inferred)
+    );
 
-  // 3) 최종 풀 선택 (prefer > noNews > all)
-  const __poolFinal =
-    (__poolPrefer.length > 0) ? __poolPrefer :
-    (__poolNoNews.length > 0) ? __poolNoNews :
-    naverItemsAll;
+    // 3) 최종 풀 (prefer > noNews > all)
+    const __poolFinal =
+      __poolPrefer.length > 0
+        ? __poolPrefer
+        : __poolNoNews.length > 0
+        ? __poolNoNews
+        : naverItemsAll;
 
-  naverItemsForVerify = topArr(__poolFinal, BLOCK_NAVER_EVIDENCE_TOPK);
-}
+    naverItemsForVerify = topArr(__poolFinal, BLOCK_NAVER_EVIDENCE_TOPK);
+  }
 
-  // ✅ 뉴스 엔진(gdelt)도 시사성일 때만 evidence로 사용(표시는 external에 유지)
+  // ----- gdelt / external / blocksForVerify -----
   const gdeltForVerify = allowNewsEvidence ? topArr(gdPack.result, BLOCK_EVIDENCE_TOPK) : [];
 
   external.crossref.push(...(crPack.result || []));
@@ -5500,12 +5534,13 @@ if ((!Array.isArray(naverItemsForVerify) || naverItemsForVerify.length === 0) &&
       openalex: qOpenalex,
       wikidata: qWikidata,
       gdelt: qGdelt,
-      naver: __expandNaverQueries(naverQueries, { korean_core, english_core })
+      // ✅ 여기서도 bare korean_core 안 쓰고 확장 쿼리만 사용
+      naver: naverQueriesExpanded,
     },
     evidence: {
       crossref: topArr(crPack.result, BLOCK_EVIDENCE_TOPK),
       openalex: topArr(oaPack.result, BLOCK_EVIDENCE_TOPK),
-      wikidata: topArr(wdPack.result, 5), // wikidata는 구조상 조금 더 허용
+      wikidata: topArr(wdPack.result, 5),
       gdelt: gdeltForVerify,
       naver: topArr(naverItemsForVerify, BLOCK_NAVER_EVIDENCE_TOPK),
     },
