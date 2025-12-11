@@ -156,6 +156,8 @@ async function translateText(text, targetLang, deepl_key, _gemini_key_unused) {
 const HTTP_TIMEOUT_MS = parseInt(process.env.HTTP_TIMEOUT_MS || "12000", 10);
 const ENGINE_TIMEBOX_MS = parseInt(process.env.ENGINE_TIMEBOX_MS || "25000", 10); // 엔진 1개 상한
 const GEMINI_TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS || "45000", 10); // Gemini는 더 길게
+const GEMINI_QVFV_PRE_MODEL = process.env.GEMINI_QVFV_PRE_MODEL || "gemini-2.0-flash-lite";
+const GEMINI_VERIFY_MODEL    = process.env.GEMINI_VERIFY_MODEL    || "gemini-2.0-flash";
 
 const ENGINE_RETRY_MAX = parseInt(process.env.ENGINE_RETRY_MAX || "1", 10); // 0~1 권장
 const ENGINE_RETRY_BASE_MS = parseInt(process.env.ENGINE_RETRY_BASE_MS || "350", 10);
@@ -643,6 +645,27 @@ const BODY_URLENC_LIMIT = process.env.BODY_URLENC_LIMIT || BODY_JSON_LIMIT;
 
 app.use(express.json({ limit: BODY_JSON_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: BODY_URLENC_LIMIT }));
+
+// ===== Rate limit for main API endpoints =====
+app.use(
+  "/api/verify",
+  makeRateLimiter("verify", RATE_LIMIT_MAX_VERIFY)
+);
+
+app.use(
+  "/api/verify-snippet",
+  makeRateLimiter("verify-snippet", RATE_LIMIT_MAX_VERIFY)
+);
+
+app.use(
+  "/api/translate",
+  makeRateLimiter("translate", RATE_LIMIT_MAX_TRANSLATE)
+);
+
+app.use(
+  "/api/docs/analyze",
+  makeRateLimiter("docs-analyze", RATE_LIMIT_MAX_DOCS_ANALYZE)
+);
 
 // ✅ Morgan: Render 헬스체크/Flutter SW 요청 로그 스킵
 // ✅ Morgan: Render 헬스체크/노이즈 요청 로그 스킵 (더 강력 버전)
@@ -1914,16 +1937,83 @@ function getBearerToken(req) {
 function getJsonBody(req) {
   const b = req.body;
   if (!b) return {};
-  if (typeof b === "object") return b;          // 정상(JSON 파싱된 경우)
-  if (typeof b === "string") {                  // 문제 케이스(문자열로 들어온 경우)
+  if (typeof b === "object") return b;          // ?뺤긽(JSON ?뚯떛??寃쎌슦)
+  if (typeof b === "string") {                  // 臾몄젣 耳?댁뒪(臾몄옄?대줈 ?ㅼ뼱??寃쎌슦)
     try { return JSON.parse(b); } catch { return {}; }
   }
   return {};
 }
 
+// =======================================
+// Basic in-memory rate limiting
+//   - per IP + bearer token
+//   - 1분 슬라이딩 윈도우
+// =======================================
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+
+// 엔드포인트별 기본 상한
+const RATE_LIMIT_MAX_VERIFY = 40;          // /api/verify, /api/verify-snippet
+const RATE_LIMIT_MAX_TRANSLATE = 40;       // /api/translate
+const RATE_LIMIT_MAX_DOCS_ANALYZE = 20;    // /api/docs/analyze
+
+// key => { windowStart, count }
+const _rateLimitBuckets = new Map();
+
+function _getClientKey(req, scope) {
+  const ip =
+    (req.headers?.["x-forwarded-for"] || "")
+      .toString()
+      .split(",")[0]
+      .trim() ||
+    req.ip ||
+    req.connection?.remoteAddress ||
+    "unknown";
+
+  const bearer = getBearerToken(req) || "anon";
+  return `${scope}:${bearer}:${ip}`;
+}
+
+function makeRateLimiter(scope, maxPerWindow) {
+  return function rateLimiter(req, res, next) {
+    try {
+      const now = Date.now();
+      const key = _getClientKey(req, scope);
+      const bucket = _rateLimitBuckets.get(key);
+
+      // 새 윈도우 시작
+      if (!bucket || now - bucket.windowStart >= RATE_LIMIT_WINDOW_MS) {
+        _rateLimitBuckets.set(key, { windowStart: now, count: 1 });
+        return next();
+      }
+
+      // 한 윈도우에서 허용량 초과
+      if (bucket.count >= maxPerWindow) {
+        return res.status(429).json(
+          buildError(
+            "RATE_LIMITED",
+            "요청이 너무 자주 발생하고 있습니다. 잠시 후 다시 시도해 주세요.",
+            {
+              scope,
+              window_ms: RATE_LIMIT_WINDOW_MS,
+              max_per_window: maxPerWindow,
+            }
+          )
+        );
+      }
+
+      // 현재 윈도우 안에서 카운트 증가
+      bucket.count += 1;
+      return next();
+    } catch (err) {
+      // rate limiter 자체 에러 나면 요청은 그냥 통과
+      console.warn("rateLimiter error, allowing request:", err?.message || err);
+      return next();
+    }
+  };
+}
 
 async function getSupabaseAuthUser(req) {
-  // ✅ request 단위 캐시 (null도 캐시)
+  // ??request ?⑥쐞 罹먯떆 (null??罹먯떆)
   if (Object.prototype.hasOwnProperty.call(req, "_supabaseAuthUser")) {
     return req._supabaseAuthUser;
   }
@@ -3785,39 +3875,61 @@ const freshness = isNaN(upd.getTime())
 }
 
 // ✅ fetchGeminiSmart: direct gemini_key가 있어도 "rotating(=hint 1회 + DB fallback)" 경로를 타게 함
+// 수정 버전: qvfv_preprocess 는 자동으로 lite 모델 사용
 async function fetchGeminiSmart({ userId, gemini_key, keyHint, model, payload, opts = {} }) {
-  const label0 = opts.label || `gemini:${model}`;
+  // 0) 모델 기본값 + qvfv_preprocess 라벨이면 lite 강제
+  let modelFinal = String(model || "").trim();
+
+  // 기본값 없으면 서버 디폴트(FLASH) 사용
+  if (!modelFinal) {
+    modelFinal = GEMINI_VERIFY_MODEL || "gemini-2.0-flash";
+  }
+
+  const labelRaw = opts.label || "";
+  const labelLower = String(labelRaw).toLowerCase();
+
+  // qv/fv 전처리 라벨이면 무조건 lite 사용
+  if (labelLower.includes("qvfv_preprocess")) {
+    modelFinal = GEMINI_QVFV_PRE_MODEL || "gemini-2.0-flash-lite";
+  }
+
+  const label0 = labelRaw || `gemini:${modelFinal}`;
   const directKey = String(gemini_key ?? "").trim();
   const hintKey = String(keyHint ?? "").trim();
 
   const getStatus = (e) =>
     e?.response?.status ?? e?.status ?? e?.statusCode ?? null;
 
-  // 1) directKey(요청에서 gemini_key)가 있으면 1회만 “직접” 시도
+  // 1) directKey(클라이언트에서 gemini_key)가 있으면 1회만 시도
   if (directKey) {
     try {
       return await fetchGeminiRaw({
-        model,
+        model: modelFinal,
         gemini_key: directKey,
         payload,
         opts: { ...opts, label: `${label0}#direct` },
       });
     } catch (e) {
       const st = getStatus(e);
-      console.error("Gemini call failed:", `${label0}#direct`, `status=${st}`, geminiErrMessage(e));
-      // 401/403/429만 fallback (그 외는 바로 throw)
+      console.error(
+        "Gemini call failed:",
+        `${label0}#direct`,
+        `status=${st}`,
+        geminiErrMessage(e)
+      );
+      // 401/403/429만 fallback (그 외는 그대로 throw)
       if (st !== 401 && st !== 403 && st !== 429) throw e;
       // fallthrough → rotating
     }
   }
 
-  // 2) 그 외는 keyHint(있으면) 1회 + keyring fallback까지 포함된 rotating으로
+  // 2) 나머지는 keyHint(있으면 1순위) + keyring fallback 으로 rotating
   return await fetchGeminiRotating({
     userId,
     keyHint: hintKey || null,
-    model,
+    model: modelFinal,
     payload,
-    opts,
+    opts: { ...opts, label: label0 },
   });
 }
 
@@ -5335,8 +5447,12 @@ switch (safeMode) {
   engines.push("crossref", "openalex", "gdelt", "naver");
 }
 
+        // QV/FV 전처리는 항상 lite 계열 모델 사용
+    //   - 기본값: gemini-2.0-flash-lite
+    //   - 필요하면 환경변수 GEMINI_QVFV_PRE_MODEL 로 override 가능
     const preprocessModel =
-      geminiModelRaw === "flash" ? "gemini-2.5-flash" : "gemini-2.5-pro";
+      (process.env.GEMINI_QVFV_PRE_MODEL && process.env.GEMINI_QVFV_PRE_MODEL.trim())
+        || "gemini-2.0-flash-lite";
 
     const qvfvBaseText = (safeMode === "fv" && userCoreText) ? userCoreText : query;
 
@@ -5358,10 +5474,11 @@ switch (safeMode) {
       qvfvPre = pre;
       qvfvPreDone = true;
 
-      partial_scores.qvfv_pre = {
+        partial_scores.qvfv_pre = {
         korean_core: pre.korean_core,
         english_core: pre.english_core,
         blocks_count: pre.blocks.length,
+        model_used: preprocessModel,
       };
       partial_scores.qv_answer = safeMode === "qv" ? pre.answer_ko : null;
     } catch (e) {
