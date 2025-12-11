@@ -640,6 +640,10 @@ app.use((err, req, res, next) => {
   return next(err);
 });
 
+// ===== Rate limit & body size config =====
+const RATE_LIMIT_MAX_VERIFY = 40;        // /api/verify, /api/verify-snippet
+const RATE_LIMIT_MAX_TRANSLATE = 40;     // /api/translate
+
 const BODY_JSON_LIMIT = process.env.BODY_JSON_LIMIT || "4mb";
 const BODY_URLENC_LIMIT = process.env.BODY_URLENC_LIMIT || BODY_JSON_LIMIT;
 
@@ -1944,6 +1948,72 @@ function getJsonBody(req) {
   return {};
 }
 
+// === Admin runtime stats & whitelist status (in-memory) ===
+const ADMIN_MAX_RECENT_ERRORS = 200;
+
+const adminStats = {
+  requestsTotal: 0,
+  verifyTotal: 0,
+  verifyByMode: {},        // { qv: n, fv: n, ... }
+  translateTotal: 0,
+  docsAnalyzeTotal: 0,
+  lastRequestAt: null,
+  lastErrorAt: null,
+};
+
+const adminRecentErrors = [];
+
+/**
+ * verify / translate / docs_analyze 요청 카운트용 helper
+ */
+function markAdminRequest(kind, extra = {}) {
+  adminStats.requestsTotal += 1;
+  adminStats.lastRequestAt = new Date();
+
+  if (kind === "verify") {
+    adminStats.verifyTotal += 1;
+    const m = (extra.mode || "unknown").toLowerCase();
+    adminStats.verifyByMode[m] = (adminStats.verifyByMode[m] || 0) + 1;
+  } else if (kind === "translate") {
+    adminStats.translateTotal += 1;
+  } else if (kind === "docs_analyze") {
+    adminStats.docsAnalyzeTotal += 1;
+  }
+}
+
+/**
+ * 최근 에러를 메모리에 최대 ADMIN_MAX_RECENT_ERRORS 개까지 보관
+ */
+function pushAdminError(entry) {
+  const now = new Date();
+  adminStats.lastErrorAt = now;
+
+  adminRecentErrors.push({
+    time: now.toISOString(),
+    ...entry,
+  });
+
+  if (adminRecentErrors.length > ADMIN_MAX_RECENT_ERRORS) {
+    adminRecentErrors.splice(0, adminRecentErrors.length - ADMIN_MAX_RECENT_ERRORS);
+  }
+}
+
+/**
+ * (임시) 네이버 화이트리스트 상태
+ *  - 지금은 env 기반; 나중에 실제 whitelist 로더와 연결 예정
+ */
+function getNaverWhitelistStatus() {
+  return {
+    version: process.env.NAVER_WHITELIST_VERSION || null,
+    lastUpdate: null,
+    totalHosts: null,
+    hasKosis: null,
+    refreshMinutes: null,
+    sourceUrl: null,
+    note: "TODO: 실제 whitelist 로더와 연결 필요",
+  };
+}
+
 // =======================================
 // Basic in-memory rate limiting
 //   - per IP + bearer token
@@ -1952,8 +2022,6 @@ function getJsonBody(req) {
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 
 // 엔드포인트별 기본 상한
-const RATE_LIMIT_MAX_VERIFY = 40;          // /api/verify, /api/verify-snippet
-const RATE_LIMIT_MAX_TRANSLATE = 40;       // /api/translate
 const RATE_LIMIT_MAX_DOCS_ANALYZE = 20;    // /api/docs/analyze
 
 // key => { windowStart, count }
@@ -5049,12 +5117,16 @@ const verifyCoreHandler = async (req, res) => {
 
     // 🔍 /api/verify-snippet → snippetToVerifyBody에서 실어주는 메타
     snippet_meta,
-  } = req.body;
+    } = req.body;
 
   const safeMode = (mode || "").trim().toLowerCase();
-  // ✅ normalize rawQuery/key_uuid without redeclare 폭탄
-const rawQuery = String(req.body?.rawQuery ?? "").trim();
-const key_uuid = String(req.body?.key_uuid ?? req.body?.keyUuid ?? "").trim();
+
+  // Admin 통계용: verify 요청 카운트
+  markAdminRequest("verify", { mode: safeMode || "unknown" });
+
+  // ??normalize rawQuery/key_uuid without redeclare ??깂
+  const rawQuery = String(req.body?.rawQuery ?? "").trim();
+  const key_uuid = String(req.body?.key_uuid ?? req.body?.keyUuid ?? "").trim();
 
   // ??S-17: cache hit (QV/FV heavy path) ??MUST be before heavy work/switch
   let __cacheKey = null;
@@ -8289,6 +8361,13 @@ if (e?.code === "INVALID_GEMINI_KEY") {
   );
 }
 
+// Admin 대시보드용 에러 기록
+  pushAdminError({
+    type: "verify",
+    code: e?.code || null,
+    message: e?.message || String(e),
+  });
+
 if (e?.code === "GEMINI_RATE_LIMIT") {
   return res.status(200).json({
     success: false,
@@ -8677,7 +8756,7 @@ try {
   result = await geminiTranslate();
 }
   
-    // 5) 성공 응답 (ⅩⅤ 규약: buildSuccess 사용)
+        // 5) 최종 응답 (표준 포맷: buildSuccess 사용)
     return res.json(
       buildSuccess({
         translated: result.text,
@@ -8689,23 +8768,53 @@ try {
     console.error("❌ /api/translate Error:", e.message);
     console.error("❌ /api/translate stack:", e?.stack || e);
 
-    // ✅ 키링 소진은 /api/verify(/api/verify-snippet)와 동일하게 200 + 코드로 내려주기
+    // ✅ 번역 에러도 verification_logs 에 남겨두기 (mode = 'translate')
+    try {
+      const b = getJsonBody(req);
+      const textRaw =
+        b?.text ??
+        b?.snippet ??
+        b?.content ??
+        null;
+
+      await supabase.from("verification_logs").insert([
+        {
+          mode: "translate",
+          query: textRaw ? String(textRaw).slice(0, 500) : null, // 번역 원문 일부만
+          answer: null,
+          truthscore: null,
+          engines: null,
+          keywords: null,
+          elapsed: null,
+          model_main: null,
+          model_eval: null,
+          sources: null,
+          gemini_model: null,
+          error: e.message,
+          created_at: new Date(),
+        },
+      ]);
+    } catch (logErr) {
+      console.error("❌ verification_logs insert (translate) failed:", logErr.message);
+    }
+
+    // ✅ 번역 쪽도 /api/verify(/api/verify-snippet)와 동일하게 200 + 코드로 내려주기
     if (e?.code === "GEMINI_KEY_EXHAUSTED") {
       return res.status(200).json(
         buildError(
           "GEMINI_KEY_EXHAUSTED",
-          "Gemini 키의 일일 할당량이 소진되었습니다. (키 로테이션/리셋 확인 필요)",
+          "Gemini 번역 일일 할당량 소진으로 응답을 생성할 수 없습니다. (콘솔 설정/쿼터 확인 필요)",
           e.detail || e.message
         )
       );
     }
 
-    // ✅ 서버 암호화키 누락/불량 같은 치명 오류는 즉시 반환
+    // 🔥 치명적인 키 복호화/환경 문제 등은 그대로 httpStatus + publicMessage로 전달
     if (e?._fatal && e?.httpStatus) {
       return res.status(e.httpStatus).json(
         buildError(
           e.code || "FATAL_ERROR",
-          e.publicMessage || "요청을 처리할 수 없습니다.",
+          e.publicMessage || "번역 엔진 처리 중 치명적인 오류가 발생했습니다.",
           e.detail || e.message
         )
       );
@@ -8715,7 +8824,7 @@ try {
       res,
       500,
       "TRANSLATION_ENGINE_ERROR",
-      "번역 엔진 오류로 인해 번역을 수행할 수 없습니다.",
+      "번역 엔진 오류로 번역을 수행할 수 없습니다.",
       e.message
     );
   }
@@ -8769,8 +8878,11 @@ app.post("/api/docs/upload", async (req, res) => {
 */
 app.post("/api/docs/analyze", async (req, res) => {
   try {
+    // Admin 통계용: docs_analyze 요청 카운트
+    markAdminRequest("docs_analyze");
+
     const {
-  user_id,
+      user_id,
   mode,
   task,
   text,
@@ -8782,6 +8894,29 @@ app.post("/api/docs/analyze", async (req, res) => {
   deepl_key,
   gemini_key,
 } = req.body;
+
+// ================================
+// Admin dashboard APIs (beta)
+// ================================
+app.get("/api/admin/status", (req, res) => {
+  return res.json(
+    buildSuccess({
+      server_time: new Date().toISOString(),
+      stats: adminStats,
+      whitelist: getNaverWhitelistStatus(),
+    })
+  );
+});
+
+app.get("/api/admin/errors/recent", (req, res) => {
+  return res.json(
+    buildSuccess({
+      total: adminRecentErrors.length,
+      // 최신 것이 앞에 오도록 reverse
+      items: adminRecentErrors.slice().reverse(),
+    })
+  );
+});
 
         // ✅ docs/analyze: Supabase Bearer로 userId(키링용) 해석
     const auth_user = await getSupabaseAuthUser(req);
