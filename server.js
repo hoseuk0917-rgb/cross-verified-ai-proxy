@@ -6524,17 +6524,29 @@ let flash = "";
 let verify = "";
 let verifyMeta = null;
 
-// ✅ 여기서는 "선언(let)" 하지 말고, 필요하면 값만 리셋
-verifyModelUsed = verifyModel;
+// ✅ verify 단계에서 쓸 Gemini 모델 (flash / flash-lite만 허용)
+if (verifyModel && /flash-lite/i.test(String(verifyModel))) {
+  // 예: "flash-lite", "gemini-2.5-flash-lite"
+  verifyModelUsed = "gemini-2.5-flash-lite";
+} else {
+  // null / "flash" / "pro" / 기타 → 전부 flash로 통일
+  verifyModelUsed = "gemini-2.5-flash";
+}
 
-// flash(답변/요약) 단계에서 실제 사용한 모델을 로그에 남기기 위함
-let answerModelUsed = "gemini-2.5-flash";
+// ✅ flash(요약/답변) 단계에서 쓸 모델 (flash / flash-lite만 허용)
+let answerModelUsed = "gemini-2.5-flash"; // 기본값
 
-    if (safeMode === "qv" || safeMode === "fv") {
-      // QV/FV는 gemini_model 토글을 그대로 사용
-      answerModelUsed =
-        geminiModelRaw === "flash" ? "gemini-2.5-flash" : "gemini-2.5-pro";
-    }
+if (safeMode === "qv" || safeMode === "fv") {
+  // QV/FV에서도 이제 flash / flash-lite만 허용
+  const gRaw = String(geminiModelRaw || "").toLowerCase();
+
+  if (gRaw === "flash-lite" || gRaw === "lite") {
+    answerModelUsed = "gemini-2.5-flash-lite";
+  } else {
+    // "" / "flash" / "pro" / 기타 → 모두 flash 고정
+    answerModelUsed = "gemini-2.5-flash";
+  }
+}
 
     try {
       // 4-1) Flash 단계
