@@ -4050,11 +4050,12 @@ ${JSON.stringify(githubData).slice(0, 2500)}
 {"consistency":0.0}
 `;
 
-    const text = await fetchGeminiSmart({
-  userId,                 // ✅ 아래에서 함수 시그니처를 userId 받게 바꿀 거라 여기선 임시
+  const text = await fetchGeminiSmart({
+  userId,                 // ???꾨옒?먯꽌 ?⑥닔 ?쒓렇?덉쿂瑜?userId 諛쏄쾶 諛붽? 嫄곕씪 ?ш린???꾩떆
   gemini_key,
   keyHint: gemini_key,
-  model: "gemini-2.5-pro",
+  // ✅ pro 금지 → flash 계열만 사용
+  model: "gemini-2.5-flash",
   payload: { contents: [{ parts: [{ text: prompt }] }] },
 });
 
@@ -5002,36 +5003,28 @@ function snippetToVerifyBody(req, res, next) {
 
   // snippet meta (keep original question only as meta; DO NOT seed queries with it)
   const snippetMeta = {
-    is_snippet: true,
-    input_snippet: snippetRaw,
-    snippet_core: clippedCore,
-    question: questionRaw || null,
-    snippet_id: (rest.snippet_id ?? null),
-    snippet_hash: (rest.snippet_hash ?? null),
-  };
+  is_snippet: true,
+  input_snippet: snippetRaw,
+  snippet_core: clippedCore,
+  question: question || null,
+  snippet_id: b?.snippet_id ?? b?.snippetId ?? null,
+  snippet_hash: b?.snippet_hash ?? b?.snippetHash ?? null,
+};
 
-  req.body = {
-    ...rest,
+req.body = {
+  ...rest,
 
-    // force FV
-    mode: "fv",
+  // ✅ snippet 전용: query/rawQuery는 무조건 snippet_core로 고정
+  // (질문(question)은 snippet_meta.question으로만 보존)
+  rawQuery: String(rest.rawQuery ?? clippedCore).trim(),
+  query: String(clippedCore).trim(),
 
-    // FV core_text = snippet
-    core_text: clippedCore,
+  // ✅ default model for snippet verify
+  gemini_model: rest.gemini_model ?? "flash",
 
-    // keep/clip user_answer
-    user_answer: clippedUserAnswer,
-
-    // query/rawQuery must be snippet-based (not question)
-    rawQuery: clippedQuery,
-    query: clippedQuery,
-
-    // default model for snippet verify
-    gemini_model: rest.gemini_model ?? "flash",
-
-    // attach snippet meta for logging/DB/UI
-    snippet_meta: snippetMeta,
-  };
+  // ✅ verifyCoreHandler로 snippet 메타 전달
+  snippet_meta: snippetMeta,
+};
 
   return next();
 }
@@ -5347,17 +5340,15 @@ if (!allowedModes.includes(safeMode)) {
   let verifyModel = null;        // 최종 verify 모델
   let verifyModelUsed = null;    // 실제로 사용된 verify 모델(로그/응답용)
 
-  if (safeMode === "qv" || safeMode === "fv") {
-    // ✅ 기본은 flash, 정말 필요할 때만 "pro"를 명시적으로 사용
-    if (geminiModelRaw === "pro") {
-      verifyModel = "gemini-2.5-pro";
-    } else {
-      verifyModel = "gemini-2.5-flash";
-    }
-  } else if (safeMode === "dv" || safeMode === "cv") {
-    // DV / CV는 아직 구조 정리 전이므로 일단 Pro 유지
-    verifyModel = "gemini-2.5-pro";
+  // ✅ verify 단계는 flash/flash-lite만 허용 (pro 금지)
+if (safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "cv") {
+  const g = String(geminiModelRaw || "");
+  if (g === "flash-lite" || g === "lite" || /flash-lite/i.test(g)) {
+    verifyModel = "gemini-2.5-flash-lite";
+  } else {
+    verifyModel = "gemini-2.5-flash";
   }
+}
 
   // 🌱 기본값은 "선택된 verify 모델"로 설정 (fallback 등에서 사용)
   verifyModelUsed = verifyModel;
@@ -5548,31 +5539,72 @@ switch (safeMode) {
     const qvfvBaseText = (safeMode === "fv" && userCoreText) ? userCoreText : query;
 
     // ✅ QV/FV 전처리 원샷 (답변+블록+블록별 쿼리)
-    try {
-      const t_pre = Date.now();
-      const pre = await preprocessQVFVOneShot({
-  mode: safeMode,
-  query,
-  core_text: qvfvBaseText,
-  gemini_key,
-  modelName: preprocessModel,
-  userId: logUserId, // ✅ ADD
-});
-      const ms_pre = Date.now() - t_pre;
-      recordTime(geminiTimes, "qvfv_preprocess_ms", ms_pre);
-      recordMetric(geminiMetrics, "qvfv_preprocess", ms_pre);
+    // ??QV/FV ?꾩쿂由??먯꺑 (?듬?+釉붾줉+釉붾줉蹂?荑쇰━)
+try {
+  const t_pre = Date.now();
+  let pre = await preprocessQVFVOneShot({
+    mode: safeMode,
+    query,
+    core_text: qvfvBaseText,
+    gemini_key,
+    modelName: preprocessModel,
+    userId: logUserId, // ??ADD
+  });
 
-      qvfvPre = pre;
-      qvfvPreDone = true;
+  const ms_pre = Date.now() - t_pre;
+  recordTime(geminiTimes, "qvfv_preprocess_ms", ms_pre);
+  recordMetric(geminiMetrics, "qvfv_preprocess", ms_pre);
 
-        partial_scores.qvfv_pre = {
-        korean_core: pre.korean_core,
-        english_core: pre.english_core,
-        blocks_count: pre.blocks.length,
-        model_used: preprocessModel,
+  //    블록 텍스트는 무조건 snippet_core(또는 core_text)로 고정한다.
+  const __isSnippet =
+    !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
+
+  if (__isSnippet) {
+    const __core = String(
+      snippet_meta?.snippet_core ?? core_text ?? qvfvBaseText ?? query ?? ""
+    ).trim();
+
+    if (__core) {
+      const __ko = String(pre?.korean_core || "").trim() || normalizeKoreanQuestion(__core);
+      const __en = String(pre?.english_core || "").trim() || String(__core).trim();
+
+      const __makeBlock = (id, txt) => {
+        const text = clipBlockText(txt, 260);
+        const naverQ = fallbackNaverQueryFromText(text || __ko);
+        return {
+          id,
+          text,
+          engine_queries: {
+            crossref: limitChars(__en, 90),
+            openalex: limitChars(__en, 90),
+            wikidata: limitChars(__ko, 50),
+            gdelt: limitChars(__en, 120),
+            naver: naverQ.slice(0, BLOCK_NAVER_MAX_QUERIES),
+          },
+        };
       };
-      partial_scores.qv_answer = safeMode === "qv" ? pre.answer_ko : null;
-    } catch (e) {
+
+      pre = {
+        ...pre,
+        answer_ko: "", // snippet-FV에서는 answer 필요 없음(확장 서술 방지)
+        korean_core: __ko,
+        english_core: __en,
+        blocks: [__makeBlock(1, __core)].filter((b) => b && b.text),
+      };
+    }
+  }
+
+  qvfvPre = pre;
+  qvfvPreDone = true;
+
+  partial_scores.qvfv_pre = {
+    korean_core: pre.korean_core,
+    english_core: pre.english_core,
+    blocks_count: pre.blocks.length,
+    model_used: preprocessModel,
+  };
+  partial_scores.qv_answer = safeMode === "qv" ? pre.answer_ko : null;
+} catch (e) {
       if (
   e?.code === "INVALID_GEMINI_KEY" ||
   e?.code === "GEMINI_KEY_EXHAUSTED" ||
