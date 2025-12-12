@@ -4970,7 +4970,7 @@ function snippetToVerifyBody(req, res, next) {
     b?.snippet ?? b?.snippet_text ?? b?.text ?? ""
   ).trim();
 
-  const question = String(
+  const questionRaw = String(
     b?.question ?? b?.prompt ?? ""
   ).trim();
 
@@ -4978,11 +4978,16 @@ function snippetToVerifyBody(req, res, next) {
     return res.status(400).json(buildError("VALIDATION_ERROR", "snippet is required"));
   }
 
-  // ??hard clip to match enforceVerifyPayloadLimits
+  // hard clip
   const clippedCore = snippetRaw.slice(0, VERIFY_MAX_CORE_TEXT_CHARS);
-  const fallbackQuery = (question || snippetRaw.slice(0, 280)).trim();
 
-  // ??drop raw snippet fields to avoid collisions
+  // IMPORTANT:
+  // - query/rawQuery는 "snippet"으로 고정해야 qvfv_preprocess(쿼리빌더/블록)가 snippet 기반으로 돌아감
+  const clippedQuery = String(clippedCore)
+    .slice(0, (typeof VERIFY_MAX_QUERY_CHARS === "number" && VERIFY_MAX_QUERY_CHARS > 0) ? VERIFY_MAX_QUERY_CHARS : 5000)
+    .trim();
+
+  // drop raw snippet fields to avoid collisions
   const {
     snippet: __drop_snippet,
     snippet_text: __drop_snippet_text,
@@ -4995,33 +5000,36 @@ function snippetToVerifyBody(req, res, next) {
   const clippedUserAnswer = String(rest.user_answer ?? clippedCore)
     .slice(0, VERIFY_MAX_USER_ANSWER_CHARS);
 
-  // 🔍 snippet 전용 메타 (응답에서 is_snippet / input_snippet / snippet_core로 내려줄 재료)
+  // snippet meta (keep original question only as meta; DO NOT seed queries with it)
   const snippetMeta = {
     is_snippet: true,
     input_snippet: snippetRaw,
     snippet_core: clippedCore,
+    question: questionRaw || null,
+    snippet_id: (rest.snippet_id ?? null),
+    snippet_hash: (rest.snippet_hash ?? null),
   };
 
   req.body = {
     ...rest,
 
-    // ??force FV
+    // force FV
     mode: "fv",
 
-    // ??FV core_text = snippet
+    // FV core_text = snippet
     core_text: clippedCore,
 
-    // ??keep/clip user_answer
+    // keep/clip user_answer
     user_answer: clippedUserAnswer,
 
-    // ??preserve original intent
-    rawQuery: String(rest.rawQuery ?? (question || rest.query || "")).trim(),
-    query: String(rest.query ?? fallbackQuery).trim(),
+    // query/rawQuery must be snippet-based (not question)
+    rawQuery: clippedQuery,
+    query: clippedQuery,
 
-    // ??default model for snippet verify
+    // default model for snippet verify
     gemini_model: rest.gemini_model ?? "flash",
 
-    // 🔍 여기서 verifyCoreHandler로 snippet 메타 전달
+    // attach snippet meta for logging/DB/UI
     snippet_meta: snippetMeta,
   };
 
@@ -7917,24 +7925,51 @@ const keywordsForLog =
           .slice(0, 12)
       : null;
 
-// snippet_meta(for snippet-FV/QV) – attach snippet/question info if provided
+// snippet_meta(for snippet-FV/QV) attach snippet/question info if provided
 let snippetMeta = null;
 if (safeMode === "fv" || safeMode === "qv") {
-  const __b = (req && req.body && typeof req.body === "object") ? req.body : {};
-  const __snippet = typeof __b.snippet === "string" ? __b.snippet : null;
-  const __question = typeof __b.question === "string" ? __b.question : null;
-  const __snippetId = __b.snippet_id ?? null;
-  const __snippetHash = __b.snippet_hash ?? null;
+  // 1) preferred: snippetToVerifyBody가 넣어준 snippet_meta
+  if (snippet_meta && typeof snippet_meta === "object") {
+    const s = snippet_meta;
 
-  if (__snippet || __question || __snippetId || __snippetHash) {
-    snippetMeta = {
-      snippet: __snippet,
-      question: __question,
-      snippet_id: __snippetId,
-      snippet_hash: __snippetHash,
-    };
-    // DB sourcesText/로그에도 같이 들어가도록 partial_scores에 심어둠
-    partial_scores.snippet_meta = snippetMeta;
+    const hasAny =
+      !!s.is_snippet ||
+      (typeof s.input_snippet === "string" && s.input_snippet.trim()) ||
+      (typeof s.snippet_core === "string" && s.snippet_core.trim()) ||
+      (typeof s.question === "string" && s.question.trim()) ||
+      (s.snippet_id != null) ||
+      (s.snippet_hash != null);
+
+    if (hasAny) {
+      snippetMeta = {
+        is_snippet: !!s.is_snippet,
+        input_snippet: (typeof s.input_snippet === "string" && s.input_snippet.trim()) ? s.input_snippet : null,
+        snippet_core: (typeof s.snippet_core === "string" && s.snippet_core.trim()) ? s.snippet_core : null,
+        question: (typeof s.question === "string" && s.question.trim()) ? s.question : null,
+        snippet_id: s.snippet_id ?? null,
+        snippet_hash: s.snippet_hash ?? null,
+      };
+      partial_scores.snippet_meta = snippetMeta;
+    }
+  }
+
+  // 2) fallback: legacy fields (req.body.snippet/question)
+  if (!snippetMeta) {
+    const __b = (req && req.body && typeof req.body === "object") ? req.body : {};
+    const __snippet = typeof __b.snippet === "string" ? __b.snippet : null;
+    const __question = typeof __b.question === "string" ? __b.question : null;
+    const __snippetId = __b.snippet_id ?? null;
+    const __snippetHash = __b.snippet_hash ?? null;
+
+    if (__snippet || __question || __snippetId || __snippetHash) {
+      snippetMeta = {
+        snippet: __snippet,
+        question: __question,
+        snippet_id: __snippetId,
+        snippet_hash: __snippetHash,
+      };
+      partial_scores.snippet_meta = snippetMeta;
+    }
   }
 }
 
