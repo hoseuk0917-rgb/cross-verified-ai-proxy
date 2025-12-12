@@ -7674,10 +7674,13 @@ verifyModelUsed = m;
   recordMetric(geminiMetrics, "verify", ms_verify);
 }
 
+let verifyRawJson = ""; // ✅ NEW: verify_raw로 내려줄 "정제된 JSON 문자열"
+
 // ✅ 끝까지 실패했으면 기존 정책대로: verifyMeta 없이 외부엔진 기반으로만 진행
 if (!verify || !String(verify).trim()) {
   verifyMeta = null;
   __irrelevant_urls = [];
+  verifyRawJson = ""; // ✅ NEW
   if (DEBUG) console.warn("⚠️ verify failed on all models:", lastVerifyErr?.message || "unknown");
 } else {
   // ✅ JSON만 뽑아내기(코드펜스/잡문 있어도 최대한 복구)
@@ -7693,6 +7696,7 @@ if (!verify || !String(verify).trim()) {
     const last = s.lastIndexOf("}");
     const jsonText = (first >= 0 && last > first) ? s.slice(first, last + 1) : s;
 
+    verifyRawJson = jsonText; // ✅ NEW: 코드펜스/잡문 제거된 JSON만 내려줌
     verifyMeta = JSON.parse(jsonText);
 
 // ✅ (optional) normalize if helper exists
@@ -8180,7 +8184,7 @@ await supabase.from("verification_logs").insert([
   partial_scores: normalizedPartial,
 
   flash_summary: flash,
-  verify_raw: verify,
+  verify_raw: verifyRawJson,
   gemini_verify_model: verifyModelUsed, // ???ㅼ젣濡??깃났??紐⑤뜽
   engine_times: engineTimes,
   engine_metrics: engineMetrics,
