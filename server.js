@@ -5405,7 +5405,6 @@ if (safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === 
   let truthscore = 0.0;
   let engineStatsMap = {};
   let engineFactor = 1.0;
-  let verifyRawJson = ""; // ✅ NEW: payload.verify_raw로 내려줄 "정제된 JSON 문자열"
 
   // ✅ 엔진/LLM 시간·메트릭 누적용 객체
   const engineTimes = {};
@@ -7675,7 +7674,7 @@ verifyModelUsed = m;
   recordMetric(geminiMetrics, "verify", ms_verify);
 }
 
-verifyRawJson = "";
+let verifyRawJson = ""; // ✅ NEW: payload.verify_raw로 내려줄 "정제된 JSON 문자열"
 
 // ✅ 끝까지 실패했으면 기존 정책대로: verifyMeta 없이 외부엔진 기반으로만 진행
 if (!verify || !String(verify).trim()) {
