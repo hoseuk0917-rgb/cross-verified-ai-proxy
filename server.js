@@ -5332,26 +5332,27 @@ if (!allowedModes.includes(safeMode)) {
     .json(buildError("INVALID_MODE", `지원하지 않는 모드입니다: ${mode}`));
 }
 
-  // 🔹 QV/FV용 Gemini 모델 토글 (Flash / Pro)
-  // - 클라이언트에서 gemini_model: "flash" | "pro" | undefined 로 보냄
-  // - QV/FV에서만 토글, DV/CV는 항상 Pro 고정
-    const geminiModelRaw = (gemini_model || "").toString().trim().toLowerCase();
-let verifyModel = null;        // 요청에서 "의도한" verify 모델
-let verifyModelUsed = null;    // ✅ 실제로 성공한 verify 모델(에러 캐치에서도 써야 하므로 바깥 스코프)
+  // 🧠 QV/FV에서 Gemini 모델 선택 (기본: flash, 옵션: pro)
+  // - 클라이언트에서 gemini_model: "flash" | "pro" | undefined 로 전달 가능
+  // - 아무 값도 안 오면 기본은 flash 로 간다.
+  const geminiModelRaw = (gemini_model || "").toString().trim().toLowerCase();
+  let verifyModel = null;        // 최종 verify 모델
+  let verifyModelUsed = null;    // 실제로 사용된 verify 모델(로그/응답용)
 
-
-if (safeMode === "qv" || safeMode === "fv") {
-  if (geminiModelRaw === "flash") {
-    verifyModel = "gemini-2.5-flash";
-  } else {
+  if (safeMode === "qv" || safeMode === "fv") {
+    // ✅ 기본은 flash, 정말 필요할 때만 "pro"를 명시적으로 사용
+    if (geminiModelRaw === "pro") {
+      verifyModel = "gemini-2.5-pro";
+    } else {
+      verifyModel = "gemini-2.5-flash";
+    }
+  } else if (safeMode === "dv" || safeMode === "cv") {
+    // DV / CV는 아직 구조 정리 전이므로 일단 Pro 유지
     verifyModel = "gemini-2.5-pro";
   }
-} else if (safeMode === "dv" || safeMode === "cv") {
-  verifyModel = "gemini-2.5-pro";
-}
 
-// ✅ 기본값은 "의도한 모델"로 세팅 (fallback 성공 시 아래에서 덮어씀)
-verifyModelUsed = verifyModel;
+  // 🌱 기본값은 "선택된 verify 모델"로 설정 (fallback 등에서 사용)
+  verifyModelUsed = verifyModel;
 
     const engines = [];
   const external = {};
