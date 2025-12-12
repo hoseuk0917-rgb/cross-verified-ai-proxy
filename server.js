@@ -5142,12 +5142,23 @@ function normalizeUrlKey(u) {
   }
 }
 
-function collectExternalEvidenceUrls(external) {
+function collectExternalEvidenceUrls(external, opts) {
   const set = new Set();
   const ex = external && typeof external === "object" ? external : {};
+  const o = (opts && typeof opts === "object") ? opts : {};
+  const strictNaverWhitelist = !!o.strictNaverWhitelist;
+
   for (const k of Object.keys(ex)) {
+    const key = String(k || "").trim().toLowerCase();
     const arr = Array.isArray(ex[k]) ? ex[k] : [];
+
     for (const it of arr) {
+      // ✅ snippet에서는 "naver"만 whitelist URL만 allowlist에 넣는다
+      if (strictNaverWhitelist && key === "naver") {
+        const isWl = (it?.whitelisted === true) || !!it?.tier;
+        if (!isWl) continue;
+      }
+
       const u =
         it?.url ??
         it?.link ??
@@ -5161,10 +5172,9 @@ function collectExternalEvidenceUrls(external) {
       const raw = String(u || "").trim();
       if (!raw || !/^https?:\/\//i.test(raw)) continue;
 
-      // 원문 + 정규화 키 둘 다 allow-list에 등록
       set.add(raw);
-      const key = normalizeUrlKey(raw);
-      if (key) set.add(key);
+      const nkey = (typeof normalizeUrlKey === "function") ? normalizeUrlKey(raw) : null;
+      if (nkey) set.add(nkey);
     }
   }
   return set;
@@ -7829,8 +7839,12 @@ if (typeof normalizeVerifyMeta === "function") {
 
 // ✅ scrub hallucinated URLs using external evidence pool
 try {
-  const __allowed = collectExternalEvidenceUrls(external);
-  scrubVerifyMetaUnknownUrls(verifyMeta, __allowed);
+  const __allowed = collectExternalEvidenceUrls(external, {
+  strictNaverWhitelist:
+    (snippet_meta && snippet_meta.is_snippet === true) ||
+    String(req.path || "") === "/api/verify-snippet",
+});
+scrubVerifyMetaUnknownUrls(verifyMeta, __allowed);
 } catch (_) {}
 
 // ✅ ensure verify_raw is always valid JSON of the FINAL verifyMeta
