@@ -4830,9 +4830,30 @@ let blocks = blocksRaw
   .map((b, idx) => {
     const eq = b?.engine_queries || {};
 
+    function __cleanAcademicQuery(s) {
+  const raw = String(s || "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // 너무 짧으면 원문 유지
+  if (raw.length < 8) return raw;
+
+  // 간단 stopwords 제거(영문)
+  const stop = new Set(["is","are","was","were","the","a","an","of","to","in","on","and","or","for","with","as","by","from"]);
+  const toks = raw.split(" ").filter(w => {
+    const lw = w.toLowerCase();
+    if (stop.has(lw)) return false;
+    return lw.length >= 2;
+  });
+
+  const out = toks.join(" ").trim();
+  return out.length >= 8 ? out : raw;
+}
+
     // ✅ engine query 기본값/길이제한 강제
-    const crossrefQ = limitChars(eq.crossref || english_core, 90);
-    const openalexQ = limitChars(eq.openalex || english_core, 90);
+    const crossrefQ = limitChars(__cleanAcademicQuery(eq.crossref || english_core), 90);
+    const openalexQ = limitChars(__cleanAcademicQuery(eq.openalex || english_core), 90);
     const wikidataQ = limitChars(eq.wikidata || korean_core, 50);
     const gdeltQ    = limitChars(eq.gdelt   || english_core, 120);
 
