@@ -4967,26 +4967,21 @@ function computeEngineCorrectionFactor(engines = [], statsMap = {}) {
 function snippetToVerifyBody(req, res, next) {
   const b = getJsonBody(req);
 
-  const snippetRaw = String(
-    b?.snippet ?? b?.snippet_text ?? b?.text ?? ""
-  ).trim();
+  const snippetRaw = String(b?.snippet ?? b?.snippet_text ?? b?.text ?? "").trim();
+  const questionRaw = String(b?.question ?? b?.prompt ?? "").trim();
 
-  const questionRaw = String(
-    b?.question ?? b?.prompt ?? ""
-  ).trim();
+  const snippetId = b?.snippet_id ?? b?.snippetId ?? null;
+  const snippetHash = b?.snippet_hash ?? b?.snippetHash ?? null;
 
   if (!snippetRaw) {
     return res.status(400).json(buildError("VALIDATION_ERROR", "snippet is required"));
   }
 
-  // hard clip
+  // hard clip to match enforceVerifyPayloadLimits
   const clippedCore = snippetRaw.slice(0, VERIFY_MAX_CORE_TEXT_CHARS);
 
-  // IMPORTANT:
-  // - query/rawQuery는 "snippet"으로 고정해야 qvfv_preprocess(쿼리빌더/블록)가 snippet 기반으로 돌아감
-  const clippedQuery = String(clippedCore)
-    .slice(0, (typeof VERIFY_MAX_QUERY_CHARS === "number" && VERIFY_MAX_QUERY_CHARS > 0) ? VERIFY_MAX_QUERY_CHARS : 5000)
-    .trim();
+  // ✅ query/rawQuery는 snippet로 고정 (preprocess가 snippet 기반으로 돌도록)
+  const clippedQuery = String(clippedCore).slice(0, VERIFY_MAX_QUERY_CHARS || 5000).trim();
 
   // drop raw snippet fields to avoid collisions
   const {
@@ -4995,38 +4990,47 @@ function snippetToVerifyBody(req, res, next) {
     text: __drop_text,
     question: __drop_question,
     prompt: __drop_prompt,
+    snippet_id: __drop_snippet_id,
+    snippetId: __drop_snippetId,
+    snippet_hash: __drop_snippet_hash,
+    snippetHash: __drop_snippetHash,
     ...rest
   } = b;
 
   const clippedUserAnswer = String(rest.user_answer ?? clippedCore)
     .slice(0, VERIFY_MAX_USER_ANSWER_CHARS);
 
-  // snippet meta (keep original question only as meta; DO NOT seed queries with it)
-  const questionText = String(b?.question ?? b?.question_text ?? b?.q ?? "").trim();
+  const snippetMeta = {
+    is_snippet: true,
+    input_snippet: snippetRaw,
+    snippet_core: clippedCore,
+    question: questionRaw || null,
+    snippet_id: snippetId,
+    snippet_hash: snippetHash,
+  };
 
-const snippetMeta = {
-  is_snippet: true,
-  input_snippet: snippetRaw,
-  snippet_core: clippedCore,
-  question: questionText || null,
-  snippet_id: b?.snippet_id ?? b?.snippetId ?? null,
-  snippet_hash: b?.snippet_hash ?? b?.snippetHash ?? null,
-};
+  req.body = {
+    ...rest,
 
-req.body = {
-  ...rest,
+    // force FV
+    mode: "fv",
 
-  // ✅ snippet 전용: query/rawQuery는 무조건 snippet_core로 고정
-  // (질문(question)은 snippet_meta.question으로만 보존)
-  rawQuery: String(rest.rawQuery ?? clippedCore).trim(),
-  query: String(clippedCore).trim(),
+    // FV core_text = snippet
+    core_text: clippedCore,
 
-  // ✅ default model for snippet verify
-  gemini_model: rest.gemini_model ?? "flash",
+    // keep/clip user_answer
+    user_answer: clippedUserAnswer,
 
-  // ✅ verifyCoreHandler로 snippet 메타 전달
-  snippet_meta: snippetMeta,
-};
+    // preserve original intent (but preprocess는 snippet 기반)
+    rawQuery: clippedQuery,
+    query: clippedQuery,
+
+    // default model for snippet verify
+    gemini_model: rest.gemini_model ?? "flash",
+
+    // pass snippet meta
+    snippet_meta: snippetMeta,
+  };
 
   return next();
 }
@@ -5132,7 +5136,13 @@ const verifyCoreHandler = async (req, res) => {
     snippet_meta,
     } = req.body;
 
-  const safeMode = (mode || "").trim().toLowerCase();
+  let safeMode = String(req.body?.mode ?? mode ?? "").trim().toLowerCase();
+
+// /api/verify-snippet이면 mode 유실돼도 FV로 강제
+if (!safeMode) {
+  const p = String(req.path || "");
+  if (p === "/api/verify-snippet") safeMode = "fv";
+}
 
   // Admin 통계용: verify 요청 카운트
   markAdminRequest("verify", { mode: safeMode || "unknown" });
@@ -5319,7 +5329,7 @@ const filterGithubEvidence = (items, rawQuery) => {
 };
 
   // ✅ FV 검증 대상(사실 문장) 우선 입력값
-  const userCoreText = (core_text || "").toString().trim();
+  const userCoreText = String(core_text || req.body?.snippet_meta?.snippet_core || "").trim();
 
   // 기본 검증
   if (!query) {
@@ -8585,18 +8595,6 @@ app.post(
   rejectLvOnVerify,
   verifyCoreHandler
 );
-
-// ✅ QV/FV/DV/CV 공통 검증 엔드포인트
-//   - 기존 /api/verify 호출(앱의 QV/FV/DV/CV 모드)이 여기로 들어옴
-if (process.env.NODE_ENV !== "production") {
-  app.post("/api/verify", verifyCoreHandler);
-
-  app.post(
-    "/api/verify-snippet",
-    snippetToVerifyBody,
-    verifyCoreHandler
-  );
-}
 
 // ✅ /api/verify에서는 lv 금지 (LV는 /api/lv 전용)
 function rejectLvOnVerify(req, res, next) {
