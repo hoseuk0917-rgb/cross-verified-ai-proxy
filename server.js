@@ -5217,6 +5217,16 @@ function scrubVerifyMetaUnknownUrls(verifyMeta, allowedUrls) {
   }
 }
 
+function normalizeEnginesRequested(engines_requested, engine_metrics) {
+  const set = new Set(Array.isArray(engines_requested) ? engines_requested : []);
+  const em = (engine_metrics && typeof engine_metrics === "object") ? engine_metrics : {};
+  for (const [name, m] of Object.entries(em)) {
+    const calls = Number(m?.calls ?? 0);
+    if (calls > 0) set.add(String(name));
+  }
+  return Array.from(set);
+}
+
 // ─────────────────────────────
 // ✅ Verify Core (QV / FV / DV / CV / LV)
 //   - DV/CV: GitHub 기반 TruthScore 직접 계산 (Gemini→GitHub)
@@ -7519,6 +7529,14 @@ if (DEBUG) {
   }
 
   const __requested = partial_scores.engines_requested.slice();
+  // ✅ normalize engines_requested: include actually-called engines (calls>0)
+try {
+  partial_scores.engines_requested = normalizeEnginesRequested(
+    partial_scores.engines_requested,
+    partial_scores.engine_metrics
+  );
+} catch (_) {}
+
   const __used = [];
   const __reasons = {};
   const __explain = {};
