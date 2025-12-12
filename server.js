@@ -5122,6 +5122,26 @@ function extractJsonObjectFromText(raw) {
 // =======================================================
 // ✅ verify_raw URL scrubbers (prevent hallucinated URLs)
 // =======================================================
+function normalizeUrlKey(u) {
+  const s0 = String(u || "").trim();
+  if (!s0) return "";
+  try {
+    const x = new URL(s0);
+    x.hash = ""; // fragment 제거
+    let s = x.toString();
+
+    // path가 "/"가 아닌데 끝이 "/"면 제거 (trailing slash 차이 흡수)
+    try {
+      if (s.endsWith("/") && x.pathname && x.pathname !== "/") s = s.slice(0, -1);
+    } catch (_) {}
+
+    return s;
+  } catch (_) {
+    // URL 파싱 실패면, 최소한 trailing slash만 흡수
+    return s0.endsWith("/") ? s0.slice(0, -1) : s0;
+  }
+}
+
 function collectExternalEvidenceUrls(external) {
   const set = new Set();
   const ex = external && typeof external === "object" ? external : {};
@@ -5137,11 +5157,32 @@ function collectExternalEvidenceUrls(external) {
         it?.html_url ??
         it?.homepage ??
         null;
-      const s = String(u || "").trim();
-      if (s && /^https?:\/\//i.test(s)) set.add(s);
+
+      const raw = String(u || "").trim();
+      if (!raw || !/^https?:\/\//i.test(raw)) continue;
+
+      // 원문 + 정규화 키 둘 다 allow-list에 등록
+      set.add(raw);
+      const key = normalizeUrlKey(raw);
+      if (key) set.add(key);
     }
   }
   return set;
+}
+
+function scrubUnknownUrlsInText(text, allowedUrls) {
+  const t = String(text || "");
+  if (!t) return t;
+  if (!(allowedUrls instanceof Set) || allowedUrls.size === 0) return t;
+
+  return t
+    .replace(/https?:\/\/[^\s)"]+/gi, (u) => {
+      const raw = String(u || "").trim();
+      const key = normalizeUrlKey(raw);
+      return (allowedUrls.has(raw) || (key && allowedUrls.has(key))) ? raw : "";
+    })
+    .replace(/\(\s*\)/g, "")
+    .trim();
 }
 
 function scrubUnknownUrlsInText(text, allowedUrls) {
@@ -5166,7 +5207,10 @@ function scrubVerifyMetaUnknownUrls(verifyMeta, allowedUrls) {
     if (Array.isArray(b.irrelevant_urls)) {
       b.irrelevant_urls = b.irrelevant_urls
         .map(u => String(u || "").trim())
-        .filter(u => u && allowedUrls.has(u));
+        .filter(u => {
+  const key = normalizeUrlKey(u);
+  return u && (allowedUrls.has(u) || (key && allowedUrls.has(key)));
+});
     }
 
     // comment: strip unknown URLs
@@ -7852,14 +7896,23 @@ try {
 
   // sanitized JSON 문자열도 만들어서 내려주기
   try {
-    verifyRawJsonSanitized = verifyMeta ? JSON.stringify(verifyMeta, null, 2) : "";
-  } catch (_) {
-    verifyRawJsonSanitized = "";
-  }
+  verifyRawJsonSanitized = verifyMeta ? JSON.stringify(verifyMeta, null, 2) : "";
+} catch (_) {
+  verifyRawJsonSanitized = "";
+}
 
-  if (partial_scores && typeof partial_scores === "object") {
-    partial_scores.verify_sanitize = removed;
+// ✅ ensure verify_raw reflects FINAL (post-S-19) verifyMeta
+try {
+  if (verifyRawJsonSanitized && String(verifyRawJsonSanitized).trim()) {
+    verifyRawJson = String(verifyRawJsonSanitized);
+  } else if (verifyMeta) {
+    verifyRawJson = JSON.stringify(verifyMeta, null, 2);
   }
+} catch (_) {}
+
+if (partial_scores && typeof partial_scores === "object") {
+  partial_scores.verify_sanitize = removed;
+}
 } catch (e) {
   if (DEBUG) console.warn("⚠️ verifyMeta sanitize error:", e?.message || e);
 }
