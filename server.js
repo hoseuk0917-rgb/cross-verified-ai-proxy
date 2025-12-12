@@ -2910,6 +2910,28 @@ function loadNaverWhitelist() {
       throw new Error("naver_whitelist.json missing 'tiers'");
     }
 
+    // ✅ NEW: display-only domains (show-only, not scoring evidence)
+    // supports:
+    //   - json.display_only_domains: ["namu.wiki", ...]
+    //   - json.display_only.domains: [...]
+    //   - json.displayOnly.domains: [...]
+    try {
+      const list = [];
+      if (Array.isArray(json.display_only_domains)) list.push(...json.display_only_domains);
+      if (json.display_only && Array.isArray(json.display_only.domains)) list.push(...json.display_only.domains);
+      if (json.displayOnly && Array.isArray(json.displayOnly.domains)) list.push(...json.displayOnly.domains);
+
+      const set = new Set();
+      for (const d of list) {
+        const dom = _stripWww(String(d || "").trim().toLowerCase());
+        if (dom) set.add(dom);
+      }
+
+      json.display_only_domains = Array.from(set);
+      // in-memory fast lookup
+      json._display_only_set = new Set(json.display_only_domains);
+    } catch (_) {}
+
     _NAVER_WL_CACHE = { mtimeMs: st.mtimeMs, json };
     return json;
   } catch (e) {
@@ -2955,7 +2977,31 @@ function resolveNaverTier(urlOrHost) {
   const wl = loadNaverWhitelist();
   const host = _hostFromUrlish(urlOrHost);
 
-  if (!wl || !host) return { tier: null, weight: 1, host, match_domain: null, bias_penalties: [] };
+  if (!wl || !host) {
+    return { tier: null, weight: 1, host, match_domain: null, bias_penalties: [] };
+  }
+
+  // ✅ NEW: display-only domains (show-only)
+  try {
+    const set =
+      (wl._display_only_set instanceof Set)
+        ? wl._display_only_set
+        : new Set(Array.isArray(wl.display_only_domains) ? wl.display_only_domains : []);
+
+    for (const d of set) {
+      if (_hostMatchesDomain(host, d)) {
+        return {
+          tier: null,
+          weight: 0.1,
+          base_weight: 0.1,
+          host,
+          match_domain: d,
+          bias_penalties: [],
+          display_only: true,
+        };
+      }
+    }
+  } catch (_) {}
 
   const order = ["tier1", "tier2", "tier3", "tier4", "tier5"];
   for (const t of order) {
@@ -2977,7 +3023,6 @@ function resolveNaverTier(urlOrHost) {
     }
   }
 
-  // tier 매칭은 없지만 bias source로 걸려있을 수도 있으니 penalty만 반영
   const bp = _applyBiasPenalty(host, 1, wl);
   return { tier: null, weight: bp.weight, base_weight: 1, host, match_domain: null, bias_penalties: bp.penalties };
 }
@@ -3235,12 +3280,14 @@ async function callNaver(query, clientId, clientSecret, ctx = {}) {
           const cleanDesc = i.description?.replace(/<[^>]+>/g, "") || "";
           const link = i.link;
 
-          const source_url = i.originallink || i.link; // ✅ news는 originallink가 진짜 출처
-          const tierInfo = resolveNaverTier(source_url);
-          const typeWeight = NAVER_TYPE_WEIGHTS[ep.type] ?? 1;
+          const source_url = i.originallink || i.link; // ✅news는 originallink가 진짜 출처
+const tierInfo = resolveNaverTier(source_url);
+const typeWeight = NAVER_TYPE_WEIGHTS[ep.type] ?? 1;
 
-          // ✅ (패치) 화이트리스트에 없더라도 "공식 성격" 도메인이면 소프트 폴백으로 티어 부여
-          let tier = tierInfo.tier;
+const display_only = !!tierInfo.display_only;
+
+// ✅(옵션) 화이트리스트가 없더라도 "공식 성격" 도메인이면...
+let tier = tierInfo.tier;
 
 let tier_weight =
   (typeof tierInfo.weight === "number" && Number.isFinite(tierInfo.weight))
@@ -3250,45 +3297,53 @@ let tier_weight =
 let whitelisted = !!tier;
 let inferred = false;
 
-// ✅ 비화이트리스트 기본 감점(= 1.0 방지)
-if (!whitelisted) {
+// ✅ display-only는 "표시만" (증거/스코어링은 아래 루프에서 제외 처리 예정)
+if (display_only) {
+  tier = null;
+  whitelisted = false;
+  inferred = false;
   tier_weight = NAVER_NON_WHITELIST_FACTOR;
+} else {
+  // ✅ 비화이트리스트 기본 감점(= 1.0 방지)
+  if (!whitelisted) {
+    tier_weight = NAVER_NON_WHITELIST_FACTOR;
+  }
+
+  // ✅ "공식처럼 보임"은 tier만 주고, whitelisted는 true로 두지 않음(유지)
+  if (!tier && hostLooksOfficial(tierInfo.host)) {
+    tier = "tier2"; // 표시용 티어
+    tier_weight = NAVER_INFERRED_OFFICIAL_FACTOR;
+    inferred = true;
+  }
 }
 
-// ✅ "공식처럼 보임"은 표시용 tier만 주고, whitelisted는 올리지 않는다(핵심)
-if (!tier && hostLooksOfficial(tierInfo.host)) {
-  tier = "tier2"; // 표시용 라벨
-  tier_weight = NAVER_INFERRED_OFFICIAL_FACTOR; // 소프트 가중치
-  inferred = true;
-}
+return {
+  title: cleanTitle,
+  desc: cleanDesc,
+  link,
+  source_url,
+  origin: "naver",
+  naver_type: ep.type,
+  tier,
+  tier_weight,
+  whitelisted,
+  inferred,
+  display_only,
 
-          return {
-            title: cleanTitle,
-            desc: cleanDesc,
-            link,
-            source_url,
-            origin: "naver",
-            naver_type: ep.type,
-            tier,
-            tier_weight,
-            whitelisted,
-            inferred,
+  // ✅news만 pubDate가 있음
+  pubDate: ep.type === "news" ? (i.pubDate || null) : null,
 
-            // ✅ news만 pubDate가 옴
-            pubDate: ep.type === "news" ? (i.pubDate || null) : null,
+  // ✅domain 판정은 source_url(=originallink) 기준
+  source_host: tierInfo.host || null,
+  match_domain: tierInfo.match_domain || null,
 
-            // ✅ domain 판정은 항상 source_url(=originallink) 기준
-            source_host: tierInfo.host || null,
-            match_domain: tierInfo.match_domain || null,
-            whitelisted,
+  tier,
+  tier_weight,
+  type_weight: typeWeight,
 
-            tier,
-            tier_weight,
-            type_weight: typeWeight,
-
-            ...(inferred ? { _whitelist_inferred: true } : {}),
-          };
-
+  ...(inferred ? { _whitelist_inferred: true } : {}),
+  ...(display_only ? { _whitelist_display_only: true } : {}),
+};
         }) || [];
 
       // 🔹 제목/요약 토큰 필터(완화된 requiredHits 사용)
@@ -4676,7 +4731,6 @@ function pickTopNaverEvidenceForVerify({
   query,
   blockText,
   naverQueries,
-  allowNews,
   topK,
   minRelevance,
 }) {
@@ -4684,7 +4738,7 @@ function pickTopNaverEvidenceForVerify({
   const K = Number.isFinite(topK) && topK > 0 ? topK : 3;
   const minRel = Number.isFinite(minRelevance) ? minRelevance : 0.15;
 
-    const kw = extractKeywords([query, blockText, ...(naverQueries || [])].join(" "), 14);
+  const kw = extractKeywords([query, blockText, ...(naverQueries || [])].join(" "), 14);
   const needNum = hasNumberLike(blockText) || hasNumberLike(query);
 
   const needle = `${String(blockText || "")} ${String(query || "")}`;
@@ -4693,38 +4747,26 @@ function pickTopNaverEvidenceForVerify({
 
   const scored = [];
   for (const it of list) {
-    if (!allowNews && it?.naver_type === "news") continue; // ✅ 시사성 질문에서만 news 허용
-
     const text = `${it?.title || ""} ${it?.desc || ""}`;
     const rel = keywordHitRatio(text, kw);
-    if (rel < minRel) continue; // ✅ 무관한 결과 evidence 제외
+    if (rel < minRel) continue;
 
+    // ✅ display-only는 evidence로 쓰지 않음
+    const isDisplayOnly =
+      (it?.display_only === true) || (it?._whitelist_display_only === true);
+    if (isDisplayOnly) continue;
+
+    // ✅ whitelist-only: 비화이트리스트는 아예 제외
     const isWhitelisted = (it?.whitelisted === true) || !!it?.tier;
-    const isInferred = (it?.inferred === true);
+    if (!isWhitelisted) continue;
 
     const hasAnyNum = hasNumberLike(text);
     const hasYear = yearTokens.length ? yearTokens.some(y => text.includes(y)) : false;
     const hasExactNum = numTokens.length ? numTokens.some(n => text.includes(n)) : false;
 
-    // ✅ inferred는 관련도 충분할 때만 통과
-    const allowInferred = isInferred && rel >= Math.max(minRel + 0.10, 0.25);
-
-    // ✅ 숫자/연도형 질의에서만 비화이트리스트 예외 허용(수치/연도 매칭 + 높은 관련도)
-    const allowNonWhitelist =
-      !isWhitelisted && !isInferred &&
-      (needNum || yearTokens.length > 0) &&
-      (hasExactNum || hasYear || (hasAnyNum && rel >= 0.35)) &&
-      rel >= Math.max(minRel + 0.15, 0.35);
-
-    if (!isWhitelisted && !allowInferred && !allowNonWhitelist) continue;
-
     let baseW =
       (typeof it?.tier_weight === "number" && Number.isFinite(it.tier_weight) ? it.tier_weight : 1) *
       (typeof it?.type_weight === "number" && Number.isFinite(it.type_weight) ? it.type_weight : 1);
-
-// ✅ (중복 감점 방지)
-// - 비화이트리스트/인퍼드 감점은 item.tier_weight(또는 생성 단계)에서 이미 반영되는 구조이므로
-//   여기서 추가로 곱하지 않음
 
     // ✅ 숫자/연도 매칭 가산
     let bonus = 1.0;
@@ -5155,9 +5197,13 @@ function collectExternalEvidenceUrls(external, opts) {
     for (const it of arr) {
       // ✅ snippet에서는 "naver"만 whitelist URL만 allowlist에 넣는다
       if (strictNaverWhitelist && key === "naver") {
-        const isWl = (it?.whitelisted === true) || !!it?.tier;
-        if (!isWl) continue;
-      }
+  const isWl =
+    (it?.whitelisted === true) ||
+    !!it?.tier ||
+    (it?.display_only === true) ||
+    (it?._whitelist_display_only === true);
+  if (!isWl) continue;
+}
 
       const u =
         it?.url ??
@@ -5903,9 +5949,6 @@ if (!naverQueries.length) {
     }
   naverItemsAll = dedupeByLink(naverItemsAll).slice(0, BLOCK_NAVER_MAX_ITEMS);
 
-  // ----- Naver evidence 선택 준비 -----
-  const allowNewsEvidence = isTimeSensitiveText(`${query} ${b?.text || ""}`);
-
   // ✅ qvfvPre에서 korean_core / english_core를 안전하게 꺼냄
   const qvfvKoreanCore = String(qvfvPre?.korean_core ?? "").trim();
   const qvfvEnglishCore = String(qvfvPre?.english_core ?? "").trim();
@@ -5918,44 +5961,34 @@ if (!naverQueries.length) {
 
   // ✅ 확장된 쿼리를 기준으로 evidence 선택
   let naverItemsForVerify = pickTopNaverEvidenceForVerify({
-    items: naverItemsAll,
-    query,
-    blockText: b?.text || "",
-    naverQueries: naverQueriesExpanded,
-    allowNews: allowNewsEvidence,
-    topK: BLOCK_NAVER_EVIDENCE_TOPK,
-    minRelevance: NAVER_RELEVANCE_MIN,
-  });
+  items: naverItemsAll,
+  query,
+  blockText: b?.text || "",
+  naverQueries: naverQueriesExpanded,
+  topK: BLOCK_NAVER_EVIDENCE_TOPK,
+  minRelevance: NAVER_RELEVANCE_MIN,
+});
 
-  // ----- fallback: strict 필터로 0개 나오면 그래도 뭔가 채워주기 -----
+    // ----- fallback: strict 필터로 0개 나오면 그래도 뭔가 채워주기 -----
   if (
     (!Array.isArray(naverItemsForVerify) || naverItemsForVerify.length === 0) &&
     Array.isArray(naverItemsAll) &&
     naverItemsAll.length > 0
   ) {
-    // 1) 먼저 news 제외 풀
-    const __poolNoNews = allowNewsEvidence
-      ? naverItemsAll
-      : naverItemsAll.filter((r) => r?.naver_type !== "news");
+    // policy: time-sensitive 여부와 무관하게 news 포함
+    // (이미 whitelist/tier 기반으로 품질/우선순위가 정해져 있으므로 여기서 news를 빼지 않음)
 
-    // 2) tier/whitelisted/inferred 우선
-    const __poolPrefer = (__poolNoNews.length ? __poolNoNews : naverItemsAll).filter((r) =>
+    const __poolPrefer = naverItemsAll.filter((r) =>
       !!(r?.tier || r?.whitelisted || r?._whitelist_inferred || r?.inferred)
     );
 
-    // 3) 최종 풀 (prefer > noNews > all)
-    const __poolFinal =
-      __poolPrefer.length > 0
-        ? __poolPrefer
-        : __poolNoNews.length > 0
-        ? __poolNoNews
-        : naverItemsAll;
+    const __poolFinal = __poolPrefer.length > 0 ? __poolPrefer : naverItemsAll;
 
     naverItemsForVerify = topArr(__poolFinal, BLOCK_NAVER_EVIDENCE_TOPK);
   }
 
   // ----- gdelt / external / blocksForVerify -----
-  const gdeltForVerify = allowNewsEvidence ? topArr(gdPack.result, BLOCK_EVIDENCE_TOPK) : [];
+  const gdeltForVerify = topArr(gdPack.result, BLOCK_EVIDENCE_TOPK);
 
   external.crossref.push(...(crPack.result || []));
   external.openalex.push(...(oaPack.result || []));
@@ -7058,18 +7091,17 @@ if (safeMode === "qv" || safeMode === "fv") {
       const rel = keywordHitRatio(text, kw);
 
       const isWhitelisted = (ev?.whitelisted === true) || !!ev?.tier;
-      const isInferred = (ev?.inferred === true);
 
-      const hasYear = years.length ? years.some(y => text.includes(y)) : false;
-      const hasExactNum = nums.length ? nums.some(n => text.includes(n)) : false;
-      const hasAnyNum = hasNumberLike(text);
+// display-only는 evidence로 쓰지 않음(일관성)
+const isDisplayOnly =
+  (ev?.display_only === true) || (ev?._whitelist_display_only === true);
+if (isDisplayOnly) continue;
 
-      const allowInferred = isInferred && rel >= 0.25;
-      const allowNonWhitelist =
-        !isWhitelisted && !isInferred &&
-        (hasYear || hasExactNum || (hasAnyNum && rel >= 0.35));
+const hasYear = years.length ? years.some(y => text.includes(y)) : false;
+const hasExactNum = nums.length ? nums.some(n => text.includes(n)) : false;
+const hasAnyNum = hasNumberLike(text);
 
-      if (!isWhitelisted && !allowInferred && !allowNonWhitelist) continue;
+if (!isWhitelisted) continue;
 
       let baseW = 1.0;
       if (typeof ev?.tier_weight === "number" && Number.isFinite(ev.tier_weight)) baseW *= ev.tier_weight;
@@ -8387,13 +8419,13 @@ await supabase.from("verification_logs").insert([
 
   // ??S-15: engines_used ?먮룞 ?곗텧(紐낆떆 ?몄텧)
   engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
-  engines_requested:
-  (partial_scores &&
-    typeof partial_scores === "object" &&
-    partial_scores.engine_queries &&
-    typeof partial_scores.engine_queries === "object")
-    ? Object.keys(partial_scores.engine_queries).filter(Boolean)
-    : (partial_scores.engines_requested || engines),
+    engines_requested:
+    (partial_scores &&
+      typeof partial_scores === "object" &&
+      Array.isArray(partial_scores.engines_requested) &&
+      partial_scores.engines_requested.length > 0)
+      ? partial_scores.engines_requested
+      : (Array.isArray(engines) ? engines : []),
   engines_used: (Array.isArray(partial_scores.engines_used)
     ? partial_scores.engines_used
     : (Array.isArray(partial_scores.engines_used_pre) ? partial_scores.engines_used_pre : [])),
