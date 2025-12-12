@@ -5119,6 +5119,70 @@ function extractJsonObjectFromText(raw) {
   }
 }
 
+// =======================================================
+// ✅ verify_raw URL scrubbers (prevent hallucinated URLs)
+// =======================================================
+function collectExternalEvidenceUrls(external) {
+  const set = new Set();
+  const ex = external && typeof external === "object" ? external : {};
+  for (const k of Object.keys(ex)) {
+    const arr = Array.isArray(ex[k]) ? ex[k] : [];
+    for (const it of arr) {
+      const u =
+        it?.url ??
+        it?.link ??
+        it?.source_url ??
+        it?.sourceUrl ??
+        it?.pdf_url ??
+        it?.html_url ??
+        it?.homepage ??
+        null;
+      const s = String(u || "").trim();
+      if (s && /^https?:\/\//i.test(s)) set.add(s);
+    }
+  }
+  return set;
+}
+
+function scrubUnknownUrlsInText(text, allowedUrls) {
+  const t = String(text || "");
+  if (!t) return t;
+  if (!(allowedUrls instanceof Set) || allowedUrls.size === 0) return t;
+  return t
+    .replace(/https?:\/\/[^\s)"]+/gi, (u) => (allowedUrls.has(u) ? u : ""))
+    .replace(/\(\s*\)/g, "")
+    .trim();
+}
+
+function scrubVerifyMetaUnknownUrls(verifyMeta, allowedUrls) {
+  if (!verifyMeta || typeof verifyMeta !== "object") return;
+  if (!(allowedUrls instanceof Set) || allowedUrls.size === 0) return;
+
+  const blocks = Array.isArray(verifyMeta.blocks) ? verifyMeta.blocks : [];
+  for (const b of blocks) {
+    if (!b || typeof b !== "object") continue;
+
+    // irrelevant_urls: allow-list only
+    if (Array.isArray(b.irrelevant_urls)) {
+      b.irrelevant_urls = b.irrelevant_urls
+        .map(u => String(u || "").trim())
+        .filter(u => u && allowedUrls.has(u));
+    }
+
+    // comment: strip unknown URLs
+    if (typeof b.comment === "string") {
+      b.comment = scrubUnknownUrlsInText(b.comment, allowedUrls);
+    }
+  }
+
+  // overall.summary: strip unknown URLs
+  if (verifyMeta.overall && typeof verifyMeta.overall === "object") {
+    if (typeof verifyMeta.overall.summary === "string") {
+      verifyMeta.overall.summary = scrubUnknownUrlsInText(verifyMeta.overall.summary, allowedUrls);
+    }
+  }
+}
+
 // ─────────────────────────────
 // ✅ Verify Core (QV / FV / DV / CV / LV)
 //   - DV/CV: GitHub 기반 TruthScore 직접 계산 (Gemini→GitHub)
@@ -5144,7 +5208,8 @@ const verifyCoreHandler = async (req, res) => {
   });
   
   let __irrelevant_urls = [];
-  let verifyRawJson = ""; // ✅ verify_raw로 내려줄 "정제된 JSON 문자열" (handler-scope)
+  let verifyRawJson = ""; // ✅ NEW: payload.verify_raw로 내려줄 "정제된 JSON 문자열"
+  let verifyRawJsonSanitized = ""; // ✅ NEW(S-19): evidence 정합화된 verify JSON
   let logUserId = null;   // ???붿껌留덈떎 ?낅┰
   let authUser = null;    // ???붿껌留덈떎 ?낅┰
 
@@ -7585,9 +7650,12 @@ For each block output:
 - irrelevant_urls: array of URLs (strings). If evidence URLs are irrelevant to the block meaning, put them here.
 - evidence: { support: string[], conflict: string[] } (engine names only, e.g. "naver","crossref","openalex","wikidata","gdelt","github","klaw")
 - comment: 1~2 Korean sentences explaining why.
-  - If you can, cite at least one evidence item briefly like: [host] title (url)
+  - IMPORTANT: Do NOT invent any URL, host, or title.
+  - You may cite ONLY by copying an evidence item's host/title/url that already exists in input.external (the evidence pool).
+  - If you cannot find a URL in input.external, omit citations entirely.
 
 Rules:
+- Never output any URL unless it appears in input.external. Never invent URLs.
 - If evidence looks irrelevant/ambiguous for this block: include those URLs in irrelevant_urls AND set block_truthscore <= 0.55 and explain in comment.
 - If there is no usable evidence: set block_truthscore around 0.55 and explain "근거 부족".
 
@@ -7707,17 +7775,93 @@ if (typeof normalizeVerifyMeta === "function") {
   } catch (_) {}
 }
 
-// ✅ irrelevant_urls는 "딱 1번만" 수집
+// ✅ scrub hallucinated URLs using external evidence pool
 try {
-  const _blocks = Array.isArray(verifyMeta?.blocks) ? verifyMeta.blocks : [];
-  const _urls = _blocks
-    .flatMap(b => (Array.isArray(b?.irrelevant_urls) ? b.irrelevant_urls : []))
-    .map(u => String(u || "").trim())
-    .filter(Boolean);
+  const __allowed = collectExternalEvidenceUrls(external);
+  scrubVerifyMetaUnknownUrls(verifyMeta, __allowed);
+} catch (_) {}
 
-  __irrelevant_urls = Array.from(new Set(_urls));
+// ✅ ensure verify_raw is always valid JSON of the FINAL verifyMeta
+try {
+  verifyRawJson = JSON.stringify(verifyMeta);
 } catch (_) {
-  __irrelevant_urls = [];
+  verifyRawJson = jsonText; // fallback
+}
+
+// ✅ NEW(S-19): verifyMeta.evidence 엔진명 정합화(실제 evidence_counts=0 엔진 제거) + engine_adjust 리셋
+try {
+  const bf = Array.isArray(partial_scores?.blocks_for_verify)
+    ? partial_scores.blocks_for_verify
+    : [];
+
+  const id2counts = new Map();
+  for (const b of bf) {
+    const id = Number.isFinite(Number(b?.id)) ? Number(b.id) : null;
+    const counts = (b?.evidence_counts && typeof b.evidence_counts === "object") ? b.evidence_counts : null;
+    if (id != null && counts) id2counts.set(id, counts);
+  }
+
+  const removed = { support: {}, conflict: {}, engine_adjust_reset: [] };
+
+  if (verifyMeta && Array.isArray(verifyMeta.blocks)) {
+    for (const vb of verifyMeta.blocks) {
+      const bid = Number.isFinite(Number(vb?.id)) ? Number(vb.id) : null;
+      const counts = (bid != null && id2counts.has(bid)) ? id2counts.get(bid) : null;
+
+      const ev = (vb?.evidence && typeof vb.evidence === "object") ? vb.evidence : null;
+      if (!counts || !ev) continue;
+
+      const s0 = Array.isArray(ev.support) ? ev.support.filter(Boolean) : [];
+      const c0 = Array.isArray(ev.conflict) ? ev.conflict.filter(Boolean) : [];
+
+      const s1 = s0.filter((name) => Number(counts[String(name)] ?? 0) > 0);
+      const c1 = c0.filter((name) => Number(counts[String(name)] ?? 0) > 0);
+
+      const s1set = new Set(s1);
+      const c1set = new Set(c1);
+
+      for (const name of s0) {
+        if (!s1set.has(name)) removed.support[name] = (removed.support[name] || 0) + 1;
+      }
+      for (const name of c0) {
+        if (!c1set.has(name)) removed.conflict[name] = (removed.conflict[name] || 0) + 1;
+      }
+
+      vb.evidence = { ...ev, support: s1, conflict: c1 };
+    }
+  }
+
+  // engine_adjust: block_evidence_count=0 엔진은 1.00으로 리셋
+  if (verifyMeta && verifyMeta.engine_adjust && typeof verifyMeta.engine_adjust === "object") {
+    const explain =
+      (partial_scores?.engine_explain && typeof partial_scores.engine_explain === "object")
+        ? partial_scores.engine_explain
+        : null;
+
+    if (explain) {
+      for (const name of Object.keys(verifyMeta.engine_adjust)) {
+        const info = explain[name];
+        const bec = (info && typeof info.block_evidence_count === "number") ? info.block_evidence_count : 0;
+        if (!(bec > 0)) {
+          verifyMeta.engine_adjust[name] = 1.0;
+          removed.engine_adjust_reset.push(name);
+        }
+      }
+    }
+  }
+
+  // sanitized JSON 문자열도 만들어서 내려주기
+  try {
+    verifyRawJsonSanitized = verifyMeta ? JSON.stringify(verifyMeta, null, 2) : "";
+  } catch (_) {
+    verifyRawJsonSanitized = "";
+  }
+
+  if (partial_scores && typeof partial_scores === "object") {
+    partial_scores.verify_sanitize = removed;
+  }
+} catch (e) {
+  if (DEBUG) console.warn("⚠️ verifyMeta sanitize error:", e?.message || e);
 }
 
 // ✅ NEW: conflict_meta 요약 (support/conflict 구조만 집계, TruthScore에는 아직 미반영)
@@ -8169,7 +8313,13 @@ await supabase.from("verification_logs").insert([
 
   // ??S-15: engines_used ?먮룞 ?곗텧(紐낆떆 ?몄텧)
   engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
-  engines_requested: (partial_scores.engines_requested || engines),
+  engines_requested:
+  (partial_scores &&
+    typeof partial_scores === "object" &&
+    partial_scores.engine_queries &&
+    typeof partial_scores.engine_queries === "object")
+    ? Object.keys(partial_scores.engine_queries).filter(Boolean)
+    : (partial_scores.engines_requested || engines),
   engines_used: (Array.isArray(partial_scores.engines_used)
     ? partial_scores.engines_used
     : (Array.isArray(partial_scores.engines_used_pre) ? partial_scores.engines_used_pre : [])),
@@ -8185,8 +8335,9 @@ await supabase.from("verification_logs").insert([
   partial_scores: normalizedPartial,
 
   flash_summary: flash,
-  verify_raw: verifyRawJson,
-  gemini_verify_model: verifyModelUsed, // ???ㅼ젣濡??깃났??紐⑤뜽
+verify_raw: verifyRawJson,
+verify_raw_sanitized: verifyRawJsonSanitized || null,
+gemini_verify_model: verifyModelUsed,
   engine_times: engineTimes,
   engine_metrics: engineMetrics,
 };
