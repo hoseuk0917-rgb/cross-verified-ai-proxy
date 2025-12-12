@@ -5144,8 +5144,9 @@ const verifyCoreHandler = async (req, res) => {
   });
   
   let __irrelevant_urls = [];
-  let logUserId = null;   // ✅ 요청마다 독립
-  let authUser = null;    // ✅ 요청마다 독립
+  let verifyRawJson = ""; // ✅ verify_raw로 내려줄 "정제된 JSON 문자열" (handler-scope)
+  let logUserId = null;   // ???붿껌留덈떎 ?낅┰
+  let authUser = null;    // ???붿껌留덈떎 ?낅┰
 
       const {
     query,
@@ -7674,7 +7675,7 @@ verifyModelUsed = m;
   recordMetric(geminiMetrics, "verify", ms_verify);
 }
 
-let verifyRawJson = ""; // ✅ NEW: payload.verify_raw로 내려줄 "정제된 JSON 문자열"
+verifyRawJson = ""; // ✅ reset (declared at handler-scope)
 
 // ✅ 끝까지 실패했으면 기존 정책대로: verifyMeta 없이 외부엔진 기반으로만 진행
 if (!verify || !String(verify).trim()) {
