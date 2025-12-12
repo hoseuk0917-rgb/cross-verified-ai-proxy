@@ -5002,11 +5002,13 @@ function snippetToVerifyBody(req, res, next) {
     .slice(0, VERIFY_MAX_USER_ANSWER_CHARS);
 
   // snippet meta (keep original question only as meta; DO NOT seed queries with it)
-  const snippetMeta = {
+  const questionText = String(b?.question ?? b?.question_text ?? b?.q ?? "").trim();
+
+const snippetMeta = {
   is_snippet: true,
   input_snippet: snippetRaw,
   snippet_core: clippedCore,
-  question: question || null,
+  question: questionText || null,
   snippet_id: b?.snippet_id ?? b?.snippetId ?? null,
   snippet_hash: b?.snippet_hash ?? b?.snippetHash ?? null,
 };
