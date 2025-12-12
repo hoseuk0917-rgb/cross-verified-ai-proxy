@@ -4465,30 +4465,39 @@ const NAVER_NUM_MATCH_BOOST = parseFloat(process.env.NAVER_NUM_MATCH_BOOST || "1
 // ✅ 숫자/단위 감지 (숫자 발췌 패치용)
 function hasNumberLike(text) {
   const s = String(text || "");
-  return (
-    /\d/.test(s) ||
-    /%|퍼센트|만\s*명|명|대|원|달러|억원|조원|km|m\/s|GHz|MHz/.test(s)
-  );
+  if (!s) return false;
+
+  // any Arabic digit
+  if (/\d/.test(s)) return true;
+
+  // common numeric markers / units (Korean + English)
+  // - Korean: 퍼센트, 조/억/만/천/백, 명/건/대/원/달러/유로 등
+  // - English: %, km, m/s, mph/kph, Hz-family, kg/g/mg, L/ml, °C/°F
+  if (/(%|퍼센트|조|억|만|천|백|명|건|대|원|달러|유로|km\b|m\/s\b|mph\b|kph\b|ghz\b|mhz\b|khz\b|hz\b|kg\b|mg\b|g\b|l\b|ml\b|°c\b|°f\b)/i.test(s)) {
+    return true;
+  }
+
+  return false;
 }
 
 function hasStrongNumberLike(text) {
   const t = String(text || "");
   if (!t) return false;
 
-  // 연도는 강한 숫자 주장으로 취급
+  // explicit year
   if (/\b(19\d{2}|20\d{2}|2100)\b/.test(t)) return true;
 
-  // 1,234 / 12,345.67 형태
+  // 1,234 / 12,345.67
   if (/\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b/.test(t)) return true;
 
-  // 3자리 이상 숫자(통계량/금액에서 흔함)
+  // 3+ digits or decimal
   if (/\b\d{3,}(?:\.\d+)?\b/.test(t)) return true;
 
-  // 퍼센트
-  if (/\b\d+(?:\.\d+)?\s*%/.test(t)) return true;
+  // percent
+  if (/\b\d+(?:\.\d+)?\s*%/.test(t) || /\b\d+(?:\.\d+)?\s*퍼센트\b/.test(t)) return true;
 
-  // 한국어 단위(1.2억, 300만 등)
-  if (/\b\d+(?:\.\d+)?\s*(?:조|억|만|천|백)\b/.test(t)) return true;
+  // Korean magnitude units with an explicit number (e.g., 1.2억, 300만)
+  if (/\d+(?:\.\d+)?\s*(?:조|억|만|천|백)/.test(t)) return true;
 
   return false;
 }
@@ -4517,7 +4526,7 @@ function isTrustedNumericEvidenceItem(x) {
 }
 
 function normalizeNumToken(t) {
-  return String(t || "").trim().replace(/,/g, "");
+  return String(t || "").trim().replace(/[,\s]/g, "");
 }
 
 function extractYearTokens(text) {
@@ -4738,48 +4747,125 @@ function pickTopNaverEvidenceForVerify({
   const K = Number.isFinite(topK) && topK > 0 ? topK : 3;
   const minRel = Number.isFinite(minRelevance) ? minRelevance : 0.15;
 
+  const needle = `${String(blockText || "")} ${String(query || "")}`.trim();
+const yearTokens = extractYearTokens(needle);
+const numTokens = extractQuantNumberTokens(needle); // years/1-digit 제외한 "수량성 숫자" 토큰
+const numTokensCompact = numTokens.map(normalizeNumToken);
+
   const kw = extractKeywords([query, blockText, ...(naverQueries || [])].join(" "), 14);
   const needNum = hasNumberLike(blockText) || hasNumberLike(query);
 
-  const needle = `${String(blockText || "")} ${String(query || "")}`;
-  const yearTokens = Array.from(needle.matchAll(/\b(19\d{2}|20\d{2})\b/g)).map(m => m[1]);
-  const numTokens = Array.from(needle.matchAll(/(\d+(?:\.\d+)?)/g)).map(m => m[1]).filter(x => x && x.length <= 10);
+  // tier1(core) 도메인 1개는 최소 포함되도록(가능하면)
+  const wl = loadNaverWhitelist();
+  const tier1Domains = Array.isArray(wl?.tiers?.tier1?.domains) ? wl.tiers.tier1.domains : [];
+
+  const __getHostFromUrl = (u = "") => {
+    try {
+      return String(new URL(u).hostname || "").toLowerCase();
+    } catch {
+      return "";
+    }
+  };
+
+  const __isCoreHost = (host = "") =>
+    tier1Domains.some((d) => host.endsWith(String(d || "").toLowerCase()));
+
+  const __hitCount = (haystack, keywords) => {
+    const text = String(haystack || "").toLowerCase();
+    const ks = Array.isArray(keywords) ? keywords : [];
+    let hit = 0;
+    for (const k of ks) {
+      const kk = String(k || "").toLowerCase();
+      if (!kk) continue;
+      if (text.includes(kk)) hit++;
+    }
+    return hit;
+  };
+
+  const __minHits = (kwLen) => {
+    if (!kwLen) return 1;
+    if (kwLen <= 2) return 1;       // 키워드가 1~2개면 1개 히트 허용
+    if (kwLen <= 4) return 2;       // 3~4개면 최소 2개 히트
+    return Math.max(2, Math.ceil(kwLen * 0.25));
+  };
 
   const scored = [];
   for (const it of list) {
-    const text = `${it?.title || ""} ${it?.desc || ""}`;
-    const rel = keywordHitRatio(text, kw);
-    if (rel < minRel) continue;
+    const urlCand = String(it?.source_url || it?.link || "").trim();
+    if (!urlCand) continue;
+    if (!isSafeExternalHttpUrl(urlCand)) continue;
 
-    // ✅ display-only는 evidence로 쓰지 않음
-    const isDisplayOnly =
-      (it?.display_only === true) || (it?._whitelist_display_only === true);
+    const text = `${it?.title || ""} ${it?.desc || ""}`.trim();
+
+    // display-only는 evidence로 쓰지 않음
+    const isDisplayOnly = (it?.display_only === true) || (it?._whitelist_display_only === true);
     if (isDisplayOnly) continue;
 
-    // ✅ whitelist-only: 비화이트리스트는 아예 제외
+    // whitelist-only: 비화이트리스트는 제외
     const isWhitelisted = (it?.whitelisted === true) || !!it?.tier;
     if (!isWhitelisted) continue;
 
+    // ✅ "한국" 1개만 맞아도 통과" 문제 해결: 최소 키워드 히트 수 요구
+    const hits = __hitCount(text, kw);
+    const needHits = __minHits(kw.length);
+    if (hits < needHits) continue;
+
+    const rel = kw.length ? hits / kw.length : 0;
+    if (rel < minRel) continue;
+
+    const isNews = it?.naver_type === "news";
     const hasAnyNum = hasNumberLike(text);
-    const hasYear = yearTokens.length ? yearTokens.some(y => text.includes(y)) : false;
-    const hasExactNum = numTokens.length ? numTokens.some(n => text.includes(n)) : false;
+    const textCompact = String(text || "").replace(/[,\s]/g, "");
+const hasYear = yearTokens.length
+  ? yearTokens.some((y) => text.includes(String(y)) || textCompact.includes(String(y)))
+  : false;
+
+const hasExactNum = numTokensCompact.length
+  ? numTokensCompact.some((n) => n && textCompact.includes(String(n)))
+  : false;
+
+    // ✅ 숫자형 질문이면: "숫자/연도 단서 없는 뉴스"는 잡음으로 보고 제외
+    if (isNews && needNum && !hasAnyNum && !hasYear && !hasExactNum) continue;
 
     let baseW =
       (typeof it?.tier_weight === "number" && Number.isFinite(it.tier_weight) ? it.tier_weight : 1) *
       (typeof it?.type_weight === "number" && Number.isFinite(it.type_weight) ? it.type_weight : 1);
 
-    // ✅ 숫자/연도 매칭 가산
     let bonus = 1.0;
-    if (needNum) bonus *= (hasAnyNum ? 1.15 : 0.8);
-    if (NAVER_STRICT_YEAR_MATCH && yearTokens.length) bonus *= (hasYear ? 1.10 : 0.85);
+    if (needNum) bonus *= hasAnyNum ? 1.15 : 0.85;
+    if (NAVER_STRICT_YEAR_MATCH && yearTokens.length) bonus *= hasYear ? 1.10 : 0.90;
     if (numTokens.length && hasExactNum) bonus *= NAVER_NUM_MATCH_BOOST;
 
-    const score = baseW * (0.6 + 0.4 * rel) * bonus;
-    scored.push({ it, score });
+    const hostRaw = String(it?.host || it?.source_host || "").toLowerCase();
+    const host = hostRaw || __getHostFromUrl(urlCand);
+    const isCore = !!(host && __isCoreHost(host));
+    const hostBonus = isCore ? 1.12 : 1.0;
+
+    const score = baseW * hostBonus * (0.6 + 0.4 * rel) * bonus;
+    scored.push({ it, score, url: urlCand, isCore });
   }
 
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, K).map((x) => x.it);
+
+  // ✅ tier1(core) 도메인이 있으면 최소 1개는 포함시키기(가능할 때)
+  const out = [];
+  const seen = new Set();
+
+  const corePick = scored.find((x) => x.isCore && x.it);
+  if (corePick?.it) {
+    out.push(corePick.it);
+    if (corePick.url) seen.add(corePick.url);
+  }
+
+  for (const x of scored) {
+    if (out.length >= K) break;
+    const u = x.url || String(x?.it?.source_url || x?.it?.link || "");
+    if (u && seen.has(u)) continue;
+    out.push(x.it);
+    if (u) seen.add(u);
+  }
+
+  return out.slice(0, K);
 }
 
 async function preprocessQVFVOneShot({
@@ -5978,9 +6064,9 @@ if (!naverQueries.length) {
     // policy: time-sensitive 여부와 무관하게 news 포함
     // (이미 whitelist/tier 기반으로 품질/우선순위가 정해져 있으므로 여기서 news를 빼지 않음)
 
-    const __poolPrefer = naverItemsAll.filter((r) =>
-      !!(r?.tier || r?.whitelisted || r?._whitelist_inferred || r?.inferred)
-    );
+    const __poolPrefer = (__poolNoNews.length ? __poolNoNews : naverItemsAll).filter((r) =>
+  !!(r?.tier || r?.whitelisted)
+);
 
     const __poolFinal = __poolPrefer.length > 0 ? __poolPrefer : naverItemsAll;
 
@@ -7076,9 +7162,10 @@ if (safeMode === "qv" || safeMode === "fv") {
     if (evsAll.length === 0) continue;
 
     const needle = `${String(b?.text || "")} ${String(query || "")}`.trim();
-    const years = Array.from(needle.matchAll(/\b(19\d{2}|20\d{2})\b/g)).map(m => m[1]);
-    const nums  = Array.from(needle.matchAll(/(\d+(?:\.\d+)?)/g)).map(m => m[1]).filter(x => x && x.length <= 10);
-    const kw = extractKeywords(needle, 12);
+const years = extractYearTokens(needle);
+const nums = extractQuantNumberTokens(needle);
+const numsCompact = nums.map(normalizeNumToken);
+const kw = extractKeywords(needle, 12);
 
     // URL별 fetch 후보 3개 정도만: 연도/숫자 매칭 + 관련도 + 화이트리스트/도메인 가중치
     const scored = [];
@@ -7097,8 +7184,16 @@ const isDisplayOnly =
   (ev?.display_only === true) || (ev?._whitelist_display_only === true);
 if (isDisplayOnly) continue;
 
-const hasYear = years.length ? years.some(y => text.includes(y)) : false;
-const hasExactNum = nums.length ? nums.some(n => text.includes(n)) : false;
+const textCompact = String(text || "").replace(/[,\s]/g, "");
+
+const hasYear = years.length
+  ? years.some(y => text.includes(String(y)) || textCompact.includes(String(y)))
+  : false;
+
+const hasExactNum = numsCompact.length
+  ? numsCompact.some(n => n && textCompact.includes(String(n)))
+  : false;
+
 const hasAnyNum = hasNumberLike(text);
 
 if (!isWhitelisted) continue;
