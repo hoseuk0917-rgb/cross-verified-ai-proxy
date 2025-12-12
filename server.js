@@ -5185,16 +5185,6 @@ function scrubUnknownUrlsInText(text, allowedUrls) {
     .trim();
 }
 
-function scrubUnknownUrlsInText(text, allowedUrls) {
-  const t = String(text || "");
-  if (!t) return t;
-  if (!(allowedUrls instanceof Set) || allowedUrls.size === 0) return t;
-  return t
-    .replace(/https?:\/\/[^\s)"]+/gi, (u) => (allowedUrls.has(u) ? u : ""))
-    .replace(/\(\s*\)/g, "")
-    .trim();
-}
-
 function scrubVerifyMetaUnknownUrls(verifyMeta, allowedUrls) {
   if (!verifyMeta || typeof verifyMeta !== "object") return;
   if (!(allowedUrls instanceof Set) || allowedUrls.size === 0) return;
@@ -7902,13 +7892,12 @@ try {
 }
 
 // ✅ ensure verify_raw reflects FINAL (post-S-19) verifyMeta
+// ✅ S-19: lock verify_raw to FINAL verifyMeta (compact JSON)
 try {
-  if (verifyRawJsonSanitized && String(verifyRawJsonSanitized).trim()) {
-    verifyRawJson = String(verifyRawJsonSanitized);
-  } else if (verifyMeta) {
-    verifyRawJson = JSON.stringify(verifyMeta, null, 2);
-  }
-} catch (_) {}
+  if (verifyMeta) verifyRawJson = JSON.stringify(verifyMeta);
+} catch (_) {
+  // keep previous verifyRawJson as-is
+}
 
 if (partial_scores && typeof partial_scores === "object") {
   partial_scores.verify_sanitize = removed;
