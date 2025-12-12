@@ -4740,12 +4740,21 @@ function pickTopNaverEvidenceForVerify({
   return scored.slice(0, K).map((x) => x.it);
 }
 
-async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, modelName, userId }) {
+async function preprocessQVFVOneShot({
+  mode,
+  query,
+  core_text,
+  question,     // ✅ADD
+  gemini_key,
+  modelName,
+  userId,
+}) {
   // mode: "qv" | "fv"
   // QV: 답변 생성 + 답변 기준 블록/쿼리 생성
   // FV: core_text(사실문장) 기준 블록/쿼리 생성 (답변 생성 X)
 
-  const baseCore = (core_text || query || "").toString().trim();
+const baseCore = (core_text || query || "").toString().trim();
+const userIntentQ = String(question || "").trim();
 
  const prompt = `
 너는 Cross-Verified AI의 "전처리 엔진"이다.
@@ -4754,6 +4763,7 @@ async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, model
 [입력]
 - mode: ${mode}                // "qv" | "fv"
 - user_query: ${query}
+- user_question_intent(있으면 최우선): ${userIntentQ ? userIntentQ : "(없음)"}
 - core_text(FV에서만 사용): ${mode === "fv" ? baseCore : "(QV에서는 무시)"}
 
 [절대 규칙 — 위반하면 실패]
@@ -4762,6 +4772,8 @@ async function preprocessQVFVOneShot({ mode, query, core_text, gemini_key, model
 3) blocks는 반드시 1~${QVFV_MAX_BLOCKS}개.
 4) block.text는 "검증 대상 텍스트"에서 문장을 그대로 복사해서 사용(의역/요약/새 주장 추가 금지).
 5) naver 쿼리에는 '+'를 절대 포함하지 말 것.
+6) user_question_intent가 있으면 다의어/중의성(예: 수도/은행/배터리/애플 등) 해소에 반드시 사용하고,
+   반대 의미로 튀는 naver 쿼리는 만들지 말 것. (필요 시 수식어/괄호로 의미 고정)
 
 [QV 규칙]
 - 질문에 대해 최선의 한국어 답변(answer_ko)을 6~10문장으로 작성한다.
@@ -5575,14 +5587,17 @@ switch (safeMode) {
     // ??QV/FV ?꾩쿂由??먯꺑 (?듬?+釉붾줉+釉붾줉蹂?荑쇰━)
 try {
   const t_pre = Date.now();
-  let pre = await preprocessQVFVOneShot({
-    mode: safeMode,
-    query,
-    core_text: qvfvBaseText,
-    gemini_key,
-    modelName: preprocessModel,
-    userId: logUserId, // ??ADD
-  });
+  const userQuestion = String(req?.body?.question || "").trim();
+
+let pre = await preprocessQVFVOneShot({
+  mode: safeMode,
+  query,
+  core_text: qvfvBaseText,
+  question: userQuestion, // ✅ADD
+  gemini_key,
+  modelName: preprocessModel,
+  userId: logUserId, // ✅ADD
+});
 
   const ms_pre = Date.now() - t_pre;
   recordTime(geminiTimes, "qvfv_preprocess_ms", ms_pre);
