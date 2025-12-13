@@ -7907,6 +7907,50 @@ try {
     return n;
   };
 
+    // ✅ soft penalty/year/num miss 집계(엔진별) — QV/FV blocks evidence 기준
+  const __collectBlockSoftMeta = (engineKey) => {
+    const out = {
+      items: 0,
+      penalized: 0,
+      year_miss: 0,
+      num_miss: 0,
+      avg_penalty: null, // geometric mean
+      min_penalty: null,
+    };
+    if (!Array.isArray(blocksForVerify)) return out;
+
+    let sumLog = 0;
+
+    for (const b of blocksForVerify) {
+      const arr = b?.evidence?.[engineKey];
+      if (!Array.isArray(arr) || arr.length === 0) continue;
+
+      for (const ev of arr) {
+        out.items++;
+
+        if (ev?._soft_year_miss) out.year_miss++;
+        if (ev?._soft_numeric_miss) out.num_miss++;
+
+        const p =
+          (typeof ev?._soft_penalty_product === "number" && Number.isFinite(ev._soft_penalty_product))
+            ? ev._soft_penalty_product
+            : null;
+
+        if (p != null && p < 0.999999) {
+          out.penalized++;
+          const pp = Math.max(1e-6, Math.min(1.0, p));
+          sumLog += Math.log(pp);
+          out.min_penalty = (out.min_penalty == null) ? pp : Math.min(out.min_penalty, pp);
+        }
+      }
+    }
+
+    if (out.penalized > 0) {
+      out.avg_penalty = Math.exp(sumLog / out.penalized);
+    }
+    return out;
+  };
+
   for (const name of __requested) {
     if (!name) continue;
 
@@ -7959,11 +8003,17 @@ try {
 
     if (used) __used.push(name);
 
+        const softMeta =
+      (safeMode === "qv" || safeMode === "fv")
+        ? __collectBlockSoftMeta(name)
+        : null;
+
     __explain[name] = {
       used,
       ext_count: extCount,
       block_evidence_count: blockCount,
       ms,
+      soft_meta: softMeta, // {items, penalized, year_miss, num_miss, avg_penalty, min_penalty}
     };
   }
 
@@ -7976,6 +8026,27 @@ try {
   partial_scores.engines_excluded = __requested.filter((x) => x && !__used.includes(x));
 
   partial_scores.engine_explain = __explain;
+
+    // ✅ 전체 soft penalty 집계(옵션)
+  if (safeMode === "qv" || safeMode === "fv") {
+    try {
+      let totalItems = 0, totalPen = 0, totalYear = 0, totalNum = 0;
+      for (const k of Object.keys(__explain || {})) {
+        const sm = __explain?.[k]?.soft_meta;
+        if (!sm || typeof sm !== "object") continue;
+        totalItems += (sm.items || 0);
+        totalPen += (sm.penalized || 0);
+        totalYear += (sm.year_miss || 0);
+        totalNum += (sm.num_miss || 0);
+      }
+      partial_scores.soft_penalties_overview = {
+        items: totalItems,
+        penalized: totalPen,
+        year_miss: totalYear,
+        num_miss: totalNum,
+      };
+    } catch (_) {}
+  }
 
   // 기존 exclusion reason이 있으면 merge
   const __prev =
