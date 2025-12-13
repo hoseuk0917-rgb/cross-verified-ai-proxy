@@ -4844,7 +4844,7 @@ function pickTopNaverEvidenceForVerify({
   const K = Number.isFinite(topK) && topK > 0 ? topK : 3;
   const minRel = Number.isFinite(minRelevance) ? minRelevance : 0.15;
 
-  const needle = `${String(blockText || "")} ${String(query || "")}`.trim();
+  const needle = String(blockText || "").trim();
 const yearTokens = extractYearTokens(needle);
 const numTokens = extractQuantNumberTokens(needle); // years/1-digit 제외한 "수량성 숫자" 토큰
 const numTokensCompact = numTokens.map(normalizeNumToken);
@@ -7300,7 +7300,7 @@ if (safeMode === "qv" || safeMode === "fv") {
     const evsAll = Array.isArray(b?.evidence?.naver) ? b.evidence.naver : [];
     if (evsAll.length === 0) continue;
 
-    const needle = `${String(b?.text || "")} ${String(query || "")}`.trim();
+    const needle = String(b?.text || "").trim();
 const years = extractYearTokens(needle);
 const nums = extractQuantNumberTokens(needle);
 const numsCompact = nums.map(normalizeNumToken);
@@ -7485,10 +7485,10 @@ const numeric_soft_warnings = [];
 
     // 숫자/연도 주장 블록이면: excerpt/title/desc 어디든 숫자 흔적이 있는 evidence가 최소 1개는 있어야 통과
     // (숫자근거 없이 숫자블록이 붙으면 QV2에서 '근거 있는데도 무근거' / '중간구간 환각' 둘 다 악화)
-        const claimText = `${b?.text || ""} ${query || ""}`;
-    const isNumericClaim = hasStrongNumberLike(claimText);
+    const claimText = String(b?.text || "");
+const isNumericClaim = hasStrongNumberLike(claimText);
 
-    if (isNumericClaim) {
+if (isNumericClaim) {
       const evItems = Object.values(ev).filter(Array.isArray).flat();
 
       const evTextBlob = evItems
@@ -7650,8 +7650,8 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
     const numericCandidates = [];
 
     for (const b of blocksForVerify) {
-      const txt = `${b?.text || ""} ${query || ""}`;
-      if (!hasStrongNumberLike(txt)) continue;
+      const txt = String(b?.text || "");
+if (!hasStrongNumberLike(txt)) continue;
 
       const ev = b?.evidence || {};
       const enginesWithEvidence = Object.keys(ev).filter(
