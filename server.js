@@ -9139,8 +9139,9 @@ try {
       ? ps.soft_penalty_factor
       : null;
 
+   // ⭐ 핵심: false도 그대로 노출해야 함 (기존 로직은 false → null로 바꿔버림)
   const softPenaltyApplied =
-    (ps.soft_penalty_applied && typeof ps.soft_penalty_applied === "object")
+    Object.prototype.hasOwnProperty.call(ps, "soft_penalty_applied")
       ? ps.soft_penalty_applied
       : null;
 
