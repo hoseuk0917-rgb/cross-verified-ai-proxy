@@ -4535,7 +4535,7 @@ function extractQuantNumberTokens(text) {
   const rawTokens = [];
   const re = /\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\b/g;
 
-  for (const m of s.matchAll(re)) {
+    for (const m of s.matchAll(re)) {
     const tok = m[0];
     const norm = normalizeNumToken(tok);
     if (!norm) continue;
@@ -4549,7 +4549,27 @@ function extractQuantNumberTokens(text) {
     // 너무 긴 숫자 토큰 제외(오탐 방지)
     if (norm.length > 12) continue;
 
+    // 기본 토큰
     rawTokens.push(tok);
+
+    // ✅ 한국어 단위(만/억/조) 확장 토큰 추가
+    // 예) "5,156만" -> tok="5,156", unit="만" => "51560000" 도 같이 넣음
+    try {
+      const idxAfter = (typeof m.index === "number" ? m.index : -1) + tok.length;
+      const unit = idxAfter >= 0 ? s.slice(idxAfter, idxAfter + 1) : "";
+      const baseNum = Number(norm);
+
+      let mul = 0;
+      if (unit === "만") mul = 1e4;
+      else if (unit === "억") mul = 1e8;
+      else if (unit === "조") mul = 1e12;
+
+      if (mul > 0 && Number.isFinite(baseNum) && baseNum > 0) {
+        const scaled = String(Math.round(baseNum * mul));
+        // scaled도 토큰으로 추가(후단 dedupe/normalize에서 정리됨)
+        rawTokens.push(scaled);
+      }
+    } catch (_e) {}
   }
 
   // normalize 기준 dedup
@@ -7658,7 +7678,7 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
 // (insert here: AFTER evidence_prune block, BEFORE FINALIZE block)
 if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
   // ✅ 기본은 SOFT(블록/근거 안 버림). STRICT=true일 때만 하드 필터/드랍
-
+  const __NUMERIC_PRUNE_ENGINES = new Set(["naver"]); // numeric prune은 naver에만 적용
   const cleanEvidenceText = (raw = "") => {
     let s = String(raw || "");
     s = s.replace(/<script[\s\S]*?<\/script>/gi, " ");
@@ -7769,7 +7789,10 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
       for (const eng of Object.keys(b.evidence)) {
         const arr = b.evidence?.[eng];
         if (!Array.isArray(arr) || arr.length === 0) continue;
-
+              // ✅ 숫자 매칭 기반 prune은 naver에만 적용 (crossref/openalex/gdelt는 건드리지 않음)
+      if (!__NUMERIC_PRUNE_ENGINES.has(eng)) {
+        continue;                 // ev[eng]를 절대 수정하지 않음
+      }
         itemsBefore += arr.length;
 
         const cleaned = arr.map((it) => {
