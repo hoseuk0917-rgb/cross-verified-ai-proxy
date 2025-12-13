@@ -7679,6 +7679,7 @@ if (!hasStrongNumberLike(txt)) continue;
 if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
   // ✅ 기본은 SOFT(블록/근거 안 버림). STRICT=true일 때만 하드 필터/드랍
   const __NUMERIC_PRUNE_ENGINES = new Set(["naver"]); // numeric prune은 naver에만 적용
+
   const cleanEvidenceText = (raw = "") => {
     let s = String(raw || "");
     s = s.replace(/<script[\s\S]*?<\/script>/gi, " ");
@@ -7691,248 +7692,189 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
   };
 
   const extractNumericTokens = (text = "") => {
-  const t = String(text || "");
+    const t = String(text || "");
 
-  // years: 4자리 연도만
-  const years = Array.from(new Set((t.match(/\b(19\d{2}|20\d{2}|2100)\b/g) || [])));
+    // years: 4자리 연도만
+    const years = Array.from(new Set((t.match(/\b(19\d{2}|20\d{2}|2100)\b/g) || [])));
 
-  // nums: 콤마/소수 포함 숫자 토큰 추출 후 정규화(콤마 제거)
-  const rawNums = t.match(/\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\b/g) || [];
-  const nums = Array.from(
-    new Set(
-      rawNums
-        .map((x) => normalizeNumToken(x))          // "5,156" -> "5156"
-        .filter((n) => {
-          if (!n) return false;
+    // nums: 콤마/소수 포함 숫자 토큰 추출 후 정규화(콤마 제거)
+    const rawNums = t.match(/\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\b/g) || [];
+    const nums = Array.from(
+      new Set(
+        rawNums
+          .map((x) => normalizeNumToken(x)) // "5,156" -> "5156"
+          .filter((n) => {
+            if (!n) return false;
 
-          // 연도(YYYY)는 nums에서 제외 (years에서만 체크)
-          if (/^(19\d{2}|20\d{2}|2100)$/.test(n)) return false;
+            // 연도(YYYY)는 nums에서 제외 (years에서만 체크)
+            if (/^(19\d{2}|20\d{2}|2100)$/.test(n)) return false;
 
-          // 너무 약한 숫자(한 자리)는 제외
-          if (/^\d$/.test(n)) return false;
+            // 너무 약한 숫자(한 자리)는 제외
+            if (/^\d$/.test(n)) return false;
 
-          // 최소 3자리 이상 or 소수는 유지
-          return n.includes(".") || n.length >= 3;
-        })
-    )
-  );
+            // 최소 3자리 이상 or 소수는 유지
+            return n.includes(".") || n.length >= 3;
+          })
+      )
+    );
 
-  return { years, nums };
-};
-
-  const isLikelyClaimText = (text = "") => {
-    const t = String(text || "").trim();
-    if (t.length < 12) return false;
-    if (/\b(이다|입니다|한다|했다|예정|계획|완료|도입|시행)\b/.test(t)) return true;
-    if (/(19\d{2}|20\d{2})/.test(t)) return true;
-    if (/\b\d+(?:\.\d+)?\b/.test(t)) return true;
-    return false;
+    return { years, nums };
   };
 
-    const numericPassForEvidence = (claimTokens, evidenceText) => {
+  const numericPassForEvidence = (claimTokens, evidenceText) => {
     const evRaw = String(evidenceText || "");
     const evCompact = evRaw.replace(/[,\s]/g, ""); // "5,156" -> "5156" (+ 공백도 제거)
 
     const years = Array.isArray(claimTokens?.years) ? claimTokens.years : [];
-    const nums  = Array.isArray(claimTokens?.nums)  ? claimTokens.nums  : [];
+    const nums = Array.isArray(claimTokens?.nums) ? claimTokens.nums : [];
 
     const needYear = years.length > 0;
-    const needNum  = nums.length > 0;
+    const needNum = nums.length > 0;
 
     const yearsHit = needYear
-      ? years.some(y => evRaw.includes(String(y)) || evCompact.includes(String(y)))
+      ? years.some((y) => evRaw.includes(String(y)) || evCompact.includes(String(y)))
       : false;
 
     const numsHit = needNum
-      ? nums.some(n => {
+      ? nums.some((n) => {
           const s = String(n);
-          const sCompact = s.replace(/[,\s]/g, "");
-          return evRaw.includes(s) || evCompact.includes(sCompact);
+          return s && (evRaw.includes(s) || evCompact.includes(s));
         })
       : false;
 
-    // ✅ STRICT=true면 강하게(year && num), STRICT=false면 약하게(year || num)
-    if (needYear && needNum) return STRICT_NUMERIC_PRUNE ? (yearsHit && numsHit) : (yearsHit || numsHit);
-    if (needYear) return yearsHit;
-    if (needNum) return numsHit;
-    return true;
+    // 둘 다 필요한데 둘 다 미스면 fail
+    // 하나만 필요하면 그 하나만 만족하면 pass
+    const pass =
+      (needYear && needNum) ? (yearsHit && numsHit)
+      : needYear ? yearsHit
+      : needNum ? numsHit
+      : true;
+
+    return { needYear, needNum, yearsHit, numsHit, pass };
   };
-
-  const countTotalBlockEvidence = (block) => {
-    const ev = block?.evidence;
-    if (!ev || typeof ev !== "object") return 0;
-    let n = 0;
-    for (const k of Object.keys(ev)) {
-      const arr = ev?.[k];
-      if (Array.isArray(arr)) n += arr.length;
-    }
-    return n;
-  };
-
-  const beforeBlocks = blocksForVerify.length;
-
-  const droppedBlocks = [];   // STRICT일 때 실제 드랍
-  const candidates = [];      // SOFT일 때 드랍 “후보” 로그
-  const touched = [];
-  const mismatchFallback = []; // 숫자 필터 결과 0이라 fallback으로 원본 유지한 기록
 
   let itemsBefore = 0;
   let itemsAfter = 0;
 
-  const keptBlocks = [];
+  const touched = [];
+  const mismatchFallback = [];
 
   for (const b of blocksForVerify) {
-    const claimText = String(b?.text || "");
-    const tokens = extractNumericTokens(`${claimText} ${query || ""}`);
+    const claimText = String(b?.text || "").trim();
+    if (!claimText) continue;
 
-    if (b?.evidence && typeof b.evidence === "object") {
-      for (const eng of Object.keys(b.evidence)) {
-        const arr = b.evidence?.[eng];
-        if (!Array.isArray(arr) || arr.length === 0) continue;
-              // ✅ 숫자 매칭 기반 prune은 naver에만 적용 (crossref/openalex/gdelt는 건드리지 않음)
-      if (!__NUMERIC_PRUNE_ENGINES.has(eng)) {
-        continue;                 // ev[eng]를 절대 수정하지 않음
-      }
-        itemsBefore += arr.length;
+    // 숫자/연도 토큰이 없으면 이 블록은 스킵
+    const claimTokens = extractNumericTokens(claimText);
+    const needAny = (claimTokens.years.length > 0) || (claimTokens.nums.length > 0);
+    if (!needAny) continue;
 
-        const cleaned = arr.map((it) => {
-          const merged =
-            it?.evidence_text ||
-            it?.excerpt ||
-            it?.snippet ||
-            it?.description ||
-            it?.title ||
-            "";
-          return { ...it, evidence_text: cleanEvidenceText(merged) };
-        });
+    // 엔진별(현재는 naver만)
+    for (const eng of __NUMERIC_PRUNE_ENGINES) {
+      const arr = b?.evidence?.[eng];
+      if (!Array.isArray(arr) || arr.length === 0) continue;
 
-        let keptArr = cleaned;
+      itemsBefore += arr.length;
 
-        // ✅ 숫자/연도 토큰이 있는 “주장”만 매칭 적용
-        if (tokens.years.length > 0 || tokens.nums.length > 0) {
-          const filtered = cleaned.filter(
-  (it) => isTrustedNumericEvidenceItem(it) || numericPassForEvidence(tokens, it?.evidence_text)
-);
+      const kept = [];
+      for (const ev of arr) {
+        // evidence text blob (excerpt/title/desc/url/host)
+        const evBlob = cleanEvidenceText(
+          `${ev?.evidence_text || ""} ${ev?.title || ""} ${ev?.desc || ""} ${ev?.url || ev?.link || ev?.source_url || ""} ${ev?.host || ev?.source_host || ""}`
+        );
 
-          if (filtered.length > 0) {
-            keptArr = filtered; // 통과가 있으면 필터 적용
-          } else {
-            if (STRICT_NUMERIC_PRUNE) {
-              keptArr = filtered; // STRICT면 0개여도 그대로 (→ 이후 block drop 가능)
-            } else {
-              keptArr = cleaned;  // ✅ SOFT면 0개로 만들지 말고 fallback 유지
-              mismatchFallback.push({
-                text: claimText.slice(0, 180),
-                engine: eng,
-                years: tokens.years,
-                nums: tokens.nums,
-                before: cleaned.length,
-                after: cleaned.length,
-                note: "numeric_filter_zero_keep_original(cleaned) because STRICT_NUMERIC_PRUNE=false",
-              });
-            }
-          }
+        const r = numericPassForEvidence(claimTokens, evBlob);
 
-          // touched 로그: STRICT일 때는 실제 after(0 포함), SOFT일 때는 fallback이면 before==after라서 mismatchFallback로 남김
-          if (keptArr.length !== arr.length) {
-            touched.push({
-              text: claimText.slice(0, 180),
-              engine: eng,
-              before: arr.length,
-              after: keptArr.length,
-              years: tokens.years,
-              nums: tokens.nums,
-            });
-          }
+        // trusted host 예외(통계/국제기구 등): excerpt가 빈약해도 하드 프룬에서는 보호
+        let trusted = false;
+        try {
+          trusted = (typeof isTrustedNumericEvidenceItem === "function") ? !!isTrustedNumericEvidenceItem(ev) : false;
+        } catch (_) {}
+
+        // ✅ SOFT penalty product (중복 적용 방지)
+        const baseTw =
+          (typeof ev?._tier_weight_before_soft === "number" && Number.isFinite(ev._tier_weight_before_soft))
+            ? ev._tier_weight_before_soft
+            : (typeof ev?.tier_weight === "number" && Number.isFinite(ev.tier_weight))
+              ? ev.tier_weight
+              : 1.0;
+
+        let penalty = 1.0;
+
+        // year miss: 이미 numeric_fetch에서 soft flag가 찍혔을 수도 있으니 “있으면 그 값” 사용
+        const yearMiss = r.needYear && !r.yearsHit;
+        const yearPenalty =
+          (typeof ev?._soft_year_miss_penalty === "number" && Number.isFinite(ev._soft_year_miss_penalty))
+            ? ev._soft_year_miss_penalty
+            : (yearMiss ? NAVER_YEAR_MISS_PENALTY : 1.0);
+
+        if (yearMiss) {
+          ev._soft_year_miss = true;
+          ev._soft_year_miss_years = Array.isArray(ev._soft_year_miss_years) ? ev._soft_year_miss_years : claimTokens.years.slice(0, 6);
+          ev._soft_year_miss_penalty = yearPenalty;
+          penalty *= yearPenalty;
         }
 
-        b.evidence[eng] = keptArr;
-        itemsAfter += keptArr.length;
+        // numeric miss: SOFT warning 패널티
+        const numMiss = r.needNum && !r.numsHit;
+        const numPenalty =
+          (typeof ev?._soft_numeric_miss_penalty === "number" && Number.isFinite(ev._soft_numeric_miss_penalty))
+            ? ev._soft_numeric_miss_penalty
+            : (numMiss ? NUMERIC_SOFT_WARNING_PENALTY : 1.0);
+
+        if (numMiss) {
+          ev._soft_numeric_miss = true;
+          ev._soft_numeric_miss_nums = Array.isArray(ev._soft_numeric_miss_nums) ? ev._soft_numeric_miss_nums : claimTokens.nums.slice(0, 8);
+          ev._soft_numeric_miss_penalty = numPenalty;
+          penalty *= numPenalty;
+        }
+
+        // ✅ penalty가 실질적으로 있으면 tier_weight에 반영(선정/점수 로직에 바로 먹게)
+        if (penalty < 0.999999) {
+          ev._tier_weight_before_soft = baseTw;
+          ev._soft_penalty_product = penalty;
+          ev.tier_weight = baseTw * penalty;
+
+          touched.push({
+            url: ev?.url || ev?.link || ev?.source_url || null,
+            host: ev?.host || ev?.source_host || null,
+            year_miss: !!yearMiss,
+            num_miss: !!numMiss,
+            penalty,
+          });
+        }
+
+        // ✅ STRICT=true일 때만 하드 프룬(단, trusted는 보호)
+        const passOrTrusted = r.pass || trusted;
+        if (STRICT_NUMERIC_PRUNE && !passOrTrusted) {
+          mismatchFallback.push({
+            url: ev?.url || ev?.link || ev?.source_url || null,
+            host: ev?.host || ev?.source_host || null,
+            reason: (yearMiss && numMiss) ? "year_and_num_miss" : yearMiss ? "year_miss" : numMiss ? "num_miss" : "mismatch",
+            trusted: !!trusted,
+          });
+          continue;
+        }
+
+        kept.push(ev);
       }
+
+      // write back
+      b.evidence[eng] = kept;
+      itemsAfter += kept.length;
     }
-
-    const totalEv = countTotalBlockEvidence(b);
-
-    // ✅ “근거 0” 블록 드랍은 STRICT일 때만
-    if (totalEv <= 0 && isLikelyClaimText(claimText)) {
-      const rec = { text: claimText.slice(0, 220), reason: "no_evidence_block" };
-      if (STRICT_NUMERIC_PRUNE) {
-        droppedBlocks.push(rec);
-        continue;
-      } else {
-        candidates.push(rec); // SOFT: 후보로만 기록하고 킵
-      }
-    }
-
-    keptBlocks.push(b);
   }
 
-  // ✅ STRICT일 때만 실제 pruning 적용(그래도 전부 비면 원본 유지)
-  if (STRICT_NUMERIC_PRUNE) {
-    if (keptBlocks.length > 0) {
-      blocksForVerify.splice(0, blocksForVerify.length, ...keptBlocks);
-      partial_scores.block_prune = {
-        strict_prune: true,
-        before: beforeBlocks,
-        after: keptBlocks.length,
-        dropped: droppedBlocks,
-      };
-    } else {
-      partial_scores.block_prune = {
-        strict_prune: true,
-        before: beforeBlocks,
-        after: beforeBlocks,
-        dropped: droppedBlocks,
-        note: "all_blocks_dropped_but_kept_original_to_avoid_empty_answer",
-      };
-    }
-  } else {
-    // SOFT: 블록은 안 줄임
-    partial_scores.block_prune = {
-      strict_prune: false,
-      before: beforeBlocks,
-      after: beforeBlocks,
-      dropped_candidates: candidates,
-      note: "soft_mode: did not drop blocks; recorded candidates only",
-    };
-  }
-
-  // [DEBUG] NAVER raw evidence + block-level evidence just before numeric_evidence_match
-if (DEBUG) {
   try {
-    console.log("=== NAVER RAW EVIDENCE (external.naver) ===");
-    for (const ev of (external?.naver || [])) {
-      console.log({
-        host: ev?.source_host || ev?.host || null,
-        type: ev?.naver_type || null,
-        title: ev?.title || null,
-        link: ev?.link || ev?.source_url || ev?.url || null,
-      });
-    }
-
-    console.log("=== NAVER BLOCK EVIDENCE (blocksForVerify.evidence.naver) ===");
-    const __blocksForLog = Array.isArray(blocksForVerify) ? blocksForVerify : [];
-    for (const b of __blocksForLog) {
-      const evs = Array.isArray(b?.evidence?.naver) ? b.evidence.naver : [];
-      console.log({
-        block_id: b?.id ?? null,
-        block_text_preview: String(b?.text || "").slice(0, 80),
-        evidence_count: evs.length,
-        links: evs.map(ev => ev?.link || ev?.source_url || ev?.url).filter(Boolean),
-      });
-    }
-  } catch (logErr) {
-    console.warn("numeric_evidence_match debug log failed:", logErr?.message || logErr);
-  }
-}
-
-  partial_scores.numeric_evidence_match = {
-    strict_prune: STRICT_NUMERIC_PRUNE,
-    items_before: itemsBefore,
-    items_after: itemsAfter,
-    touched: touched.slice(0, 30),
-    mismatch_fallback: mismatchFallback.slice(0, 30),
-  };
+    partial_scores.numeric_evidence_match = {
+      strict_prune: STRICT_NUMERIC_PRUNE,
+      items_before: itemsBefore,
+      items_after: itemsAfter,
+      pruned: Math.max(0, itemsBefore - itemsAfter),
+      penalties_applied: touched.length,
+      touched: touched.slice(0, 30),
+      mismatch_fallback: mismatchFallback.slice(0, 30),
+    };
+  } catch (_e) {}
 }
 
 // ✅ FINALIZE: engines_requested / engines_used(E_eff) / engine_explain / engine_exclusion_reasons
