@@ -7877,6 +7877,80 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
   } catch (_e) {}
 }
 
+// ✅ Swap-in A: compute soft_penalty_factor (QV/FV evidence 기반, drop 없이 소프트 패널티만)
+// - year miss: ev._soft_year_miss_penalty (없으면 NAVER_YEAR_MISS_PENALTY fallback)
+// - numeric miss: ev._soft_numeric_miss_penalty (없으면 NUMERIC_SOFT_WARNING_PENALTY fallback)
+// - per-evidence: ev._soft_penalty_product 저장
+// - overall factor: penalized evidence들의 geometric mean
+try {
+  if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
+    let sumLog = 0;
+    let cnt = 0;
+    let minP = null;
+    let yearMiss = 0;
+    let numMiss = 0;
+
+    for (const b of blocksForVerify) {
+      const evObj = (b && typeof b === "object") ? (b.evidence || {}) : {};
+      const groups = Object.values(evObj).filter(Array.isArray);
+
+      for (const arr of groups) {
+        for (const ev of arr) {
+          if (!ev || typeof ev !== "object") continue;
+
+          let p = 1.0;
+
+          // year miss
+          if (ev._soft_year_miss) {
+            yearMiss++;
+            const yp =
+              (typeof ev._soft_year_miss_penalty === "number" && Number.isFinite(ev._soft_year_miss_penalty))
+                ? ev._soft_year_miss_penalty
+                : NAVER_YEAR_MISS_PENALTY;
+            p *= Math.max(0.0, Math.min(1.0, yp));
+          }
+
+          // numeric miss
+          if (ev._soft_numeric_miss) {
+            numMiss++;
+            const np =
+              (typeof ev._soft_numeric_miss_penalty === "number" && Number.isFinite(ev._soft_numeric_miss_penalty))
+                ? ev._soft_numeric_miss_penalty
+                : NUMERIC_SOFT_WARNING_PENALTY;
+            p *= Math.max(0.0, Math.min(1.0, np));
+          }
+
+          // clamp + store per-evidence
+          p = Math.max(1e-6, Math.min(1.0, p));
+          ev._soft_penalty_product = p;
+
+          // aggregate only if meaningfully penalized
+          if (p < 0.999999) {
+            cnt++;
+            sumLog += Math.log(p);
+            minP = (minP == null) ? p : Math.min(minP, p);
+          }
+        }
+      }
+    }
+
+    const factor = (cnt > 0) ? Math.exp(sumLog / cnt) : 1.0;
+
+    partial_scores.soft_penalty_factor = Number(Math.max(0.0, Math.min(1.0, factor)).toFixed(6));
+    partial_scores.soft_penalty_meta = {
+      penalized_evidence_items: cnt,
+      min_penalty: (minP == null) ? null : Number(minP.toFixed(6)),
+      year_miss_items: yearMiss,
+      num_miss_items: numMiss,
+    };
+  } else {
+    // non QV/FV or no blocks
+    partial_scores.soft_penalty_factor = 1.0;
+  }
+} catch (_) {
+  try { partial_scores.soft_penalty_factor = 1.0; } catch {}
+}
+
 // ✅ FINALIZE: engines_requested / engines_used(E_eff) / engine_explain / engine_exclusion_reasons
 {
   // requested 확정
@@ -8045,6 +8119,32 @@ try {
         year_miss: totalYear,
         num_miss: totalNum,
       };
+
+      // ✅ global soft penalty factor (geometric mean across penalized evidence)
+try {
+  let totalPen = 0;
+  let sumLog = 0;
+
+  for (const k of Object.keys(__explain || {})) {
+    const sm = __explain?.[k]?.soft_meta;
+    if (!sm || typeof sm !== "object") continue;
+
+    const pen = (typeof sm.penalized === "number" && Number.isFinite(sm.penalized)) ? sm.penalized : 0;
+    const avgP = (typeof sm.avg_penalty === "number" && Number.isFinite(sm.avg_penalty)) ? sm.avg_penalty : null;
+
+    if (pen > 0 && avgP != null && avgP > 0) {
+      // avg_penalty = exp(sumLog/penalized)  => sumLog ~= log(avg_penalty)*penalized
+      totalPen += pen;
+      sumLog += Math.log(Math.max(1e-6, Math.min(1.0, avgP))) * pen;
+    }
+  }
+
+  const globalP =
+    totalPen > 0 ? Math.exp(sumLog / totalPen) : 1.0;
+
+  partial_scores.soft_penalty_factor = Math.max(0.0, Math.min(1.0, globalP));
+  partial_scores.soft_penalty_penalized_items = totalPen;
+} catch (_) {}
     } catch (_) {}
   }
 
@@ -8825,6 +8925,71 @@ try {
   // ??normalizedPartial???怨뺤쨮 ??곸몵????곕뼊 ??덉뵬??띿쓺 ????
   const normalizedPartial = partial_scores;
 
+  // ✅ Swap-in B: apply soft_penalty_factor to TruthScore (real effect)
+try {
+  const sp =
+    (partial_scores &&
+      typeof partial_scores.soft_penalty_factor === "number" &&
+      Number.isFinite(partial_scores.soft_penalty_factor))
+      ? Math.max(0.0, Math.min(1.0, partial_scores.soft_penalty_factor))
+      : 1.0;
+
+  if (sp < 0.999999 && typeof truthscore_01 === "number" && Number.isFinite(truthscore_01)) {
+    const before01 = truthscore_01;
+
+    const after01 = Math.max(0.0, Math.min(1.0, before01 * sp));
+
+    // keep consistent rounding policy (01: 4dp, pct: 2dp)
+    truthscore_01 = Number(after01.toFixed(4));
+    truthscore_pct = Number((truthscore_01 * 100).toFixed(2));
+    truthscore_text = `${truthscore_pct.toFixed(2)}%`;
+
+    // leave trace for diagnostics/audit
+    partial_scores.soft_penalty_applied = {
+      factor: sp,
+      before_01: Number(before01.toFixed(4)),
+      after_01: truthscore_01,
+    };
+  }
+} catch (_) {}
+
+// ✅ Swap-in B: apply soft_penalty_factor to final TruthScore (QV/FV only)
+// - partial_scores.soft_penalty_factor(0~1) 를 truthscore_01에 곱하고
+// - truthscore_pct / truthscore_text도 같이 갱신
+try {
+  if (safeMode === "qv" || safeMode === "fv") {
+    const spf =
+      (partial_scores &&
+        typeof partial_scores.soft_penalty_factor === "number" &&
+        Number.isFinite(partial_scores.soft_penalty_factor))
+        ? partial_scores.soft_penalty_factor
+        : 1.0;
+
+    const f = Math.max(0.0, Math.min(1.0, spf));
+
+    if (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01) && f < 0.999999) {
+      const before01 = truthscore_01;
+      const after01 = Math.max(0.0, Math.min(1.0, before01 * f));
+
+      truthscore_01 = Number(after01.toFixed(4));
+      truthscore_pct = Number((truthscore_01 * 100).toFixed(2));
+      truthscore_text = `${truthscore_pct.toFixed(2)}%`;
+
+      partial_scores.soft_penalty_applied = {
+        factor: Number(f.toFixed(6)),
+        before_01: Number(before01.toFixed(4)),
+        after_01: truthscore_01,
+      };
+    } else {
+      partial_scores.soft_penalty_applied = {
+        factor: Number(f.toFixed(6)),
+        before_01: (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01)) ? Number(truthscore_01.toFixed(4)) : null,
+        after_01: (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01)) ? Number(truthscore_01.toFixed(4)) : null,
+      };
+    }
+  }
+} catch (_) {}
+
   const payload = {
     mode: safeMode,
     truthscore: truthscore_text,
@@ -8902,6 +9067,21 @@ try {
       ? ps.numeric_evidence_match
       : null;
 
+    const softPenaltyFactor =
+    (typeof ps.soft_penalty_factor === "number" && Number.isFinite(ps.soft_penalty_factor))
+      ? ps.soft_penalty_factor
+      : null;
+
+  const softPenaltyApplied =
+    (ps.soft_penalty_applied && typeof ps.soft_penalty_applied === "object")
+      ? ps.soft_penalty_applied
+      : null;
+
+  const softPenaltiesOverview =
+    (ps.soft_penalties_overview && typeof ps.soft_penalties_overview === "object")
+      ? ps.soft_penalties_overview
+      : null;
+
   payload.diagnostics = {
     effective_engines: effEngines,
     effective_engines_count: effCount,
@@ -8909,7 +9089,13 @@ try {
     conflict_meta: conflictMeta,
     numeric_evidence_match_pre: numericPre,
     numeric_evidence_match: numericFinal,
+
+    // ✅ Swap-in C: expose soft-penalty summary
+    soft_penalty_factor: softPenaltyFactor,
+    soft_penalty_applied: softPenaltyApplied,
+    soft_penalties_overview: softPenaltiesOverview,
   };
+
 } catch {
   // diagnostics 구성 중 에러는 무시 (응답 자체에는 영향 주지 않음)
 }
