@@ -4635,27 +4635,6 @@ function extractYearTokens(text) {
   return [...years];
 }
 
-// 연도(4자리)는 제외하고 “수치 주장”에 가까운 숫자(소수/2자리 이상)만 뽑음
-function extractQuantNumberTokens(text) {
-  const s = String(text || "");
-  const raw = s.match(/\d[\d,]*(?:\.\d+)?/g) || [];
-  const out = new Set();
-
-  for (const tok of raw) {
-    const t = normalizeNumToken(tok);
-    if (!t) continue;
-
-    // 4자리 연도는 제외
-    if (/^(19\d{2}|20\d{2})$/.test(t)) continue;
-
-    // 너무 짧은 숫자(1자리)는 제외 (노이즈 방지)
-    if (/^\d$/.test(t)) continue;
-
-    out.add(t);
-  }
-  return [...out];
-}
-
 function countTokenHits(tokens, hayText) {
   if (!Array.isArray(tokens) || tokens.length === 0) return 0;
   const hay = normalizeNumToken(hayText);
