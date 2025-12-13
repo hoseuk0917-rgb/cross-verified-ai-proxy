@@ -8119,32 +8119,6 @@ try {
         year_miss: totalYear,
         num_miss: totalNum,
       };
-
-      // ✅ global soft penalty factor (geometric mean across penalized evidence)
-try {
-  let totalPen = 0;
-  let sumLog = 0;
-
-  for (const k of Object.keys(__explain || {})) {
-    const sm = __explain?.[k]?.soft_meta;
-    if (!sm || typeof sm !== "object") continue;
-
-    const pen = (typeof sm.penalized === "number" && Number.isFinite(sm.penalized)) ? sm.penalized : 0;
-    const avgP = (typeof sm.avg_penalty === "number" && Number.isFinite(sm.avg_penalty)) ? sm.avg_penalty : null;
-
-    if (pen > 0 && avgP != null && avgP > 0) {
-      // avg_penalty = exp(sumLog/penalized)  => sumLog ~= log(avg_penalty)*penalized
-      totalPen += pen;
-      sumLog += Math.log(Math.max(1e-6, Math.min(1.0, avgP))) * pen;
-    }
-  }
-
-  const globalP =
-    totalPen > 0 ? Math.exp(sumLog / totalPen) : 1.0;
-
-  partial_scores.soft_penalty_factor = Math.max(0.0, Math.min(1.0, globalP));
-  partial_scores.soft_penalty_penalized_items = totalPen;
-} catch (_) {}
     } catch (_) {}
   }
 
@@ -8923,78 +8897,70 @@ try {
   const truthscore_text = `${truthscore_pct.toFixed(2)}%`;
 
   // ??normalizedPartial???怨뺤쨮 ??곸몵????곕뼊 ??덉뵬??띿쓺 ????
-  const normalizedPartial = partial_scores;
-
-  // ✅ Swap-in B: apply soft_penalty_factor to TruthScore (real effect)
-try {
-  const sp =
-    (partial_scores &&
-      typeof partial_scores.soft_penalty_factor === "number" &&
-      Number.isFinite(partial_scores.soft_penalty_factor))
-      ? Math.max(0.0, Math.min(1.0, partial_scores.soft_penalty_factor))
-      : 1.0;
-
-  if (sp < 0.999999 && typeof truthscore_01 === "number" && Number.isFinite(truthscore_01)) {
-    const before01 = truthscore_01;
-
-    const after01 = Math.max(0.0, Math.min(1.0, before01 * sp));
-
-    // keep consistent rounding policy (01: 4dp, pct: 2dp)
-    truthscore_01 = Number(after01.toFixed(4));
-    truthscore_pct = Number((truthscore_01 * 100).toFixed(2));
-    truthscore_text = `${truthscore_pct.toFixed(2)}%`;
-
-    // leave trace for diagnostics/audit
-    partial_scores.soft_penalty_applied = {
-      factor: sp,
-      before_01: Number(before01.toFixed(4)),
-      after_01: truthscore_01,
-    };
-  }
-} catch (_) {}
-
-// ✅ Swap-in B: apply soft_penalty_factor to final TruthScore (QV/FV only)
-// - partial_scores.soft_penalty_factor(0~1) 를 truthscore_01에 곱하고
+  // ✅ Swap-in B: apply soft_penalty_factor to final TruthScore (QV/FV only)
+// - partial_scores.soft_penalty_factor(0~1)를 truthscore_01에 곱함
 // - truthscore_pct / truthscore_text도 같이 갱신
+let softPenaltyFactor = 1.0;
+let softPenaltyApplied = false;
+let softPenaltiesOverview = null;
+
+let truthscore_01_final = truthscore_01;
+let truthscore_pct_final = truthscore_pct;
+let truthscore_text_final = truthscore_text;
+
 try {
   if (safeMode === "qv" || safeMode === "fv") {
     const spf =
       (partial_scores &&
         typeof partial_scores.soft_penalty_factor === "number" &&
         Number.isFinite(partial_scores.soft_penalty_factor))
-        ? partial_scores.soft_penalty_factor
+        ? Math.max(0.0, Math.min(1.0, partial_scores.soft_penalty_factor))
         : 1.0;
 
-    const f = Math.max(0.0, Math.min(1.0, spf));
+    softPenaltyFactor = spf;
 
-    if (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01) && f < 0.999999) {
-      const before01 = truthscore_01;
-      const after01 = Math.max(0.0, Math.min(1.0, before01 * f));
+    softPenaltiesOverview =
+      (partial_scores && typeof partial_scores.soft_penalties_overview === "object")
+        ? partial_scores.soft_penalties_overview
+        : null;
 
-      truthscore_01 = Number(after01.toFixed(4));
-      truthscore_pct = Number((truthscore_01 * 100).toFixed(2));
-      truthscore_text = `${truthscore_pct.toFixed(2)}%`;
+    if (
+      spf < 0.999999 &&
+      typeof truthscore_01_final === "number" &&
+      Number.isFinite(truthscore_01_final)
+    ) {
+      const before01 = truthscore_01_final;
+      const after01 = Math.max(0.0, Math.min(1.0, before01 * spf));
 
-      partial_scores.soft_penalty_applied = {
-        factor: Number(f.toFixed(6)),
+      truthscore_01_final = Number(after01.toFixed(4));
+      truthscore_pct_final = Number((truthscore_01_final * 100).toFixed(2));
+      truthscore_text_final = `${truthscore_pct_final.toFixed(2)}%`;
+
+      softPenaltyApplied = {
+        factor: spf,
         before_01: Number(before01.toFixed(4)),
-        after_01: truthscore_01,
+        after_01: truthscore_01_final,
       };
-    } else {
-      partial_scores.soft_penalty_applied = {
-        factor: Number(f.toFixed(6)),
-        before_01: (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01)) ? Number(truthscore_01.toFixed(4)) : null,
-        after_01: (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01)) ? Number(truthscore_01.toFixed(4)) : null,
-      };
-    }
-  }
-} catch (_) {}
 
+      // trace
+      partial_scores.truthscore_01_pre_soft = Number(before01.toFixed(4));
+      partial_scores.soft_penalty_applied = softPenaltyApplied;
+    } else {
+      partial_scores.soft_penalty_applied = false;
+    }
+  } else {
+    partial_scores.soft_penalty_applied = false;
+  }
+} catch (_) {
+  try { partial_scores.soft_penalty_applied = false; } catch {}
+}
+
+const normalizedPartial = partial_scores;
   const payload = {
     mode: safeMode,
-    truthscore: truthscore_text,
-    truthscore_pct,
-    truthscore_01,
+    truthscore: truthscore_text_final,
+truthscore_pct: truthscore_pct_final,
+truthscore_01: truthscore_01_final,
     elapsed,
 
   // ??S-15: engines_used ?먮룞 ?곗텧(紐낆떆 ?몄텧)
@@ -9191,8 +9157,37 @@ try {
     }
 
     if (vMessage) {
-      payload.verdict_message_ko = vMessage;
+  let msg = vMessage;
+
+  // ✅ Swap-in D: QV/FV에서 soft_penalty가 적용되었으면 이유 힌트 1줄 추가
+  try {
+    if (safeMode === "qv" || safeMode === "fv") {
+      const spf =
+        partial_scores &&
+        typeof partial_scores.soft_penalty_factor === "number" &&
+        Number.isFinite(partial_scores.soft_penalty_factor)
+          ? partial_scores.soft_penalty_factor
+          : 1.0;
+
+      const ov = partial_scores && typeof partial_scores.soft_penalties_overview === "object"
+        ? partial_scores.soft_penalties_overview
+        : null;
+
+      const yearMiss = ov && typeof ov.year_miss === "number" ? ov.year_miss : 0;
+      const numMiss  = ov && typeof ov.num_miss === "number" ? ov.num_miss : 0;
+
+      if (spf < 0.999999 && (yearMiss > 0 || numMiss > 0)) {
+        const bits = [];
+        if (yearMiss > 0) bits.push(`연도 불일치 ${yearMiss}건`);
+        if (numMiss > 0) bits.push(`숫자 불일치 ${numMiss}건`);
+
+        msg += ` (참고: 일부 근거에서 ${bits.join(", ")}로 감점이 적용될 수 있습니다.)`;
+      }
     }
+  } catch (_) {}
+
+  payload.verdict_message_ko = msg;
+}
   }
 } catch {
   // verdict 계산 실패해도 전체 응답은 그대로 유지
