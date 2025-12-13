@@ -2016,14 +2016,20 @@ function pushAdminError(entry) {
  *  - 지금은 env 기반; 나중에 실제 whitelist 로더와 연결 예정
  */
 function getNaverWhitelistStatus() {
+  // admin/status에서 쓰는 "요약"은 실제 메타로 연결
+  const meta = getNaverWhitelistMeta();
   return {
-    version: process.env.NAVER_WHITELIST_VERSION || null,
-    lastUpdate: null,
-    totalHosts: null,
-    hasKosis: null,
-    refreshMinutes: null,
-    sourceUrl: null,
-    note: "TODO: 실제 whitelist 로더와 연결 필요",
+    loaded: !!meta?.loaded,
+    version: meta?.version ?? null,
+    lastUpdate: meta?.lastUpdate ?? null,
+    daysPassed: meta?.daysPassed ?? null,
+    totalHosts: meta?.totalHosts ?? null,
+    hasKosis: meta?.hasKosis ?? null,
+
+    // 운영/디버그 참고용
+    env_version: meta?.env_version ?? (process.env.NAVER_WHITELIST_VERSION || null),
+    sourceUrl: NAVER_WHITELIST_SOURCE_URL || null,
+    refreshMinutes: NAVER_WHITELIST_UPDATE_INTERVAL_HOURS ? (NAVER_WHITELIST_UPDATE_INTERVAL_HOURS * 60) : null,
   };
 }
 
@@ -2495,8 +2501,25 @@ function isDiagAuthorized(req) {
 }
 
 function requireDiag(req, res, next) {
+  // dev/local에서는 그대로 허용
   if (process.env.NODE_ENV !== "production") return next();
+
+  // ✅ PROD에서도 x-admin-token으로 진단 엔드포인트 허용
+  // - 우선순위: DIAG_ADMIN_TOKEN(전용) → ADMIN_TOKEN(공용) → DEV_ADMIN_TOKEN(기존)
+  try {
+    const adminHdr = String(req.headers["x-admin-token"] || "");
+    const diagAdmin =
+      String(process.env.DIAG_ADMIN_TOKEN || "").trim() ||
+      String(process.env.ADMIN_TOKEN || "").trim() ||
+      String(typeof DEV_ADMIN_TOKEN !== "undefined" ? DEV_ADMIN_TOKEN : "").trim();
+
+    if (diagAdmin && adminHdr && adminHdr === diagAdmin) return next();
+  } catch (_) {}
+
+  // 기존 방식도 유지
   if (isDiagAuthorized(req)) return next();
+
+  // prod에서는 존재 자체를 숨김
   return res.status(404).json(buildError("NOT_FOUND", "Not available"));
 }
 
@@ -2857,6 +2880,23 @@ app.get("/auth/failure", (_, res) =>
 // ✅ Naver Whitelist Tier System (v11.5.0 + bias_penalty)
 // ─────────────────────────────
 const whitelistPath = path.join(__dirname, "config", "naver_whitelist.json");
+// ✅ whitelist auto-update config
+const NAVER_WHITELIST_SOURCE_URL = String(process.env.NAVER_WHITELIST_SOURCE_URL || "").trim(); // 원격 JSON URL
+const NAVER_WHITELIST_AUTO_UPDATE = process.env.NAVER_WHITELIST_AUTO_UPDATE === "1";
+const NAVER_WHITELIST_UPDATE_INTERVAL_HOURS = Math.max(
+  1,
+  parseInt(process.env.NAVER_WHITELIST_UPDATE_INTERVAL_HOURS || "24", 10) || 24
+);
+
+// ✅ mail notify (optional)
+const WL_NOTIFY_EMAIL_TO = String(process.env.WL_NOTIFY_EMAIL_TO || "").trim();
+const WL_NOTIFY_EMAIL_FROM = String(process.env.WL_NOTIFY_EMAIL_FROM || "").trim();
+const SMTP_HOST = String(process.env.SMTP_HOST || "").trim();
+const SMTP_PORT = parseInt(process.env.SMTP_PORT || "587", 10) || 587;
+const SMTP_USER = String(process.env.SMTP_USER || "").trim();
+const SMTP_PASS = String(process.env.SMTP_PASS || "").trim();
+const SMTP_SECURE = process.env.SMTP_SECURE === "1"; // 465면 보통 1
+
 let _NAVER_WL_CACHE = { mtimeMs: 0, json: null };
 
 function _stripWww(host) {
@@ -2943,6 +2983,9 @@ function __getEffectiveEngines(enginesRequested, counts) {
 }
 
 function loadNaverWhitelist() {
+  // ✅ whitelist override(원격 갱신 적용 시) 우선 사용
+  if (globalThis.__NAVER_WL_OVERRIDE) return globalThis.__NAVER_WL_OVERRIDE;
+
   try {
     const st = fs.statSync(whitelistPath);
     if (_NAVER_WL_CACHE.json && _NAVER_WL_CACHE.mtimeMs === st.mtimeMs) return _NAVER_WL_CACHE.json;
@@ -2982,6 +3025,64 @@ function loadNaverWhitelist() {
     if (DEBUG) console.warn("⚠️ whitelist load failed:", e.message);
     return null;
   }
+}
+
+// ✅ Naver whitelist meta (admin/diag)
+function getNaverWhitelistMeta() {
+  let wl = null;
+  try { wl = loadNaverWhitelist(); } catch (_) {}
+
+  let fileMtimeIso = null;
+  let fileMtimeMs = null;
+  try {
+    const st = fs.statSync(whitelistPath);
+    fileMtimeMs = st.mtimeMs;
+    fileMtimeIso = new Date(st.mtimeMs).toISOString();
+  } catch (_) {}
+
+  const tiers = {};
+  let totalHosts = 0;
+
+  if (wl && typeof wl === "object") {
+    const tObj = (wl.tiers && typeof wl.tiers === "object") ? wl.tiers : {};
+    for (const [k, v] of Object.entries(tObj)) {
+      const n = Array.isArray(v?.domains) ? v.domains.length : 0;
+      tiers[k] = n;
+      totalHosts += n;
+    }
+  }
+
+  const hasKosis =
+    !!wl &&
+    Object.values(wl?.tiers || {}).some(
+      (t) => Array.isArray(t?.domains) && t.domains.includes("kosis.kr")
+    );
+
+  // daysPassed 계산(가능할 때만)
+  let daysPassed = null;
+  try {
+    const lu = wl?.lastUpdate ? String(wl.lastUpdate).trim() : "";
+    if (lu) {
+      const d = new Date(lu);
+      if (!Number.isNaN(d.getTime())) {
+        daysPassed = Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24));
+        if (daysPassed < 0) daysPassed = 0;
+      }
+    }
+  } catch (_) {}
+
+  return {
+    loaded: !!wl,
+    version: wl?.version || null,
+    lastUpdate: wl?.lastUpdate || null,
+    daysPassed,
+    totalHosts: Number.isFinite(totalHosts) ? totalHosts : null,
+    tiers,
+    hasKosis,
+    file_mtime_ms: fileMtimeMs,
+    file_mtime_iso: fileMtimeIso,
+    env_version: process.env.NAVER_WHITELIST_VERSION || null,
+  };
 }
 
 function _applyBiasPenalty(host, baseWeight, wl) {
@@ -9467,6 +9568,109 @@ return res.status(status).json(buildError("INTERNAL_SERVER_ERROR", "서버 내�
   }
 };
 
+// =======================================================
+// ✅ Whitelist endpoints (admin/ops)
+// - GET /api/check-whitelist?force=1
+// - GET /api/admin/whitelist-status
+// =======================================================
+const ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || "");
+const ADMIN_EMAILS = String(process.env.ADMIN_EMAILS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+function __extractReqEmail(req) {
+  try {
+    // passport/google-oauth20 흔한 케이스들
+    const u = req?.user || null;
+    const s = req?.session || null;
+
+    const e1 = u?.email;
+    if (e1) return String(e1);
+
+    const e2 = u?.emails?.[0]?.value;
+    if (e2) return String(e2);
+
+    const e3 = u?.profile?.emails?.[0]?.value;
+    if (e3) return String(e3);
+
+    const e4 = s?.user?.email;
+    if (e4) return String(e4);
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function requireAdminAccess(req, res, next) {
+  try {
+    // 1) header token 우선
+    const t = String(req.headers["x-admin-token"] || "");
+    if (ADMIN_TOKEN && t && t === ADMIN_TOKEN) return next();
+
+    // 2) 이메일 allowlist
+    const email = __extractReqEmail(req);
+    if (ADMIN_EMAILS.length > 0 && email && ADMIN_EMAILS.includes(email)) return next();
+
+    // 3) 설정이 아무것도 없으면(개발/초기) 일단 통과시키되, 운영에서는 env 설정 권장
+    if (!ADMIN_TOKEN && ADMIN_EMAILS.length === 0) return next();
+  } catch {}
+
+  return res.status(403).json({
+    success: false,
+    code: "ADMIN_ONLY",
+    message: "Admin access required. Set ADMIN_TOKEN (x-admin-token) or ADMIN_EMAILS.",
+  });
+}
+
+// GET /api/check-whitelist?force=1
+app.get("/api/check-whitelist", requireAdminAccess, async (req, res) => {
+  const force = String(req.query?.force || "") === "1";
+  const out = await checkAndUpdateNaverWhitelist({ force });
+  return res.status(out?.success ? 200 : 500).json(out);
+});
+
+// GET /api/admin/whitelist-status
+app.get("/api/admin/whitelist-status", requireAdminAccess, (req, res) => {
+  let wl = null;
+  try {
+    wl = loadNaverWhitelist();
+  } catch {
+    wl = null;
+  }
+
+  const meta = __wlMeta(wl);
+
+  return res.json({
+    success: true,
+    now: __safeNowISO(),
+    meta,
+    last_check: __wl_last_result || null,
+    auto_update: NAVER_WHITELIST_AUTO_UPDATE,
+    interval_min: NAVER_WHITELIST_UPDATE_INTERVAL_MIN,
+    remote_url_set: !!NAVER_WHITELIST_REMOTE_URL,
+  });
+});
+
+// ✅ Diag: force/trigger whitelist update (prod guarded)
+app.post("/api/admin/whitelist/update", requireDiag, async (req, res) => {
+  try {
+    const b = getJsonBody(req) || {};
+    const force = String(b.force || req.query?.force || "").trim() === "1";
+    const reason = String(b.reason || "admin_trigger").trim() || "admin_trigger";
+    const r = await updateNaverWhitelistIfNeeded({ force, reason });
+    return res.json(buildSuccess(r));
+  } catch (e) {
+    return res.status(500).json(buildError("INTERNAL_ERROR", String(e?.message || e)));
+  }
+});
+
+// ✅ Diag: last update result (prod guarded)
+app.get("/api/admin/whitelist/update/last", requireDiag, (req, res) => {
+  return res.json(buildSuccess(_WL_LAST_UPDATE_RESULT || { updated: false, reason: "no_history" }));
+});
+
 app.post(
   "/api/verify",
   blockDevRoutesInProd,
@@ -9876,6 +10080,32 @@ app.get("/api/admin/status", (req, res) => {
       whitelist: getNaverWhitelistStatus(),
     })
   );
+});
+
+// ✅ Diag: whitelist detailed meta (prod guarded)
+app.get("/api/admin/whitelist/status", requireDiag, (req, res) => {
+  try {
+    return res.json(buildSuccess(getNaverWhitelistMeta()));
+  } catch (e) {
+    return res.status(500).json(buildError("INTERNAL_ERROR", String(e?.message || e)));
+  }
+});
+
+// ✅ Legacy compat: /api/check-whitelist (prod guarded)
+app.get("/api/check-whitelist", requireDiag, (req, res) => {
+  try {
+    // 예전 응답 형태 최대한 맞춤(updated/daysPassed 유지)
+    const meta = getNaverWhitelistMeta();
+    return res.json(
+      buildSuccess({
+        updated: true,
+        daysPassed: meta.daysPassed ?? null,
+        ...meta,
+      })
+    );
+  } catch (e) {
+    return res.status(500).json(buildError("INTERNAL_ERROR", String(e?.message || e)));
+  }
 });
 
 app.get("/api/admin/errors/recent", (req, res) => {
@@ -10729,4 +10959,16 @@ app.listen(PORT, () => {
   );
     console.log("🔹 Naver 서버 직접 호출 (Region 제한 해제)");
   console.log("🔹 Supabase + Gemini 2.5 (Flash / Pro / Lite) 정상 동작");
+    // ✅ Auto-update timer (best-effort; Render free plan may sleep)
+  if (NAVER_WHITELIST_AUTO_UPDATE) {
+    const ms = NAVER_WHITELIST_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000;
+
+    setTimeout(() => {
+      updateNaverWhitelistIfNeeded({ force: false, reason: "boot" }).catch(() => {});
+    }, 10_000);
+
+    setInterval(() => {
+      updateNaverWhitelistIfNeeded({ force: false, reason: "interval" }).catch(() => {});
+    }, ms);
+  }
 });
