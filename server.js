@@ -6173,12 +6173,19 @@ if (!naverQueries.length) {
     Array.isArray(naverItemsAll) &&
     naverItemsAll.length > 0
   ) {
-    // policy: time-sensitive 여부와 무관하게 news 포함
-    // (이미 whitelist/tier 기반으로 품질/우선순위가 정해져 있으므로 여기서 news를 빼지 않음)
+        // policy: time-sensitive 질의면 news도 포함할 수 있으니,
+    // 우선 non-news 풀을 만들되, 비면 전체(naverItemsAll)로 폴백
+    const __poolNoNews = Array.isArray(naverItemsAll)
+      ? naverItemsAll.filter((r) => {
+          const t = String(r?.type || r?.source_type || r?.kind || "").toLowerCase().trim();
+          if (!t) return true;          // 타입 정보 없으면 일단 keep
+          return t !== "news";          // news만 제외
+        })
+      : [];
 
     const __poolPrefer = (__poolNoNews.length ? __poolNoNews : naverItemsAll).filter((r) =>
-  !!(r?.tier || r?.whitelisted)
-);
+      !!(r?.tier || r?.whitelisted)
+    );
 
     const __poolFinal = __poolPrefer.length > 0 ? __poolPrefer : naverItemsAll;
 
