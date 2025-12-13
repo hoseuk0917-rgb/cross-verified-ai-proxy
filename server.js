@@ -4526,12 +4526,6 @@ function normalizeNumToken(s) {
   return parts[0] + "." + parts.slice(1).join("");
 }
 
-function extractYearTokens(text) {
-  const s = String(text || "");
-  if (!s) return [];
-  return Array.from(s.matchAll(/\b(19\d{2}|20\d{2}|2100)\b/g)).map((m) => m[1]);
-}
-
 // "수량성 숫자" 토큰만 (연도/1자리 제외, 콤마 포함 숫자 지원)
 function extractQuantNumberTokens(text) {
   const s = String(text || "");
@@ -4636,7 +4630,7 @@ function isTrustedNumericEvidenceItem(x) {
 function extractYearTokens(text) {
   const s = String(text || "");
   const years = new Set();
-  const m = s.match(/\b(19\d{2}|20\d{2})\b/g);
+  const m = s.match(/\b(19\d{2}|20\d{2}|2100)\b/g);
   if (m) for (const y of m) years.add(y);
   return [...years];
 }
