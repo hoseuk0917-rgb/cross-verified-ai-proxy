@@ -2898,6 +2898,50 @@ function _hostMatchesDomain(host, domain) {
   return host.endsWith("." + domain);
 }
 
+// =======================================================
+// ✅ E_eff (effective engines) helpers
+// - Evidence pruning 이후의 blocksForVerify 기준으로 "유효 evidence가 1개 이상 남은 엔진"만 계산
+// =======================================================
+function __isEvidenceCountable(ev) {
+  if (!ev) return false;
+
+  if (ev._pruned || ev._excluded || ev._exclude || ev._irrelevant_pruned) return false;
+
+  const u = ev.url ?? ev.link ?? ev.href ?? null;
+  if (!u) return true;
+  return true;
+}
+
+function __calcEngineEvidenceCounts(blocksForVerify) {
+  const counts = Object.create(null);
+  if (!Array.isArray(blocksForVerify)) return counts;
+
+  for (const b of blocksForVerify) {
+    const evidence = b?.evidence;
+    if (!evidence || typeof evidence !== "object") continue;
+
+    for (const [engine, items] of Object.entries(evidence)) {
+      if (!Array.isArray(items)) continue;
+
+      let c = 0;
+      for (const ev of items) {
+        if (__isEvidenceCountable(ev)) c += 1;
+      }
+      counts[engine] = (counts[engine] || 0) + c;
+    }
+  }
+  return counts;
+}
+
+function __getEffectiveEngines(enginesRequested, counts) {
+  const req = Array.isArray(enginesRequested) ? enginesRequested : [];
+  const out = [];
+  for (const e of req) {
+    if ((counts?.[e] || 0) > 0) out.push(e);
+  }
+  return out;
+}
+
 function loadNaverWhitelist() {
   try {
     const st = fs.statSync(whitelistPath);
@@ -4460,7 +4504,71 @@ const NAVER_NUMERIC_FETCH = (process.env.NAVER_NUMERIC_FETCH ?? "true").toLowerC
 const NAVER_NONWHITELIST_WEIGHT = NAVER_NON_WHITELIST_FACTOR;
 const NAVER_INFERRED_OFFICIAL_WEIGHT = NAVER_INFERRED_OFFICIAL_FACTOR;
 const NAVER_STRICT_YEAR_MATCH = (process.env.NAVER_STRICT_YEAR_MATCH ?? "true").toLowerCase() !== "false";
-const NAVER_NUM_MATCH_BOOST = parseFloat(process.env.NAVER_NUM_MATCH_BOOST || "1.25"); // 숫자 매칭 있으면 보너스
+const NAVER_YEAR_MISS_PENALTY = Math.min(
+  1.0,
+  Math.max(0.0, parseFloat(process.env.NAVER_YEAR_MISS_PENALTY || "0.90"))
+); // 0~1 (낮을수록 강한 패널티) / default 완화: 0.90
+const NUMERIC_SOFT_WARNING_PENALTY = Math.min(
+  1.0,
+  Math.max(0.0, parseFloat(process.env.NUMERIC_SOFT_WARNING_PENALTY || "0.97"))
+);
+const NAVER_NUM_MATCH_BOOST = parseFloat(process.env.NAVER_NUM_MATCH_BOOST || "1.25"); // 숫자 매칭 보너스
+
+function normalizeNumToken(s) {
+  const raw = String(s || "").trim();
+  if (!raw) return "";
+  // keep digits and dot only (commas/spaces removed)
+  const cleaned = raw.replace(/[,\s]/g, "").replace(/[^\d.]/g, "");
+  if (!cleaned) return "";
+  // collapse multiple dots into one sequence (e.g., "1.2.3" -> "1.23")
+  const parts = cleaned.split(".");
+  if (parts.length <= 1) return cleaned;
+  return parts[0] + "." + parts.slice(1).join("");
+}
+
+function extractYearTokens(text) {
+  const s = String(text || "");
+  if (!s) return [];
+  return Array.from(s.matchAll(/\b(19\d{2}|20\d{2}|2100)\b/g)).map((m) => m[1]);
+}
+
+// "수량성 숫자" 토큰만 (연도/1자리 제외, 콤마 포함 숫자 지원)
+function extractQuantNumberTokens(text) {
+  const s = String(text || "");
+  if (!s) return [];
+  const yearsSet = new Set(extractYearTokens(s).map((y) => String(y)));
+
+  const rawTokens = [];
+  const re = /\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\b/g;
+
+  for (const m of s.matchAll(re)) {
+    const tok = m[0];
+    const norm = normalizeNumToken(tok);
+    if (!norm) continue;
+
+    // 제외: 연도(예: 2025)
+    if (yearsSet.has(norm)) continue;
+
+    // 제외: 1자리 숫자(노이즈 많음)
+    if (/^\d$/.test(norm)) continue;
+
+    // 너무 긴 숫자 토큰 제외(오탐 방지)
+    if (norm.length > 12) continue;
+
+    rawTokens.push(tok);
+  }
+
+  // normalize 기준 dedup
+  const seen = new Set();
+  const uniq = [];
+  for (const t of rawTokens) {
+    const n = normalizeNumToken(t);
+    if (!n || seen.has(n)) continue;
+    seen.add(n);
+    uniq.push(t);
+  }
+  return uniq;
+}
 
 // ✅ 숫자/단위 감지 (숫자 발췌 패치용)
 function hasNumberLike(text) {
@@ -4815,13 +4923,26 @@ const numTokensCompact = numTokens.map(normalizeNumToken);
 
     const isNews = it?.naver_type === "news";
     const hasAnyNum = hasNumberLike(text);
-    const textCompact = String(text || "").replace(/[,\s]/g, "");
+const textCompact = String(text || "").replace(/[,\s]/g, "");
+const urlCompact = String(urlCand || "").replace(/[,\s]/g, "");
+
 const hasYear = yearTokens.length
-  ? yearTokens.some((y) => text.includes(String(y)) || textCompact.includes(String(y)))
+  ? yearTokens.some((y) => {
+      const yy = String(y);
+      return (
+        text.includes(yy) ||
+        textCompact.includes(yy) ||
+        urlCand.includes(yy) ||
+        urlCompact.includes(yy)
+      );
+    })
   : false;
 
 const hasExactNum = numTokensCompact.length
-  ? numTokensCompact.some((n) => n && textCompact.includes(String(n)))
+  ? numTokensCompact.some((n) => {
+      const nn = String(n || "");
+      return nn && (textCompact.includes(nn) || urlCompact.includes(nn));
+    })
   : false;
 
     // ✅ 숫자형 질문이면: "숫자/연도 단서 없는 뉴스"는 잡음으로 보고 제외
@@ -4833,7 +4954,29 @@ const hasExactNum = numTokensCompact.length
 
     let bonus = 1.0;
     if (needNum) bonus *= hasAnyNum ? 1.15 : 0.85;
-    if (NAVER_STRICT_YEAR_MATCH && yearTokens.length) bonus *= hasYear ? 1.10 : 0.90;
+    // ✅ year soft penalty (no hard drop) + tag for logging
+if (NAVER_STRICT_YEAR_MATCH && yearTokens.length) {
+  if (hasYear) {
+    bonus *= 1.10;
+  } else {
+    const __pen = Math.min(1.0, Math.max(0.0, Number(NAVER_YEAR_MISS_PENALTY) || 0.90));
+    bonus *= __pen;
+
+    // "메타(제목/스니펫)" 기준 soft-year-miss 태깅
+    // (이미 excerpt 단계에서 찍혔으면 덮어쓰지 않음)
+    if (!it?._soft_year_miss) {
+      it._soft_year_miss = true;
+      it._soft_year_miss_years = yearTokens.slice(0, 6);
+      it._soft_year_miss_penalty = __pen;
+      it._soft_year_miss_where = "naver_item_meta";
+    } else {
+      // 기존 플래그는 유지하되 penalty가 없으면 채움
+      if (!(typeof it._soft_year_miss_penalty === "number" && Number.isFinite(it._soft_year_miss_penalty))) {
+        it._soft_year_miss_penalty = __pen;
+      }
+    }
+  }
+}
     if (numTokens.length && hasExactNum) bonus *= NAVER_NUM_MATCH_BOOST;
 
     const hostRaw = String(it?.host || it?.source_host || "").toLowerCase();
@@ -7291,8 +7434,30 @@ if (!isWhitelisted) continue;
       if (!excerpt) continue;
 
       if (NAVER_STRICT_YEAR_MATCH && years.length) {
-        if (!years.some(y => excerpt.includes(y))) continue;
+  const _hasYearInExcerpt = years.some((y) => excerpt.includes(String(y)));
+
+  if (!_hasYearInExcerpt) {
+    // ✅ 하드 드랍(continue) 금지: 소프트 플래그 + 패널티 메타만 남기고 evidence_text는 유지
+    ev._soft_year_miss = true;
+    ev._soft_year_miss_years = years.slice(0, 6);
+
+    // ✅ "소프트 패널티" 값 기록(가중치/선정 로직에서 참고 가능)
+    ev._soft_year_miss_penalty = NAVER_YEAR_MISS_PENALTY;
+
+    // NOTE: year miss는 여기서 weight/score를 깎지 않고, S-13(soft_penalties)에서 일괄 패널티로만 반영
+
+    // ✅ year soft warning 누적(있으면 기록, 없으면 조용히 무시)
+    try {
+      if (Array.isArray(year_soft_warnings)) {
+        year_soft_warnings.push({
+          url: ev?.url || ev?.link || null,
+          years: Array.isArray(ev._soft_year_miss_years) ? ev._soft_year_miss_years : [],
+          penalty: ev._soft_year_miss_penalty,
+        });
       }
+    } catch (_) {}
+  }
+}
 
       ev.evidence_text = excerpt;
       budget -= 1;
@@ -7304,8 +7469,9 @@ if (!isWhitelisted) continue;
 // - blocksForVerify는 "검증 입력"이므로 여기서 잘라내면 (1) 환각 블록 방지 (2) verify 시간 단축
 if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
   const dropped = [];
-  const kept = [];
-  const numeric_soft_warnings = [];
+const kept = [];
+const year_soft_warnings = [];
+const numeric_soft_warnings = [];
 
   for (const b of blocksForVerify) {
     const ev = b?.evidence || {};
@@ -7355,7 +7521,36 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
         }
       }
     }
+// NOTE: year miss는 "블록 내 naver evidence가 전부 year-miss"인 경우에만 soft warning으로 집계
+//       (일부 아이템만 miss인 혼합 케이스는 경고로 잡지 않음)
+try {
+  const evItems2 = Object.values(ev).filter(Array.isArray).flat();
+  const total = evItems2.length;
+  const yearMissItems = evItems2.filter((x) => x && x._soft_year_miss);
+  const miss = yearMissItems.length;
 
+  if (total > 0 && miss === total) {
+    const years = Array.from(
+      new Set(
+        yearMissItems
+          .map((x) => (Array.isArray(x._soft_year_miss_years) ? x._soft_year_miss_years : []))
+          .flat()
+          .filter((y) => Number.isFinite(Number(y)))
+          .map((y) => Number(y))
+      )
+    ).slice(0, 8);
+
+    year_soft_warnings.push({
+      id: b?.id,
+      text: String(b?.text || "").slice(0, 220),
+      reason: "year_soft_miss_in_evidence",
+      years,
+      items: miss,
+      total,
+      action: "soft_keep",
+    });
+  }
+} catch (_e) {}
     kept.push(b);
   }
 
@@ -7363,12 +7558,95 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
   blocksForVerify.splice(0, blocksForVerify.length, ...kept);
 
     partial_scores.evidence_prune = {
-    before: kept.length + dropped.length,
-    after: kept.length,
-    dropped,
-    numeric_soft_warnings,
+  before: kept.length + dropped.length,
+  after: kept.length,
+  dropped,
+  numeric_soft_warnings,
+  year_soft_warnings,
+};
+// ✅ E_eff (effective engines) + coverage_factor (E_eff 기반)
+try {
+  const __counts = __calcEngineEvidenceCounts(blocksForVerify);
+  const __requested = Array.isArray(engines_requested) ? engines_requested : [];
+  const __eff = __getEffectiveEngines(__requested, __counts);
+
+  // 너가 아래에서 Array로 읽고 있으니: effective_engines는 "배열"로 유지
+  partial_scores.effective_engines = __eff.slice();
+  partial_scores.effective_engines_count = __eff.length;
+
+  // ✅ coverage_factor = (effective / requested)
+  const __cov01 =
+    (__requested.length > 0)
+      ? Math.min(1.0, Math.max(0.0, (__eff.length / __requested.length)))
+      : 0.0;
+
+  partial_scores.coverage_factor = __cov01;
+
+  // (선택) 디버깅용 상세도 같이 남겨두기
+  partial_scores.coverage = {
+    requested: __requested.length,
+    effective: __eff.length,
+    coverage_01: __cov01,
+    counts: __counts,
   };
+
+  // ✅ engine_exclusion_reasons에 "no_effective_evidence" 동기화
+  if (engine_exclusion_reasons && typeof engine_exclusion_reasons === "object") {
+    for (const e of __requested) {
+      const c = (__counts?.[e] || 0);
+      if (c > 0) continue;
+
+      const arr = Array.isArray(engine_exclusion_reasons[e]) ? engine_exclusion_reasons[e] : [];
+      const already = arr.some(r => (r?.code || r?.reason) === "no_effective_evidence");
+      if (!already) {
+        arr.push({
+          code: "no_effective_evidence",
+          details: { evidence_count: 0 },
+          coverage_penalty_target: true,
+        });
+      }
+      engine_exclusion_reasons[e] = arr;
+    }
+  }
+} catch (_e) {}
 }
+
+// ✅ soft-year-miss summary (for logging / diagnostics)
+try {
+  if (
+    (safeMode === "qv" || safeMode === "fv") &&
+    partial_scores &&
+    typeof partial_scores === "object" &&
+    Array.isArray(blocksForVerify)
+  ) {
+    let __cnt = 0;
+    const __samples = [];
+
+    for (const b of blocksForVerify) {
+      const bid = b?.id ?? null;
+      const evs = b?.evidence?.naver;
+      if (!Array.isArray(evs)) continue;
+
+      for (const ev of evs) {
+        if (!ev || !ev._soft_year_miss) continue;
+        __cnt += 1;
+
+        if (__samples.length < 20) {
+          __samples.push({
+            block_id: bid,
+            where: ev._soft_year_miss_where ?? null,
+            years: Array.isArray(ev._soft_year_miss_years) ? ev._soft_year_miss_years.slice(0, 6) : null,
+            penalty: (typeof ev._soft_year_miss_penalty === "number" ? ev._soft_year_miss_penalty : null),
+            url: ev?.url ?? ev?.link ?? null,
+            host: ev?.host ?? ev?.source_host ?? null,
+          });
+        }
+      }
+    }
+
+    partial_scores.naver_soft_year_miss = { count: __cnt, samples: __samples };
+  }
+} catch (_e) {}
 
 // (log) numeric_evidence_match 직전: 숫자 claim 블록/엔진 개괄 로그
 if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
@@ -8474,6 +8752,36 @@ await supabase.from("verification_logs").insert([
     const lowCoverage = coverage < 0.5 || effCount <= 1;   // 엔진이 너무 적거나 coverage가 낮을 때
 
     let t = truthscore_01;
+// ✅ S-13: soft warnings penalty (year miss / numeric soft warnings)
+try {
+  const __clamp01 = (x) => Math.min(1, Math.max(0, Number(x) || 0));
+
+  const __pr = partial_scores?.evidence_prune || {};
+  const __y = Array.isArray(__pr.year_soft_warnings) ? __pr.year_soft_warnings.length : 0;
+  const __n = Array.isArray(__pr.numeric_soft_warnings) ? __pr.numeric_soft_warnings.length : 0;
+
+  const __yP = __clamp01(NAVER_YEAR_MISS_PENALTY);
+  const __nP = __clamp01(NUMERIC_SOFT_WARNING_PENALTY);
+
+  const __factor_year = (__y > 0) ? Math.pow(__yP, __y) : 1;
+  const __factor_numeric = (__n > 0) ? Math.pow(__nP, __n) : 1;
+  const __soft_factor = __factor_year * __factor_numeric;
+
+  const __before = t;
+  t = __clamp01(t * __soft_factor);
+
+  partial_scores.soft_penalties = {
+    year_soft_warnings: __y,
+    numeric_soft_warnings: __n,
+    NAVER_YEAR_MISS_PENALTY: __yP,
+    NUMERIC_SOFT_WARNING_PENALTY: __nP,
+    factor_year: __factor_year,
+    factor_numeric: __factor_numeric,
+    factor_total: __soft_factor,
+    t_before: __before,
+    t_after: t,
+  };
+} catch (_e) {}
 
     // 1-A) 강한 상충(conflict) + 낮은 점수(≤0.5)면 false 쪽으로 조금 더 눌러줌
     //      - 예: 0.15 → 0.12 정도로 내려가서 "거짓 + 상충"이 더 분명해짐
