@@ -4633,10 +4633,6 @@ function isTrustedNumericEvidenceItem(x) {
   return NUMERIC_PRUNE_TRUSTED_HOSTS.some(t => h === t || h.endsWith("." + t));
 }
 
-function normalizeNumToken(t) {
-  return String(t || "").trim().replace(/[,\s]/g, "");
-}
-
 function extractYearTokens(text) {
   const s = String(text || "");
   const years = new Set();
