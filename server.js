@@ -9624,13 +9624,6 @@ function requireAdminAccess(req, res, next) {
   });
 }
 
-// GET /api/check-whitelist?force=1
-app.get("/api/check-whitelist", requireAdminAccess, async (req, res) => {
-  const force = String(req.query?.force || "") === "1";
-  const out = await checkAndUpdateNaverWhitelist({ force });
-  return res.status(out?.success ? 200 : 500).json(out);
-});
-
 // GET /api/admin/whitelist-status
 app.get("/api/admin/whitelist-status", requireAdminAccess, (req, res) => {
   let wl = null;
@@ -10068,55 +10061,6 @@ app.post("/api/docs/analyze", async (req, res) => {
   deepl_key,
   gemini_key,
 } = req.body;
-
-// ================================
-// Admin dashboard APIs (beta)
-// ================================
-app.get("/api/admin/status", (req, res) => {
-  return res.json(
-    buildSuccess({
-      server_time: new Date().toISOString(),
-      stats: adminStats,
-      whitelist: getNaverWhitelistStatus(),
-    })
-  );
-});
-
-// ✅ Diag: whitelist detailed meta (prod guarded)
-app.get("/api/admin/whitelist/status", requireDiag, (req, res) => {
-  try {
-    return res.json(buildSuccess(getNaverWhitelistMeta()));
-  } catch (e) {
-    return res.status(500).json(buildError("INTERNAL_ERROR", String(e?.message || e)));
-  }
-});
-
-// ✅ Legacy compat: /api/check-whitelist (prod guarded)
-app.get("/api/check-whitelist", requireDiag, (req, res) => {
-  try {
-    // 예전 응답 형태 최대한 맞춤(updated/daysPassed 유지)
-    const meta = getNaverWhitelistMeta();
-    return res.json(
-      buildSuccess({
-        updated: true,
-        daysPassed: meta.daysPassed ?? null,
-        ...meta,
-      })
-    );
-  } catch (e) {
-    return res.status(500).json(buildError("INTERNAL_ERROR", String(e?.message || e)));
-  }
-});
-
-app.get("/api/admin/errors/recent", (req, res) => {
-  return res.json(
-    buildSuccess({
-      total: adminRecentErrors.length,
-      // 최신 것이 앞에 오도록 reverse
-      items: adminRecentErrors.slice().reverse(),
-    })
-  );
-});
 
         // ✅ docs/analyze: Supabase Bearer로 userId(키링용) 해석
     const auth_user = await getSupabaseAuthUser(req);
@@ -10868,19 +10812,79 @@ app.get("/api/test-session", requireDiag, async (req, res) => {
   }
 });
 
+// ================================
+// Admin dashboard APIs (beta)
+// ================================
+app.get("/api/admin/status", (req, res) => {
+  return res.json(
+    buildSuccess({
+      server_time: new Date().toISOString(),
+      stats: adminStats,
+      whitelist: getNaverWhitelistStatus(),
+    })
+  );
+});
+
+// ✅ Diag: whitelist detailed meta (prod guarded)
+app.get("/api/admin/whitelist/status", requireDiag, (req, res) => {
+  try {
+    return res.json(buildSuccess(getNaverWhitelistMeta()));
+  } catch (e) {
+    return res.status(500).json(buildError("INTERNAL_ERROR", String(e?.message || e)));
+  }
+});
+
+// ✅ Legacy compat: /api/check-whitelist (prod guarded)
+app.get("/api/check-whitelist", requireDiag, (req, res) => {
+  try {
+    const meta = getNaverWhitelistMeta();
+    return res.json(
+      buildSuccess({
+        updated: true,
+        daysPassed: meta.daysPassed ?? null,
+        ...meta,
+      })
+    );
+  } catch (e) {
+    return res.status(500).json(buildError("INTERNAL_ERROR", String(e?.message || e)));
+  }
+});
+
+app.get("/api/admin/errors/recent", (req, res) => {
+  return res.json(
+    buildSuccess({
+      total: adminRecentErrors.length,
+      items: adminRecentErrors.slice().reverse(),
+    })
+  );
+});
 
 // ─────────────────────────────
 // ✅ (선택 권장) API 404도 JSON으로 통일
 //   - /api/* 중 라우트에 매칭 안 되면 여기로 옴
 // ─────────────────────────────
-app.use("/api", (req, res) => {
-  return res.status(404).json(
-    buildError(
-      "API_NOT_FOUND",
-      "존재하지 않는 API입니다.",
-      { method: req.method, path: req.originalUrl }
-    )
-  );
+app.use("/api", (req, res, next) => {
+  try {
+    // ✅ allow admin routes to pass through
+    // NOTE: mounted on "/api", so req.path is like "/admin/status"
+    const sub = String(req.path || "");
+    if (sub.startsWith("/admin/")) return next();
+
+    return res.status(404).json(
+      buildError(
+        "API_NOT_FOUND",
+        "존재하지 않는 API입니다.",
+        { method: req.method, path: req.originalUrl }
+      )
+    );
+  } catch (_) {
+    return res.status(404).json(
+      buildError("API_NOT_FOUND", "존재하지 않는 API입니다.", {
+        method: req?.method,
+        path: req?.originalUrl || req?.url,
+      })
+    );
+  }
 });
 
 // ─────────────────────────────
@@ -10951,24 +10955,51 @@ app.use((err, req, res, next) => {
   return res.status(status).json(buildError(code, message, detail));
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Cross-Verified AI Proxy v18.4.0-pre running on port ${PORT}`);
-  console.log("🔹 LV 모듈 외부화 (/src/modules/klaw_module.js)");
-  console.log(
-    "🔹 Translation 모듈 활성화 (DeepL + Gemini Flash-Lite Fallback)"
-  );
+// ─────────────────────────────
+// Server listen (robust): print listen errors + dev auto-port fallback
+// ─────────────────────────────
+const _HOST = String(process.env.HOST || "0.0.0.0").trim();
+
+// PORT가 문자열로 들어와도 안전하게 숫자로
+function _parsePort(v, fallback = 3000) {
+  const n = Number.parseInt(String(v ?? "").trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+const _PORT0 = _parsePort(process.env.PORT || PORT, 3000);
+
+function _startServer(port, attempt = 0) {
+  const server = app.listen(port, _HOST, () => {
+    console.log(`🚀 Cross-Verified AI Proxy v18.4.0-pre running on ${_HOST}:${port}`);
+    console.log("🔹 LV 모듈 외부화 (/src/modules/klaw_module.js)");
+    console.log("🔹 Translation 모듈 활성화 (DeepL + Gemini Flash-Lite Fallback)");
     console.log("🔹 Naver 서버 직접 호출 (Region 제한 해제)");
-  console.log("🔹 Supabase + Gemini 2.5 (Flash / Pro / Lite) 정상 동작");
-    // ✅ Auto-update timer (best-effort; Render free plan may sleep)
-  if (NAVER_WHITELIST_AUTO_UPDATE) {
-    const ms = NAVER_WHITELIST_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000;
+    console.log("🔹 Supabase + Gemini 2.5 (Flash / Pro / Lite) 정상 동작");
+  });
 
-    setTimeout(() => {
-      updateNaverWhitelistIfNeeded({ force: false, reason: "boot" }).catch(() => {});
-    }, 10_000);
+  server.on("error", (e) => {
+    const code = e?.code || "UNKNOWN";
+    const msg = e?.message || String(e);
 
-    setInterval(() => {
-      updateNaverWhitelistIfNeeded({ force: false, reason: "interval" }).catch(() => {});
-    }, ms);
-  }
-});
+    // ✅ 개발환경이면 포트 충돌 시 자동으로 다음 포트로 시도
+    if (!isProd && code === "EADDRINUSE" && attempt < 10) {
+      const nextPort = port + 1;
+      console.error(`💥 listen ${_HOST}:${port} failed (${code}) -> retry on ${nextPort}`);
+      setTimeout(() => _startServer(nextPort, attempt + 1), 150);
+      return;
+    }
+
+    console.error("💥 listen failed:", {
+      code,
+      message: msg,
+      host: _HOST,
+      port,
+      isProd,
+    });
+    process.exit(1);
+  });
+
+  return server;
+}
+
+_startServer(_PORT0);
