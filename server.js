@@ -5659,10 +5659,13 @@ const verifyCoreHandler = async (req, res) => {
 
   let safeMode = String(req.body?.mode ?? mode ?? "").trim().toLowerCase();
 
-// /api/verify-snippet이면 mode 유실돼도 FV로 강제
-if (!safeMode) {
-  const p = String(req.path || "");
-  if (p === "/api/verify-snippet") safeMode = "fv";
+// ✅ /api/verify-snippet(또는 snippet_meta.is_snippet)는 "항상 FV 고정" + 라우터 개입 금지
+const __isSnippetEndpoint =
+  String(req.path || "") === "/api/verify-snippet" ||
+  (snippet_meta && snippet_meta.is_snippet === true);
+
+if (__isSnippetEndpoint) {
+  safeMode = "fv";
 }
 
 // ✅ Groq Router(plan) - mode 자동분류 + 멀티 실행 계획
@@ -5671,9 +5674,58 @@ if (!safeMode) {
 let __routerPlan = null;
 let __runLvExtra = false;
 let __cacheKey = null; // ✅ S-17: function-scope cache key holder
+let __routerCached = false;
 
 // 환경변수로 라우터 전체 on/off 가능
 const GROQ_ROUTER_ENABLE = String(process.env.GROQ_ROUTER_ENABLE || "1") !== "0";
+
+// ✅ Groq Router in-memory cache (process-wide via globalThis)
+// - Same input => skip Groq call
+// - TTL + MAX size (LRU-ish via Map insertion order)
+const GROQ_ROUTER_CACHE_ENABLE = String(process.env.GROQ_ROUTER_CACHE_ENABLE || "1") !== "0";
+const GROQ_ROUTER_CACHE_TTL_MS = parseInt(process.env.GROQ_ROUTER_CACHE_TTL_MS || "300000", 10); // 5min
+const GROQ_ROUTER_CACHE_MAX = parseInt(process.env.GROQ_ROUTER_CACHE_MAX || "500", 10);
+
+const __ROUTER_CACHE =
+  globalThis.__CVA_GROQ_ROUTER_CACHE ||
+  (globalThis.__CVA_GROQ_ROUTER_CACHE = new Map());
+
+function __routerCacheGet(k) {
+  try {
+    if (!GROQ_ROUTER_CACHE_ENABLE) return null;
+    if (!k) return null;
+    const hit = __ROUTER_CACHE.get(k);
+    if (!hit) return null;
+    const now = Date.now();
+    if (hit.exp && hit.exp <= now) {
+      __ROUTER_CACHE.delete(k);
+      return null;
+    }
+    // refresh recency (LRU-ish)
+    __ROUTER_CACHE.delete(k);
+    __ROUTER_CACHE.set(k, hit);
+    return hit.v ?? null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function __routerCacheSet(k, v) {
+  try {
+    if (!k) return;
+    const now = Date.now();
+    const exp = now + Math.max(1000, Number(GROQ_ROUTER_CACHE_TTL_MS) || 300000);
+    __ROUTER_CACHE.set(k, { v, exp, t: now });
+
+    // evict oldest
+    const maxN = Math.max(50, Number(GROQ_ROUTER_CACHE_MAX) || 500);
+    while (__ROUTER_CACHE.size > maxN) {
+      const firstKey = __ROUTER_CACHE.keys().next().value;
+      if (!firstKey) break;
+      __ROUTER_CACHE.delete(firstKey);
+    }
+  } catch (_) {}
+}
 
 // ✅ helper: request -> user groq key
 async function __getUserGroqKey(req) {
@@ -5691,20 +5743,61 @@ async function __getUserGroqKey(req) {
 try {
   const _rawMode = String(safeMode || "").trim().toLowerCase();
   const _shouldRoute =
-    GROQ_ROUTER_ENABLE &&
-    (!safeMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
+  GROQ_ROUTER_ENABLE &&
+  !__isSnippetEndpoint &&
+  (!safeMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
 
   if (_shouldRoute) {
     // ⚠️ 여기서 Groq key는 "사용자별"로 가져오는 걸 전제로 함
     // 아래 __getUserGroqKey(req) 는 다음 단계에서 추가할 헬퍼(3번)
     const _groqKey = await __getUserGroqKey(req);
 
-    __routerPlan = await __groqRoutePlan({
-      query: String(req.body?.query ?? ""),
-      hint_mode: _rawMode || null,
-      allow_lv: true,
-      allow_fv: false, // qv+fv 불필요 → 라우터에서도 막음
-    }, _groqKey);
+// ✅ build cache key (do NOT store raw query/key)
+// - include: endpoint + hint mode + hashed query + hashed key (so different users don't share)
+const __q0 = String(req.body?.query ?? "");
+const __qHash = (typeof sha16 === "function") ? sha16(__q0) : String(__q0).slice(0, 32);
+const __kHash = (typeof sha16 === "function") ? sha16(String(_groqKey || "")) : "nokey";
+__cacheKey = `router:v1|p=${String(req.path || "")}|m=${String(_rawMode || "")}|q=${__qHash}|k=${__kHash}`;
+
+const __cachedPlan = __routerCacheGet(__cacheKey);
+if (__cachedPlan) {
+  __routerPlan = __cachedPlan;
+  __routerCached = true;
+} else {
+  // ✅ Groq key는 "사용자별"로 가져옴
+const _groqKey = await __getUserGroqKey(req);
+
+// ✅ S-17: cache key 만들기 (userId + endpoint + hint + query)
+const __q0 = String(req.body?.query ?? "").trim();
+const __path0 = String(req.path || "");
+__cacheKey = (typeof sha16 === "function")
+  ? sha16(`${String(userId || "anon")}|${__path0}|${String(_rawMode || "")}|${__q0}`.slice(0, 4000))
+  : null;
+
+__routerCached = false;
+if (__cacheKey) {
+  const cached = __routerCacheGet(__cacheKey);
+  if (cached) {
+    __routerPlan = cached;
+    __routerCached = true;
+  }
+}
+
+if (!__routerPlan) {
+  __routerPlan = await __groqRoutePlan({
+    query: __q0,
+    hint_mode: _rawMode || null,
+    allow_lv: true,
+    allow_fv: false, // qv+fv 불필요
+  }, _groqKey);
+
+  if (__cacheKey && __routerPlan) {
+    __routerCacheSet(__cacheKey, __routerPlan);
+  }
+}
+  __routerCacheSet(__cacheKey, __routerPlan);
+  __routerCached = false;
+}
 
     // plan 해석: primary 모드 + 추가 실행
     const primary = String(__routerPlan?.primary ?? __routerPlan?.mode ?? "qv").toLowerCase();
@@ -5731,10 +5824,51 @@ try {
   // 라우터 실패해도 기존 흐름 유지 (qv/fv 강제/기본 로직으로 진행)
   __routerPlan = null;
   __runLvExtra = false;
+    __routerCached = false;
 }
 
 // ✅ safety: 라우터 미사용/실패/빈값이면 기본 qv
 if (!safeMode) safeMode = "qv";
+
+// ✅ router diagnostics (응답 partial_scores에서 확인 가능) — 요약/길이제한 + 민감정보 최소화
+try {
+  if (partial_scores && typeof partial_scores === "object") {
+    const p0 = __routerPlan || null;
+
+    const primary0 =
+      String(p0?.primary ?? p0?.mode ?? "").toLowerCase().trim() || null;
+
+    const runs0 = Array.isArray(p0?.runs)
+      ? p0.runs.map((x) => String(x).toLowerCase()).filter(Boolean).slice(0, 5)
+      : null;
+
+    // plan은 "모드/우선순위"만 남기고 제한
+    const plan0 = Array.isArray(p0?.plan)
+      ? p0.plan
+          .map((x) => ({
+            mode: String(x?.mode || "").toLowerCase(),
+            priority: Number.isFinite(Number(x?.priority)) ? Number(x.priority) : undefined,
+          }))
+          .filter((x) => !!x.mode)
+          .slice(0, 5)
+      : null;
+
+    partial_scores.router_plan = {
+      enabled: !!GROQ_ROUTER_ENABLE,
+      used: !!p0,
+      cached: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
+      safe_mode_final: String(safeMode || "").toLowerCase(),
+      primary: primary0,
+      runs: runs0,
+      plan: plan0,
+      confidence: (p0 && typeof p0.confidence === "number") ? p0.confidence : null,
+      reason: p0?.reason ?? null,
+      run_lv_extra: !!__runLvExtra,
+      is_snippet: (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : null,
+      // cache_key는 노출하지 않음(길이/민감도 이슈 방지)
+    };
+  }
+} catch (_) {}
 
 // ─────────────────────────────
 // ✅ Groq Router (mode judge) — OpenAI-compatible endpoint
