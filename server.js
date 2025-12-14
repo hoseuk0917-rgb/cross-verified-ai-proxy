@@ -5667,6 +5667,7 @@ if (!safeMode) {
 // - qv+lv는 허용, qv+fv는 버림(필요없다고 했으니)
 let __routerPlan = null;
 let __runLvExtra = false;
+let __cacheKey = null; // ✅ S-17: function-scope cache key holder
 
 // 환경변수로 라우터 전체 on/off 가능
 const GROQ_ROUTER_ENABLE = String(process.env.GROQ_ROUTER_ENABLE || "1") !== "0";
@@ -6687,10 +6688,17 @@ if (naverPool.length > 0) {
 ghUserText = String(query || "").trim();
 
 // ✅ S-17 cache key (only QV/FV) — must be defined before cache get/set
-const __cacheKey =
-  (safeMode === "qv" || safeMode === "fv")
-    ? `v1|${safeMode}|u:${hash16(String(authUser?.id || logUserId || ""))}|q:${hash16(String(query || ""))}|core:${hash16(String(userCoreText || core_text || req.body?.snippet_meta?.snippet_core || ""))}|ua:${hash16(String(user_answer || ""))}`
-    : null;
+// ✅ S-17 cache key (only QV/FV) — assign (NOT declare) to keep scope valid
+if (safeMode === "qv" || safeMode === "fv") {
+  __cacheKey =
+    `v1|${safeMode}` +
+    `|u:${hash16(String(authUser?.id || logUserId || ""))}` +
+    `|q:${hash16(String(query || ""))}` +
+    `|core:${hash16(String(userCoreText || core_text || req.body?.snippet_meta?.snippet_core || ""))}` +
+    `|ua:${hash16(String(user_answer || ""))}`;
+} else {
+  __cacheKey = null;
+}
 
 const __cachedPayload = __cacheKey ? verifyCacheGet(__cacheKey) : null;
 if (__cachedPayload) {
