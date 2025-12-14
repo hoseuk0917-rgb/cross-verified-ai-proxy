@@ -377,21 +377,23 @@ function pickDatabaseUrl() {
     throw new Error("No database URL provided. Set SUPABASE_DATABASE_URL (recommended) or DATABASE_URL.");
   }
 
+   const src = (source || "DATABASE_URL");
+
   if (!/^postgres(ql)?:\/\//i.test(u)) {
-    throw new Error(`${source || "DATABASE_URL"} must start with postgres:// or postgresql://`);
+    throw new Error(src + " must start with postgres:// or postgresql://");
   }
   if (/^postgres(ql)?:\/\/https?:\/\//i.test(u)) {
-    throw new Error(`${source || "DATABASE_URL"} is malformed (contains https:// after protocol)`);
+    throw new Error(src + " is malformed (contains https:// after protocol)");
   }
   if (u.includes("onrender.com")) {
-    throw new Error(`${source || "DATABASE_URL"} must be a Postgres URL (Supabase), not a Render app URL`);
+    throw new Error(src + " must be a Postgres URL (Supabase), not a Render app URL");
   }
 
-  // ✅ Render Postgres 호스트 차단 (dpg-xxx...render.com 등)
+  // ✅ Render Postgres 인스턴스 차단 (dpg-xxx...render.com 등)
   try {
     const host = new URL(u).hostname || "";
     if (host.includes("render.com") || host.includes("postgres.render.com")) {
-      throw new Error(`${source || "DATABASE_URL"} points to Render Postgres. Use SUPABASE_DATABASE_URL instead.`);
+      throw new Error(src + " points to Render Postgres. Use SUPABASE_DATABASE_URL instead.");
     }
   } catch {}
 
@@ -403,13 +405,14 @@ const { url: DB_URL, source: DB_URL_SOURCE } = pickDatabaseUrl();
 // ✅ 부팅 로그(비밀값 노출 없이: host만)
 try {
   const host = new URL(DB_URL).hostname || "unknown";
+  const via = (DB_URL_SOURCE || "DATABASE_URL");
   if (!isProd) {
-    console.log(`✅ DB URL selected via ${DB_URL_SOURCE || "DATABASE_URL"} (host=${host})`);
+    console.log("✅ DB URL selected via " + via + " (host=" + host + ")");
   } else {
-    console.log(`✅ DB URL selected via ${DB_URL_SOURCE || "DATABASE_URL"}`);
+    console.log("✅ DB URL selected via " + via);
   }
 } catch {
-  console.log(`✅ DB URL selected via ${DB_URL_SOURCE || "DATABASE_URL"}`);
+  console.log("✅ DB URL selected via " + (DB_URL_SOURCE || "DATABASE_URL"));
 }
 
 // ✅ 여기서 먼저 풀/스토어 준비
