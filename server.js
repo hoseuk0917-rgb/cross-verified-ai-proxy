@@ -6050,6 +6050,11 @@ const filterGithubEvidence = (items, rawQuery) => {
       .json(buildError("VALIDATION_ERROR", "query가 누락되었습니다."));
   }
 
+  // ✅ allow auto/overlay/route: 라우터 실패/비활성 대비 기본 qv로 강제
+if (safeMode === "auto" || safeMode === "overlay" || safeMode === "route") {
+  safeMode = "qv";
+}
+
   const allowedModes = ["qv", "fv", "dv", "cv", "lv"];
 if (!allowedModes.includes(safeMode)) {
   return res
@@ -6680,6 +6685,12 @@ if (naverPool.length > 0) {
 
 // ✅ GitHub 관련 로직에서 항상 쓰는 텍스트(= TDZ 방지)
 ghUserText = String(query || "").trim();
+
+// ✅ S-17 cache key (only QV/FV) — must be defined before cache get/set
+const __cacheKey =
+  (safeMode === "qv" || safeMode === "fv")
+    ? `v1|${safeMode}|u:${hash16(String(authUser?.id || logUserId || ""))}|q:${hash16(String(query || ""))}|core:${hash16(String(userCoreText || core_text || req.body?.snippet_meta?.snippet_core || ""))}|ua:${hash16(String(user_answer || ""))}`
+    : null;
 
 const __cachedPayload = __cacheKey ? verifyCacheGet(__cacheKey) : null;
 if (__cachedPayload) {
