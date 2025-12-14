@@ -5854,34 +5854,55 @@ if (!__groqKey) {
       try { __routerCacheSet(__routerCacheKey, __routerPlan); } catch (_) {}
     }
 
-    // plan 해석: primary 모드 + 추가 실행
-    const primary =
+        // plan 해석: primary 모드 + 추가 실행
+    const primaryRaw =
       String(
         __routerPlan?.primary ??
-        __routerPlan?.mode ??
-        (__routerPlan?.plan?.[0]?.mode ?? "qv")
-      ).toLowerCase();
+          __routerPlan?.mode ??
+          (__routerPlan?.plan?.[0]?.mode ?? "qv")
+      )
+        .toLowerCase()
+        .trim();
 
-    const runs = Array.isArray(__routerPlan?.runs)
-      ? __routerPlan.runs.map(x => String(x).toLowerCase())
-      : (Array.isArray(__routerPlan?.plan)
-          ? __routerPlan.plan.map(x => String(x?.mode ?? x).toLowerCase())
-          : []);
+    const runsRaw = Array.isArray(__routerPlan?.runs)
+      ? __routerPlan.runs.map((x) => String(x).toLowerCase().trim()).filter(Boolean)
+      : Array.isArray(__routerPlan?.plan)
+        ? __routerPlan.plan
+            .map((x) => String(x?.mode ?? x).toLowerCase().trim())
+            .filter(Boolean)
+        : [];
 
-    // primary를 safeMode로 반영 (top-level lv는 금지 → 추가 실행으로만)
-    if (primary === "lv") {
-      safeMode = "qv";
-      __runLvExtra = true;
-    } else if (primary === "fv") {
-      safeMode = "fv";
-    } else {
-      safeMode = "qv";
-    }
+    // ✅ top-level safeMode는 qv/fv만 허용 (lv는 extra로만)
+    const topPrimary = primaryRaw === "fv" ? "fv" : "qv";
 
-    // runs에 lv가 있으면 추가 실행 플래그 ON
-    if (runs.includes("lv")) __runLvExtra = true;
+    // top-level mode 확정
+    safeMode = topPrimary;
 
-    // 방어: qv+fv는 안함 (runs에 fv가 있어도 무시)
+    // lv extra 조건: primary가 lv였거나, runs에 lv가 포함되어 있으면 ON
+    const wantLvExtra = primaryRaw === "lv" || runsRaw.includes("lv");
+    if (wantLvExtra) __runLvExtra = true;
+
+    // ✅ router plan도 "top-level lv"로 보이지 않도록 정규화 (diagnostics 안정화)
+    // - primary/safe_mode_final: qv or fv
+    // - plan/runs: [topPrimary] (+ lv extra면 lv를 뒤에 추가)
+    // - qv+fv 조합은 만들지 않음
+    try {
+      if (__routerPlan && typeof __routerPlan === "object") {
+        __routerPlan.safe_mode_final = topPrimary;
+        __routerPlan.primary = topPrimary;
+
+        const _plan0 = [
+          { mode: topPrimary, priority: 1, reason: "router_primary_top" },
+        ];
+        if (wantLvExtra) {
+          _plan0.push({ mode: "lv", priority: 2, reason: "router_lv_extra" });
+        }
+
+        __routerPlan.plan = _plan0;
+        __routerPlan.runs = _plan0.map((x) => x.mode);
+        __routerPlan.lv_extra = !!wantLvExtra;
+      }
+    } catch (_) {}
   }
 } catch (e) {
   // 라우터 실패해도 기존 흐름 유지 (qv/fv 강제/기본 로직으로 진행)
