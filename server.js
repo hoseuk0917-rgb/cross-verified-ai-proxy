@@ -5672,6 +5672,7 @@ if (__isSnippetEndpoint) {
 // - safeMode가 비었거나 auto/overlay 류일 때만 개입
 // - qv+lv는 허용, qv+fv는 버림(필요없다고 했으니)
 let __routerPlan = null;
+let __routerPlanPublic = null; // ✅ 응답에 최종으로 붙일 공개용 plan
 let __runLvExtra = false;
 let __routerCacheKey = null; // ✅ S-17: router plan cache key (separate from __cacheKey)
 let __routerCached = false;
@@ -5865,7 +5866,7 @@ try {
           .slice(0, 5)
       : null;
 
-    partial_scores.router_plan = {
+    __routerPlanPublic = {
       enabled: !!GROQ_ROUTER_ENABLE,
       used: !!p0,
       cached: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
@@ -6866,7 +6867,30 @@ if (__cachedPayload) {
   } else {
     out.partial_scores = { cache_hit: true };
   }
-
+  // ✅ S-17b: 응답 직전 router_plan 재부착 (cache-hit path)
+  try {
+    const __ps =
+      out.partial_scores && typeof out.partial_scores === "object"
+        ? out.partial_scores
+        : (out.partial_scores = {});
+    __ps.router_plan = {
+      enabled: !!GROQ_ROUTER_ENABLE,
+      raw_mode: String(req.body?.mode ?? "").trim().toLowerCase() || null,
+      safe_mode_final: String(safeMode || "").toLowerCase(),
+      primary:
+        __routerPlan?.primary ??
+        __routerPlan?.mode ??
+        (__routerPlan?.plan?.[0]?.mode ?? String(safeMode || "qv").toLowerCase()),
+      plan: Array.isArray(__routerPlan?.plan) ? __routerPlan.plan : null,
+      runs: Array.isArray(__routerPlan?.runs) ? __routerPlan.runs : null,
+      model:
+        __routerPlan?.model ??
+        (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
+      cached: !!__routerPlan?.cached,
+      lv_extra: typeof __runLvExtra !== "undefined" ? !!__runLvExtra : false,
+      status: __routerPlan ? "ok" : "missing_plan",
+    };
+  } catch (_) {}
   return res.json(buildSuccess(out));
 }
 
@@ -9653,6 +9677,35 @@ try {
   } catch (_) {}
 
   payload.verdict_message_ko = msg;
+  // ✅ S-17b: 응답 직전 router_plan 재부착 (final payload path)
+try {
+  const __ps =
+    payload.partial_scores && typeof payload.partial_scores === "object"
+      ? payload.partial_scores
+      : (payload.partial_scores = {});
+
+  __ps.router_plan = {
+    enabled: !!GROQ_ROUTER_ENABLE,
+    raw_mode: String(req.body?.mode ?? "").trim().toLowerCase() || null,
+    safe_mode_final: String(safeMode || "").toLowerCase(),
+
+    primary:
+      __routerPlan?.primary ??
+      __routerPlan?.mode ??
+      (__routerPlan?.plan?.[0]?.mode ?? String(safeMode || "qv").toLowerCase()),
+
+    plan: Array.isArray(__routerPlan?.plan) ? __routerPlan.plan : null,
+    runs: Array.isArray(__routerPlan?.runs) ? __routerPlan.runs : null,
+
+    model:
+      __routerPlan?.model ??
+      (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
+
+    cached: !!__routerPlan?.cached,
+    lv_extra: typeof __runLvExtra !== "undefined" ? !!__runLvExtra : false,
+    status: __routerPlan ? "ok" : "missing_plan",
+  };
+} catch (_) {}
 }
   }
 } catch {
