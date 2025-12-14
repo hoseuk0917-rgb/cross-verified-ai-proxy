@@ -243,7 +243,7 @@ const LOG_REDACT = String(process.env.LOG_REDACT || (isProd ? "1" : "0")) === "1
 const LOG_REDACT_MAX_STR = parseInt(process.env.LOG_REDACT_MAX_STR || "6000", 10);
 
 const SENSITIVE_KEY_RE =
-  /(authorization|cookie|set-cookie|x-admin-token|x-api-key|api[-_]?key|secret|token|password|session|gemini|openai|naver|supabase|service[_-]?key|client_secret|refresh_token|access_token)/i;
+  /(authorization|cookie|set-cookie|x-admin-token|x-api-key|api[-_]?key|secret|token|password|session|gemini|openai|naver|supabase|groq|service[_-]?key|client_secret|refresh_token|access_token)/i;
 
 function maskToken(t) {
   const s = String(t || "");
@@ -5662,82 +5662,260 @@ if (!safeMode) {
   if (p === "/api/verify-snippet") safeMode = "fv";
 }
 
-  // Admin 통계용: verify 요청 카운트
-  markAdminRequest("verify", { mode: safeMode || "unknown" });
+// ✅ Groq Router(plan) - mode 자동분류 + 멀티 실행 계획
+// - safeMode가 비었거나 auto/overlay 류일 때만 개입
+// - qv+lv는 허용, qv+fv는 버림(필요없다고 했으니)
+let __routerPlan = null;
+let __runLvExtra = false;
 
-  // ??normalize rawQuery/key_uuid without redeclare ??깂
-  const rawQuery = String(req.body?.rawQuery ?? "").trim();
-  const key_uuid = String(req.body?.key_uuid ?? req.body?.keyUuid ?? "").trim();
+// 환경변수로 라우터 전체 on/off 가능
+const GROQ_ROUTER_ENABLE = String(process.env.GROQ_ROUTER_ENABLE || "1") !== "0";
 
-  // ??S-17: cache hit (QV/FV heavy path) ??MUST be before heavy work/switch
-  let __cacheKey = null;
-  if (safeMode === "qv" || safeMode === "fv") {
-    __cacheKey = makeVerifyCacheKey({
-      mode: safeMode,
-      query,
-      rawQuery,
-      core_text,
-      user_answer,
-      answerText: __answerText0,
-      key_uuid,
-    });
+try {
+  const _rawMode = String(safeMode || "").trim().toLowerCase();
+  const _shouldRoute =
+    GROQ_ROUTER_ENABLE &&
+    (!safeMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
 
-    const __cachedPayload = __cacheKey ? verifyCacheGet(__cacheKey) : null;
-    if (__cachedPayload) {
-      const elapsedMs = Date.now() - start;
+  if (_shouldRoute) {
+    // ⚠️ 여기서 Groq key는 "사용자별"로 가져오는 걸 전제로 함
+    // 아래 __getUserGroqKey(req) 는 다음 단계에서 추가할 헬퍼(3번)
+    const _groqKey = await __getUserGroqKey(req);
 
-      const out = {
-        ...__cachedPayload,
-        elapsed: elapsedMs,
-        cached: true,
-      };
+    __routerPlan = await __groqRoutePlan({
+      query: String(req.body?.query ?? ""),
+      hint_mode: _rawMode || null,
+      allow_lv: true,
+      allow_fv: false, // qv+fv 불필요 → 라우터에서도 막음
+    }, _groqKey);
 
-      if (out.partial_scores && typeof out.partial_scores === "object") {
-        out.partial_scores = { ...out.partial_scores, cache_hit: true };
-      } else {
-        out.partial_scores = { cache_hit: true };
-      }
+    // plan 해석: primary 모드 + 추가 실행
+    const primary = String(__routerPlan?.primary ?? __routerPlan?.mode ?? "qv").toLowerCase();
+    const runs = Array.isArray(__routerPlan?.runs) ? __routerPlan.runs.map(x => String(x).toLowerCase()) : [];
 
-      // 🔍 스니펫 요청이면 응답에 메타 필드 추가
-      if (snippet_meta && typeof snippet_meta === "object") {
-        const { is_snippet, input_snippet, snippet_core } = snippet_meta;
-
-        if (is_snippet) {
-          out.is_snippet = true;
-        }
-
-        if (typeof input_snippet === "string" && input_snippet.trim()) {
-          out.input_snippet = input_snippet;
-        }
-
-        if (typeof snippet_core === "string" && snippet_core.trim()) {
-          out.snippet_core = snippet_core;
-        }
-      }
-
-      return res.json(buildSuccess(out));
+    // primary를 safeMode로 반영 (top-level lv는 rejectLvOnVerify 때문에 여기선 금지)
+    // - lv는 __runLvExtra 로만 처리해서 "추가 실행"으로 붙임
+    if (primary === "lv") {
+      safeMode = "qv";          // top-level은 qv 유지
+      __runLvExtra = true;      // lv는 추가 실행으로
+    } else if (primary === "fv") {
+      safeMode = "fv";
+    } else {
+      safeMode = "qv";
     }
+
+    // runs에 lv가 있으면 추가 실행 플래그 ON
+    if (runs.includes("lv")) __runLvExtra = true;
+
+    // 방어: qv+fv는 안함(혹시 runs에 fv가 있어도 무시)
+    // (여기서는 아무것도 안함 = fv 추가 실행 없음)
+  }
+} catch (e) {
+  // 라우터 실패해도 기존 흐름 유지 (qv/fv 강제/기본 로직으로 진행)
+  __routerPlan = null;
+  __runLvExtra = false;
+}
+
+// ─────────────────────────────
+// ✅ Groq Router (mode judge) — OpenAI-compatible endpoint
+// - key: user_secrets(integrations.groq.api_key_enc) 우선, 없으면 env GROQ_API_KEY fallback(선택)
+// - returns: { plan: [{mode:"qv"|"fv"|"lv", priority:int, reason:string}], confidence:0..1 }
+// ─────────────────────────────
+const GROQ_API_BASE = process.env.GROQ_API_BASE || "https://api.groq.com/openai/v1";
+const GROQ_ROUTER_MODEL = process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile";
+const GROQ_ROUTER_TIMEOUT_MS = parseInt(process.env.GROQ_ROUTER_TIMEOUT_MS || "12000", 10);
+const ENABLE_GROQ_ROUTER = String(process.env.ENABLE_GROQ_ROUTER || "1") === "1";
+
+// (선택) env fallback 허용 여부
+const GROQ_ALLOW_ENV_FALLBACK = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+
+function _safeJsonParse(s) {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+function _normalizeRouterPlan(obj) {
+  // 강제 형태 보정
+  const out = { plan: [], confidence: null, raw: obj };
+  const plan = Array.isArray(obj?.plan) ? obj.plan : (Array.isArray(obj?.runs) ? obj.runs : []);
+  const conf = (typeof obj?.confidence === "number" && Number.isFinite(obj.confidence))
+    ? Math.max(0, Math.min(1, obj.confidence))
+    : null;
+
+  const modes = new Set(["qv","fv","lv"]);
+  const norm = [];
+
+  for (const it of plan) {
+    const m = String(it?.mode || it?.m || "").trim().toLowerCase();
+    if (!modes.has(m)) continue;
+    norm.push({
+      mode: m,
+      priority: (typeof it?.priority === "number" && Number.isFinite(it.priority)) ? it.priority : 1,
+      reason: String(it?.reason || it?.why || "").slice(0, 180),
+    });
   }
 
-// ✅ (B안 보강) Gemini sentinel이 가끔 뚫려도 "명백한 비코드(통계/정책/일반사실)"는 DV/CV에서 차단
-const looksObviouslyNonCode = (s) => {
-  const t = String(s || "").trim();
-  if (!t) return true;
+  // priority 정렬 + 중복 제거(첫 등장 유지)
+  norm.sort((a,b) => (a.priority||1) - (b.priority||1));
+  const seen = new Set();
+  out.plan = norm.filter(x => (seen.has(x.mode) ? false : (seen.add(x.mode), true)));
+  out.confidence = conf;
 
-  // 코드/개발 힌트(이게 하나라도 있으면 non-code로 단정하지 않음)
-  const codeHint =
-    /(server\.js|stack|error|exception|trace|http|api|express|node|npm|yarn|pnpm|docker|kubernetes|k8s|redis|postgres|sql|jwt|oauth|flutter|dart|react|typescript|javascript|git(hub)?|commit|pull request|pr|issue|rate[- ]?limit|nginx|render|supabase|curl|powershell|python|파이썬)/i;
+  // plan이 비면 안전 fallback
+  if (!out.plan.length) out.plan = [{ mode: "qv", priority: 1, reason: "fallback" }];
+  return out;
+}
 
-  // 비코드(통계/정책/일반사실) 힌트 — "명백한" 케이스만(고정밀)
-  const nonCode =
-    /(합계출산율|출산율|인구|gdp|물가|실업률|환율|주가|대통령|선거|법률|정책|날씨|여행|맛집|번역|요약|연봉|집값|부동산|금리|코스피|코스닥|비트코인)/i;
+async function _getGroqApiKeyForUser(authUser) {
+  // authUser 없으면 null
+  if (!authUser?.id) return null;
 
-  // 개발 문맥이면 non-code 아님
-  if (t.includes("```")) return false;
-  if (/\.(js|mjs|cjs|ts|tsx|jsx|dart|py|go|java|kt|cs|cpp|c|rs|swift|sql|yml|yaml|json|env)\b/i.test(t)) return false;
+  try {
+    const row = await loadUserSecretsRow(authUser.id);
+    const secrets = row?.secrets || {};
+    const dec = decryptIntegrationsSecrets(secrets);
+    const k = String(dec?.groq_key || dec?.groq_api_key || "").trim();
+    if (k) return k;
+  } catch (_) {}
 
-  return nonCode.test(t) && !codeHint.test(t);
-};
+  if (GROQ_ALLOW_ENV_FALLBACK) {
+    const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+    if (envK) return envK;
+  }
+  return null;
+}
+
+async function groqRoutePlan({ authUser, query, snippet, question, hintMode }) {
+  if (!ENABLE_GROQ_ROUTER) {
+    return { plan: [{ mode: (hintMode || "qv"), priority: 1, reason: "router_disabled" }], confidence: null, raw: null };
+  }
+
+  const apiKey = await _getGroqApiKeyForUser(authUser);
+  if (!apiKey) {
+    return { plan: [{ mode: (hintMode || "qv"), priority: 1, reason: "no_groq_key" }], confidence: null, raw: null };
+  }
+
+  const q = String(query || "").trim();
+  const sn = String(snippet || "").trim();
+  const qu = String(question || "").trim();
+
+  // 라우터 입력 구성(너무 길면 잘라서 비용/지연 감소)
+  const input = {
+    query: q.slice(0, 1200),
+    snippet: sn.slice(0, 1800),
+    question: qu.slice(0, 800),
+    hint_mode: String(hintMode || "").trim().toLowerCase() || null,
+    policy: {
+      allow_multi: true,
+      prefer: "qv_or_fv",
+      note: "Return JSON only.",
+    },
+  };
+
+  const sys = [
+    "You are a strict mode router for a verification system.",
+    "Return ONLY valid JSON.",
+    "Decide plan modes among: qv (fact/general), fv (snippet/answer verification), lv (Korean law/legal).",
+    "Use lv only if the user is asking about Korean law/statutes/cases or legal interpretation.",
+    "If snippet is provided, fv is usually needed.",
+    "Multi-run allowed: e.g., [fv, lv] when legal and snippet-based.",
+    'JSON schema: {"plan":[{"mode":"qv|fv|lv","priority":1,"reason":"..."}],"confidence":0.0}',
+  ].join("\n");
+
+  const user = JSON.stringify(input);
+
+    // ✅ router: apiKey 없으면 호출 스킵(불필요한 401/timeout 방지)
+  if (!apiKey || String(apiKey).trim().length < 10) {
+    return {
+      plan: [{ mode: (hintMode || (sn ? "fv" : "qv")), priority: 1, reason: "router_no_key" }],
+      confidence: null,
+      raw: null,
+      router_ms: 0,
+      model: GROQ_ROUTER_MODEL,
+    };
+  }
+
+  const payload = {
+    model: GROQ_ROUTER_MODEL,
+    temperature: 0.0,
+    messages: [
+      { role: "system", content: sys },
+      { role: "user", content: user },
+    ],
+    // Groq가 지원하면 JSON 강제(미지원이어도 무시될 수 있음)
+    response_format: { type: "json_object" },
+  };
+
+  const t0 = Date.now();
+  try {
+    const resp = await axios.post(
+      `${GROQ_API_BASE}/chat/completions`,
+      payload,
+      {
+        timeout: GROQ_ROUTER_TIMEOUT_MS,
+        headers: {
+  Authorization: `Bearer ${apiKey}`,
+  "Content-Type": "application/json",
+  Accept: "application/json",
+},
+      }
+    );
+
+    const txt =
+      resp?.data?.choices?.[0]?.message?.content ??
+      resp?.data?.choices?.[0]?.text ??
+      "";
+
+    const parsed = _safeJsonParse(String(txt).trim()) || _safeJsonParse(String(txt).replace(/```json|```/g, "").trim()) || null;
+    const norm = _normalizeRouterPlan(parsed || {});
+    norm.router_ms = Date.now() - t0;
+    norm.model = GROQ_ROUTER_MODEL;
+    return norm;
+  } catch (e) {
+    return {
+      plan: [{ mode: (hintMode || (sn ? "fv" : "qv")), priority: 1, reason: `router_error:${String(e?.code || e?.message || "unknown").slice(0,60)}` }],
+      confidence: null,
+      raw: null,
+      router_ms: Date.now() - t0,
+      model: GROQ_ROUTER_MODEL,
+    };
+  }
+}
+
+// ✅ get Groq api key (user_secrets 우선, env fallback optional)
+async function __getGroqApiKeyForUser({ supabase, userId }) {
+  // 1) user_secrets.secrets.integrations.groq.api_key_enc 우선
+  try {
+    if (supabase && userId) {
+      const { data, error } = await supabase
+        .from("user_secrets")
+        .select("secrets")
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (!error && data?.secrets?.integrations?.groq?.api_key_enc) {
+        const enc = data.secrets.integrations.groq.api_key_enc;
+
+        // 프로젝트 내 기존 복호화 함수 우선 사용(있으면 그걸로)
+        let key = null;
+        if (typeof decryptSecret === "function") key = await decryptSecret(enc);
+        else if (typeof decryptUserSecret === "function") key = await decryptUserSecret(enc);
+        else if (typeof decryptField === "function") key = await decryptField(enc);
+        else if (typeof decryptAES === "function") key = await decryptAES(enc);
+
+        if (key && String(key).trim()) return String(key).trim();
+      }
+    }
+  } catch (_) {
+    // fall through
+  }
+
+  // 2) env fallback (옵션)
+  if (GROQ_ALLOW_ENV_FALLBACK) {
+    const envKey = String(process.env.GROQ_API_KEY || "").trim();
+    if (envKey) return envKey;
+  }
+  return null;
+}
 
 // ✅ (DV/CV 보강) GitHub 결과 relevance 필터(헛다리 repo로 검증 진행되는 것 방지)
 const tokenizeGhQuery = (s) => {
