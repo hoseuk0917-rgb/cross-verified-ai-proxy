@@ -5840,6 +5840,24 @@ try {
   __routerCacheKey = null;
 }
 
+// ✅ S-17c: router_plan fallback (never leave it null)
+try {
+  if (!__routerPlan) {
+    __routerPlan = {
+      primary: String(safeMode || "qv").toLowerCase(),
+      plan: [{ mode: String(safeMode || "qv").toLowerCase(), priority: 1, reason: "router_missing_or_failed" }],
+      runs: [String(safeMode || "qv").toLowerCase()],
+      cached: false,
+      error: "router_plan_was_null",
+    };
+  } else {
+    // plan이 비어있으면 최소 plan 보강
+    if (!Array.isArray(__routerPlan.plan) || __routerPlan.plan.length === 0) {
+      __routerPlan.plan = [{ mode: String(__routerPlan.primary || safeMode || "qv").toLowerCase(), priority: 1, reason: "router_plan_empty" }];
+    }
+  }
+} catch (_) {}
+
 // ✅ safety: 라우터 미사용/실패/빈값이면 기본 qv
 if (!safeMode) safeMode = "qv";
 
@@ -6888,7 +6906,9 @@ if (__cachedPayload) {
         (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
       cached: !!__routerPlan?.cached,
       lv_extra: typeof __runLvExtra !== "undefined" ? !!__runLvExtra : false,
-      status: __routerPlan ? "ok" : "missing_plan",
+      status: __routerPlan
+  ? (Array.isArray(__routerPlan?.plan) && __routerPlan.plan.length > 0 ? "ok" : "ok_no_plan")
+  : "missing_plan",
     };
   } catch (_) {}
   return res.json(buildSuccess(out));
