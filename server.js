@@ -5740,91 +5740,81 @@ async function __getUserGroqKey(req) {
   return await __getGroqApiKeyForUser({ supabase, userId });
 }
 
+// ✅ S-17: Groq Router execution (sets safeMode + __runLvExtra + __routerPlan, with in-memory plan cache)
 try {
   const _rawMode = String(safeMode || "").trim().toLowerCase();
   const _shouldRoute =
-  GROQ_ROUTER_ENABLE &&
-  !__isSnippetEndpoint &&
-  (!safeMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
+    GROQ_ROUTER_ENABLE &&
+    !__isSnippetEndpoint &&
+    (!safeMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
 
   if (_shouldRoute) {
-    // ⚠️ 여기서 Groq key는 "사용자별"로 가져오는 걸 전제로 함
-    // 아래 __getUserGroqKey(req) 는 다음 단계에서 추가할 헬퍼(3번)
-    const _groqKey = await __getUserGroqKey(req);
+    // auth user (for per-user cache isolation + user_secrets lookup)
+    let __au = null;
+    try { __au = await getSupabaseAuthUser(req); } catch (_) { __au = null; }
 
-// ✅ build cache key (do NOT store raw query/key)
-// - include: endpoint + hint mode + hashed query + hashed key (so different users don't share)
-const __q0 = String(req.body?.query ?? "");
-const __qHash = (typeof sha16 === "function") ? sha16(__q0) : String(__q0).slice(0, 32);
-const __kHash = (typeof sha16 === "function") ? sha16(String(_groqKey || "")) : "nokey";
-__cacheKey = `router:v1|p=${String(req.path || "")}|m=${String(_rawMode || "")}|q=${__qHash}|k=${__kHash}`;
+    const __uid = String(__au?.id || "anon");
+    const __q0 = String(req.body?.query ?? "").trim();
+    const __path0 = String(req.path || "");
 
-const __cachedPlan = __routerCacheGet(__cacheKey);
-if (__cachedPlan) {
-  __routerPlan = __cachedPlan;
-  __routerCached = true;
-} else {
-  // ✅ Groq key는 "사용자별"로 가져옴
-const _groqKey = await __getUserGroqKey(req);
+    // cache key: user + endpoint + hint + query (do NOT store raw query)
+    const __uHash = (typeof hash16 === "function") ? hash16(__uid) : __uid.slice(0, 24);
+    const __qHash = (typeof hash16 === "function")
+      ? hash16(__q0)
+      : (typeof sha16 === "function" ? sha16(__q0) : __q0.slice(0, 32));
 
-// ✅ S-17: cache key 만들기 (userId + endpoint + hint + query)
-const __q0 = String(req.body?.query ?? "").trim();
-const __path0 = String(req.path || "");
-__cacheKey = (typeof sha16 === "function")
-  ? sha16(`${String(userId || "anon")}|${__path0}|${String(_rawMode || "")}|${__q0}`.slice(0, 4000))
-  : null;
+    __cacheKey =
+      (typeof sha16 === "function")
+        ? sha16(`router:v2|u=${__uHash}|p=${__path0}|m=${_rawMode}|q=${__qHash}`.slice(0, 4000))
+        : `router:v2|u=${__uHash}|p=${__path0}|m=${_rawMode}|q=${__qHash}`.slice(0, 4000);
 
-__routerCached = false;
-if (__cacheKey) {
-  const cached = __routerCacheGet(__cacheKey);
-  if (cached) {
-    __routerPlan = cached;
-    __routerCached = true;
-  }
-}
+    const __cached = __routerCacheGet(__cacheKey);
+    if (__cached) {
+      __routerPlan = __cached;
+      __routerCached = true;
+    } else {
+      __routerPlan = await groqRoutePlan({
+        authUser: __au,
+        query: __q0,
+        snippet: null,
+        question: null,
+        hintMode: _rawMode || null,
+      });
+      try { __routerCacheSet(__cacheKey, __routerPlan); } catch (_) {}
+      __routerCached = false;
+    }
 
-if (!__routerPlan) {
-  __routerPlan = await __groqRoutePlan({
-    query: __q0,
-    hint_mode: _rawMode || null,
-    allow_lv: true,
-    allow_fv: false, // qv+fv 불필요
-  }, _groqKey);
+    // interpret plan -> primary + extra runs
+    const __planArr = Array.isArray(__routerPlan?.plan) ? __routerPlan.plan.slice() : [];
+    __planArr.sort((a, b) => (Number(a?.priority) || 1) - (Number(b?.priority) || 1));
 
-  if (__cacheKey && __routerPlan) {
-    __routerCacheSet(__cacheKey, __routerPlan);
-  }
-}
-  __routerCacheSet(__cacheKey, __routerPlan);
-  __routerCached = false;
-}
+    const __modes = __planArr
+      .map((x) => String(x?.mode || "").trim().toLowerCase())
+      .filter(Boolean);
 
-    // plan 해석: primary 모드 + 추가 실행
-    const primary = String(__routerPlan?.primary ?? __routerPlan?.mode ?? "qv").toLowerCase();
-    const runs = Array.isArray(__routerPlan?.runs) ? __routerPlan.runs.map(x => String(x).toLowerCase()) : [];
+    const primary = __modes[0] || "qv";
+    const extras = __modes.slice(1);
 
-    // primary를 safeMode로 반영 (top-level lv는 rejectLvOnVerify 때문에 여기선 금지)
-    // - lv는 __runLvExtra 로만 처리해서 "추가 실행"으로 붙임
+    // primary 적용 (top-level lv 금지 → extra로만)
     if (primary === "lv") {
-      safeMode = "qv";          // top-level은 qv 유지
-      __runLvExtra = true;      // lv는 추가 실행으로
+      safeMode = "qv";
+      __runLvExtra = true;
     } else if (primary === "fv") {
       safeMode = "fv";
     } else {
       safeMode = "qv";
     }
 
-    // runs에 lv가 있으면 추가 실행 플래그 ON
-    if (runs.includes("lv")) __runLvExtra = true;
+    // extras에 lv가 있으면 추가 실행
+    if (extras.includes("lv")) __runLvExtra = true;
 
-    // 방어: qv+fv는 안함(혹시 runs에 fv가 있어도 무시)
-    // (여기서는 아무것도 안함 = fv 추가 실행 없음)
+    // 방어: qv+fv는 안함 (extras의 fv는 무시)
   }
 } catch (e) {
-  // 라우터 실패해도 기존 흐름 유지 (qv/fv 강제/기본 로직으로 진행)
   __routerPlan = null;
   __runLvExtra = false;
-    __routerCached = false;
+  __routerCached = false;
+  __cacheKey = null;
 }
 
 // ✅ safety: 라우터 미사용/실패/빈값이면 기본 qv
@@ -5865,6 +5855,8 @@ try {
       reason: p0?.reason ?? null,
       run_lv_extra: !!__runLvExtra,
       is_snippet: (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : null,
+      cache_hit: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
+      cache_key: null,
       // cache_key는 노출하지 않음(길이/민감도 이슈 방지)
     };
   }
