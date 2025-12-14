@@ -1,4 +1,4 @@
-// =======================================================
+﻿// =======================================================
 // Cross-Verified AI Proxy — v18.4.0-pre
 // (Full Extended + LV External Module + Translation + Naver Region Detection)
 // =======================================================
@@ -5673,8 +5673,11 @@ if (__isSnippetEndpoint) {
 // - qv+lv는 허용, qv+fv는 버림(필요없다고 했으니)
 let __routerPlan = null;
 let __runLvExtra = false;
-let __cacheKey = null; // ✅ S-17: function-scope cache key holder
+let __routerCacheKey = null; // ✅ S-17: router plan cache key (separate from __cacheKey)
 let __routerCached = false;
+
+// NOTE: __cacheKey는 이 핸들러의 "다른 캐시(응답/verify 캐시 등)"에서 계속 쓰이므로 유지
+let __cacheKey = null;
 
 // 환경변수로 라우터 전체 on/off 가능
 const GROQ_ROUTER_ENABLE = String(process.env.GROQ_ROUTER_ENABLE || "1") !== "0";
@@ -5743,59 +5746,76 @@ async function __getUserGroqKey(req) {
 // ✅ S-17: Groq Router execution (sets safeMode + __runLvExtra + __routerPlan, with in-memory plan cache)
 try {
   const _rawMode = String(safeMode || "").trim().toLowerCase();
+
   const _shouldRoute =
     GROQ_ROUTER_ENABLE &&
     !__isSnippetEndpoint &&
     (!safeMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
 
   if (_shouldRoute) {
-    // auth user (for per-user cache isolation + user_secrets lookup)
-    let __au = null;
-    try { __au = await getSupabaseAuthUser(req); } catch (_) { __au = null; }
-
-    const __uid = String(__au?.id || "anon");
-    const __q0 = String(req.body?.query ?? "").trim();
-    const __path0 = String(req.path || "");
-
-    // cache key: user + endpoint + hint + query (do NOT store raw query)
-    const __uHash = (typeof hash16 === "function") ? hash16(__uid) : __uid.slice(0, 24);
-    const __qHash = (typeof hash16 === "function")
-      ? hash16(__q0)
-      : (typeof sha16 === "function" ? sha16(__q0) : __q0.slice(0, 32));
-
-    __cacheKey =
-      (typeof sha16 === "function")
-        ? sha16(`router:v2|u=${__uHash}|p=${__path0}|m=${_rawMode}|q=${__qHash}`.slice(0, 4000))
-        : `router:v2|u=${__uHash}|p=${__path0}|m=${_rawMode}|q=${__qHash}`.slice(0, 4000);
-
-    const __cached = __routerCacheGet(__cacheKey);
-    if (__cached) {
-      __routerPlan = __cached;
-      __routerCached = true;
-    } else {
-      __routerPlan = await groqRoutePlan({
-        authUser: __au,
-        query: __q0,
-        snippet: null,
-        question: null,
-        hintMode: _rawMode || null,
-      });
-      try { __routerCacheSet(__cacheKey, __routerPlan); } catch (_) {}
-      __routerCached = false;
+    // auth user (best-effort)
+    let __au = authUser || null;
+    if (!__au) {
+      try { __au = await getSupabaseAuthUser(req); } catch (_) { __au = null; }
     }
 
-    // interpret plan -> primary + extra runs
-    const __planArr = Array.isArray(__routerPlan?.plan) ? __routerPlan.plan.slice() : [];
-    __planArr.sort((a, b) => (Number(a?.priority) || 1) - (Number(b?.priority) || 1));
+    const __rq0 = String(req.body?.query ?? "").trim();
+    const __rPath0 = String(req.path || "");
 
-    const __modes = __planArr
-      .map((x) => String(x?.mode || "").trim().toLowerCase())
-      .filter(Boolean);
+    // user hash (do not leak raw id)
+    const __rUidRaw = String(__au?.id || logUserId || "anon");
+    const __rUHash =
+      (typeof hash16 === "function")
+        ? hash16(__rUidRaw)
+        : (typeof sha16 === "function")
+          ? sha16(__rUidRaw)
+          : __rUidRaw.slice(0, 16);
 
-    const primary = __modes[0] || "qv";
-    const extras = __modes.slice(1);
+    const __rQHash =
+      (typeof sha16 === "function")
+        ? sha16(__rq0)
+        : __rq0.slice(0, 64);
 
-    // primary 적용 (top-level lv 금지 → extra로만)
+    // ✅ router cache key (separate from other __cacheKey uses)
+    __routerCacheKey =
+      (typeof sha16 === "function")
+        ? sha16(`router:v2|u=${__rUHash}|p=${__rPath0}|m=${_rawMode}|q=${__rQHash}`.slice(0, 4000))
+        : `router:v2|u=${__rUHash}|p=${__rPath0}|m=${_rawMode}|q=${__rQHash}`.slice(0, 4000);
+
+    // cache hit?
+    const __cachedPlan = __routerCacheGet(__routerCacheKey);
+    if (__cachedPlan) {
+      __routerPlan = __cachedPlan;
+      __routerCached = true;
+    } else {
+      // NOTE: groqRoutePlan 내부에서 "사용자별 Groq key"를 로드하도록 구현돼 있어야 함
+      __routerPlan = await groqRoutePlan({
+        authUser: __au,
+        query: __rq0,
+        snippet: String(req.body?.snippet ?? req.body?.core_text ?? "").slice(0, 1800),
+        question: String(req.body?.question ?? "").slice(0, 800),
+        hintMode: (_rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route") ? null : _rawMode,
+      });
+
+      __routerCached = false;
+      try { __routerCacheSet(__routerCacheKey, __routerPlan); } catch (_) {}
+    }
+
+    // plan 해석: primary 모드 + 추가 실행
+    const primary =
+      String(
+        __routerPlan?.primary ??
+        __routerPlan?.mode ??
+        (__routerPlan?.plan?.[0]?.mode ?? "qv")
+      ).toLowerCase();
+
+    const runs = Array.isArray(__routerPlan?.runs)
+      ? __routerPlan.runs.map(x => String(x).toLowerCase())
+      : (Array.isArray(__routerPlan?.plan)
+          ? __routerPlan.plan.map(x => String(x?.mode ?? x).toLowerCase())
+          : []);
+
+    // primary를 safeMode로 반영 (top-level lv는 금지 → 추가 실행으로만)
     if (primary === "lv") {
       safeMode = "qv";
       __runLvExtra = true;
@@ -5805,16 +5825,18 @@ try {
       safeMode = "qv";
     }
 
-    // extras에 lv가 있으면 추가 실행
-    if (extras.includes("lv")) __runLvExtra = true;
+    // runs에 lv가 있으면 추가 실행 플래그 ON
+    if (runs.includes("lv")) __runLvExtra = true;
 
-    // 방어: qv+fv는 안함 (extras의 fv는 무시)
+    // 방어: qv+fv는 안함 (runs에 fv가 있어도 무시)
   }
 } catch (e) {
+  // 라우터 실패해도 기존 흐름 유지 (qv/fv 강제/기본 로직으로 진행)
   __routerPlan = null;
   __runLvExtra = false;
   __routerCached = false;
-  __cacheKey = null;
+} finally {
+  __routerCacheKey = null;
 }
 
 // ✅ safety: 라우터 미사용/실패/빈값이면 기본 qv
@@ -5870,7 +5892,7 @@ try {
 const GROQ_API_BASE = process.env.GROQ_API_BASE || "https://api.groq.com/openai/v1";
 const GROQ_ROUTER_MODEL = process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile";
 const GROQ_ROUTER_TIMEOUT_MS = parseInt(process.env.GROQ_ROUTER_TIMEOUT_MS || "12000", 10);
-const ENABLE_GROQ_ROUTER = String(process.env.ENABLE_GROQ_ROUTER || "1") === "1";
+const ENABLE_GROQ_ROUTER = GROQ_ROUTER_ENABLE; // alias: keep single source of truth
 
 // (선택) env fallback 허용 여부
 const GROQ_ALLOW_ENV_FALLBACK = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
