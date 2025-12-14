@@ -5840,21 +5840,66 @@ try {
   __routerCacheKey = null;
 }
 
-// ✅ S-17c: router_plan fallback (never leave it null)
+  // ✅ S-17d: normalize + fallback router_plan (never keep "auto" in plan/runs/primary)
 try {
+  const __sf0 = String(safeMode || "qv").toLowerCase();
+  const __sf =
+    __sf0 === "auto" || __sf0 === "null" || __sf0 === "undefined" ? "qv" : __sf0;
+
+  // 0) ✅ fallback: never leave __routerPlan null
   if (!__routerPlan) {
     __routerPlan = {
-      primary: String(safeMode || "qv").toLowerCase(),
-      plan: [{ mode: String(safeMode || "qv").toLowerCase(), priority: 1, reason: "router_missing_or_failed" }],
-      runs: [String(safeMode || "qv").toLowerCase()],
+      raw_mode: String(rawMode || "auto").toLowerCase(),
+      safe_mode_final: __sf,
+      primary: __sf,
+      plan: [{ mode: __sf, priority: 1, reason: "router_missing_or_failed" }],
+      runs: [__sf],
+      model: (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
       cached: false,
+      lv_extra: false,
       error: "router_plan_was_null",
     };
+  }
+
+  // 1) primary / safe_mode_final normalize
+  const _p0 = String(__routerPlan.primary ?? "").toLowerCase();
+  if (_p0 === "auto" || !_p0) __routerPlan.primary = __sf;
+
+  if (!__routerPlan.safe_mode_final) __routerPlan.safe_mode_final = __sf;
+  if (String(__routerPlan.safe_mode_final).toLowerCase() === "auto") __routerPlan.safe_mode_final = __sf;
+
+  // 2) plan normalize (auto/empty -> __sf), especially for missing/failed reasons
+  if (!Array.isArray(__routerPlan.plan) || __routerPlan.plan.length === 0) {
+    __routerPlan.plan = [{ mode: __sf, priority: 1, reason: "router_plan_empty" }];
   } else {
-    // plan이 비어있으면 최소 plan 보강
-    if (!Array.isArray(__routerPlan.plan) || __routerPlan.plan.length === 0) {
-      __routerPlan.plan = [{ mode: String(__routerPlan.primary || safeMode || "qv").toLowerCase(), priority: 1, reason: "router_plan_empty" }];
+    const _r0 = __routerPlan.plan[0] || {};
+    const _m0 = String(_r0?.mode ?? "").toLowerCase();
+    const _reason0 = String(_r0?.reason ?? "").toLowerCase();
+
+    if (
+      (_m0 === "auto" || !_m0) &&
+      (_reason0.includes("missing") || _reason0.includes("failed") || _reason0.includes("null"))
+    ) {
+      __routerPlan.plan = [{ ..._r0, mode: __sf }];
+    } else if (_m0 === "auto" || !_m0) {
+      // even if reason is absent, never keep auto/empty
+      __routerPlan.plan = [{ ..._r0, mode: __sf }];
     }
+  }
+
+  // 3) runs normalize: always non-empty, no "auto"
+  if (Array.isArray(__routerPlan.runs)) {
+    const _runs = __routerPlan.runs.map(x => String(x).toLowerCase());
+    const _runs2 = _runs.map(x => (x === "auto" ? __sf : x)).filter(Boolean);
+    __routerPlan.runs = _runs2.length > 0 ? _runs2 : [__sf];
+  } else if (Array.isArray(__routerPlan.plan)) {
+    const _runs2 = __routerPlan.plan
+      .map(x => String(x?.mode ?? x).toLowerCase())
+      .map(x => (x === "auto" ? __sf : x))
+      .filter(Boolean);
+    __routerPlan.runs = _runs2.length > 0 ? _runs2 : [__sf];
+  } else {
+    __routerPlan.runs = [__sf];
   }
 } catch (_) {}
 
@@ -6886,31 +6931,43 @@ if (__cachedPayload) {
     out.partial_scores = { cache_hit: true };
   }
   // ✅ S-17b: 응답 직전 router_plan 재부착 (cache-hit path)
-  try {
-    const __ps =
-      out.partial_scores && typeof out.partial_scores === "object"
-        ? out.partial_scores
-        : (out.partial_scores = {});
-    __ps.router_plan = {
-      enabled: !!GROQ_ROUTER_ENABLE,
-      raw_mode: String(req.body?.mode ?? "").trim().toLowerCase() || null,
-      safe_mode_final: String(safeMode || "").toLowerCase(),
-      primary:
-        __routerPlan?.primary ??
+try {
+  const __sf0 = String(safeMode || "qv").toLowerCase();
+  const __sf =
+    __sf0 === "auto" || __sf0 === "null" || __sf0 === "undefined" ? "qv" : __sf0;
+
+  const __plan =
+    Array.isArray(__routerPlan?.plan) && __routerPlan.plan.length > 0
+      ? __routerPlan.plan
+      : [{ mode: __sf, priority: 1, reason: "router_missing_or_failed" }];
+
+  const __runs =
+    Array.isArray(__routerPlan?.runs) && __routerPlan.runs.length > 0
+      ? __routerPlan.runs.map(x => String(x).toLowerCase()).filter(Boolean)
+      : __plan.map(x => String(x?.mode ?? x).toLowerCase()).filter(Boolean);
+
+  __ps.router_plan = {
+    enabled: !!GROQ_ROUTER_ENABLE,
+    raw_mode: String(rawMode || "auto").toLowerCase(),
+    safe_mode_final: String(__routerPlan?.safe_mode_final ?? __sf).toLowerCase(),
+    primary: String(
+      __routerPlan?.primary ??
         __routerPlan?.mode ??
-        (__routerPlan?.plan?.[0]?.mode ?? String(safeMode || "qv").toLowerCase()),
-      plan: Array.isArray(__routerPlan?.plan) ? __routerPlan.plan : null,
-      runs: Array.isArray(__routerPlan?.runs) ? __routerPlan.runs : null,
-      model:
-        __routerPlan?.model ??
-        (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
-      cached: !!__routerPlan?.cached,
-      lv_extra: typeof __runLvExtra !== "undefined" ? !!__runLvExtra : false,
-      status: __routerPlan
-  ? (Array.isArray(__routerPlan?.plan) && __routerPlan.plan.length > 0 ? "ok" : "ok_no_plan")
-  : "missing_plan",
-    };
-  } catch (_) {}
+        __routerPlan?.safe_mode_final ??
+        __sf
+    ).toLowerCase(),
+    plan: __plan,
+    runs: __runs.length > 0 ? __runs : [__sf],
+    model:
+      __routerPlan?.model ??
+      (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
+    cached: !!__routerPlan?.cached,
+    lv_extra: !!(__routerPlan?.lv_extra || __runLvExtra),
+    status: __routerPlan
+      ? (__plan.length > 0 ? "ok" : "ok_no_plan")
+      : "missing_plan",
+  };
+} catch (_) {}
   return res.json(buildSuccess(out));
 }
 
@@ -9697,33 +9754,42 @@ try {
   } catch (_) {}
 
   payload.verdict_message_ko = msg;
-  // ✅ S-17b: 응답 직전 router_plan 재부착 (final payload path)
+  // ✅ S-17b: 응답 직전 router_plan 재부착 (cache-hit path)
 try {
-  const __ps =
-    payload.partial_scores && typeof payload.partial_scores === "object"
-      ? payload.partial_scores
-      : (payload.partial_scores = {});
+  const __sf0 = String(safeMode || "qv").toLowerCase();
+  const __sf =
+    __sf0 === "auto" || __sf0 === "null" || __sf0 === "undefined" ? "qv" : __sf0;
+
+  const __plan =
+    Array.isArray(__routerPlan?.plan) && __routerPlan.plan.length > 0
+      ? __routerPlan.plan
+      : [{ mode: __sf, priority: 1, reason: "router_missing_or_failed" }];
+
+  const __runs =
+    Array.isArray(__routerPlan?.runs) && __routerPlan.runs.length > 0
+      ? __routerPlan.runs.map(x => String(x).toLowerCase()).filter(Boolean)
+      : __plan.map(x => String(x?.mode ?? x).toLowerCase()).filter(Boolean);
 
   __ps.router_plan = {
     enabled: !!GROQ_ROUTER_ENABLE,
-    raw_mode: String(req.body?.mode ?? "").trim().toLowerCase() || null,
-    safe_mode_final: String(safeMode || "").toLowerCase(),
-
-    primary:
+    raw_mode: String(rawMode || "auto").toLowerCase(),
+    safe_mode_final: String(__routerPlan?.safe_mode_final ?? __sf).toLowerCase(),
+    primary: String(
       __routerPlan?.primary ??
-      __routerPlan?.mode ??
-      (__routerPlan?.plan?.[0]?.mode ?? String(safeMode || "qv").toLowerCase()),
-
-    plan: Array.isArray(__routerPlan?.plan) ? __routerPlan.plan : null,
-    runs: Array.isArray(__routerPlan?.runs) ? __routerPlan.runs : null,
-
+        __routerPlan?.mode ??
+        __routerPlan?.safe_mode_final ??
+        __sf
+    ).toLowerCase(),
+    plan: __plan,
+    runs: __runs.length > 0 ? __runs : [__sf],
     model:
       __routerPlan?.model ??
       (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
-
     cached: !!__routerPlan?.cached,
-    lv_extra: typeof __runLvExtra !== "undefined" ? !!__runLvExtra : false,
-    status: __routerPlan ? "ok" : "missing_plan",
+    lv_extra: !!(__routerPlan?.lv_extra || __runLvExtra),
+    status: __routerPlan
+      ? (__plan.length > 0 ? "ok" : "ok_no_plan")
+      : "missing_plan",
   };
 } catch (_) {}
 }
