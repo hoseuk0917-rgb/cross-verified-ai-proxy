@@ -5671,6 +5671,19 @@ let __runLvExtra = false;
 // 환경변수로 라우터 전체 on/off 가능
 const GROQ_ROUTER_ENABLE = String(process.env.GROQ_ROUTER_ENABLE || "1") !== "0";
 
+// ✅ helper: request -> user groq key
+async function __getUserGroqKey(req) {
+  // 로그인 토큰에서 userId 확보 (기존 헬퍼 재사용)
+  let userId = null;
+  try {
+    const au = await getSupabaseAuthUser(req);
+    userId = au?.id || null;
+  } catch (_) {}
+
+  // 네가 이미 추가한 함수 사용 (user_secrets 우선, env fallback optional)
+  return await __getGroqApiKeyForUser({ supabase, userId });
+}
+
 try {
   const _rawMode = String(safeMode || "").trim().toLowerCase();
   const _shouldRoute =
@@ -5715,6 +5728,9 @@ try {
   __routerPlan = null;
   __runLvExtra = false;
 }
+
+// ✅ safety: 라우터 미사용/실패/빈값이면 기본 qv
+if (!safeMode) safeMode = "qv";
 
 // ─────────────────────────────
 // ✅ Groq Router (mode judge) — OpenAI-compatible endpoint
@@ -6038,7 +6054,7 @@ const filterGithubEvidence = (items, rawQuery) => {
 if (!allowedModes.includes(safeMode)) {
   return res
     .status(400)
-    .json(buildError("INVALID_MODE", `지원하지 않는 모드입니다: ${mode}`));
+    .json(buildError("INVALID_MODE", `지원하지 않는 모드입니다: ${safeMode || mode || "(empty)"}`));
 }
 
   // 🧠 QV/FV에서 Gemini 모델 선택 (기본: flash, 옵션: pro)
