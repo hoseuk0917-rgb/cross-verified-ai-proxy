@@ -1611,13 +1611,18 @@ return secrets;
 // ─────────────────────────────
 function _ensureIntegrationsSecretsShape(secrets) {
   if (!secrets || typeof secrets !== "object") secrets = {};
-  if (!secrets.integrations || typeof secrets.integrations !== "object") secrets.integrations = {};
+  if (!secrets.integrations || typeof secrets.integrations !== "object") {
+    secrets.integrations = {};
+  }
   const it = secrets.integrations;
 
-  if (!it.naver || typeof it.naver !== "object") it.naver = {};
-  if (!it.klaw || typeof it.klaw !== "object") it.klaw = {};
-  if (!it.github || typeof it.github !== "object") it.github = {};
-  if (!it.deepl || typeof it.deepl !== "object") it.deepl = {};
+  if (!it.naver || typeof it.naver !== "object") it.naver = { id_enc: null, secret_enc: null };
+  if (!it.klaw || typeof it.klaw !== "object") it.klaw = { key_enc: null };
+  if (!it.github || typeof it.github !== "object") it.github = { token_enc: null };
+  if (!it.deepl || typeof it.deepl !== "object") it.deepl = { key_enc: null };
+
+  // ✅ ADD: Groq
+  if (!it.groq || typeof it.groq !== "object") it.groq = { api_key_enc: null };
 
   return secrets;
 }
@@ -1644,12 +1649,11 @@ function applyIntegrationsSecretPatch(secrets, patch = {}) {
 
   _setEncOrClear(it.naver, "id_enc", patch.naver_id);
   _setEncOrClear(it.naver, "secret_enc", patch.naver_secret);
-
   _setEncOrClear(it.klaw, "key_enc", patch.klaw_key);
-
   _setEncOrClear(it.github, "token_enc", patch.github_token);
-
   _setEncOrClear(it.deepl, "key_enc", patch.deepl_key);
+  // ✅ ADD: Groq (accept groq_key / groq_api_key 둘 다)
+  _setEncOrClear(it.groq, "api_key_enc", patch.groq_key ?? patch.groq_api_key);
 
   return secrets;
 }
@@ -1658,12 +1662,15 @@ function decryptIntegrationsSecrets(secrets) {
   secrets = _ensureIntegrationsSecretsShape(secrets);
   const it = secrets.integrations;
 
-  return {
+    return {
     naver_id: _getDec(it.naver, "id_enc"),
     naver_secret: _getDec(it.naver, "secret_enc"),
     klaw_key: _getDec(it.klaw, "key_enc"),
     github_token: _getDec(it.github, "token_enc"),
     deepl_key: _getDec(it.deepl, "key_enc"),
+
+    // ✅ ADD: Groq
+    groq_api_key: _getDec(it.groq, "api_key_enc"),
   };
 }
 
@@ -2670,60 +2677,83 @@ app.post("/api/settings/save", async (req, res) => {
       return res.status(400).json(buildError("VALIDATION_ERROR", "userId 해결 실패"));
     }
 
-        const body = (() => {
-      if (!req.body) return {};
-      if (typeof req.body === "object") return req.body;
-      if (typeof req.body === "string") {
-        try { return JSON.parse(req.body); } catch { return {}; }
-      }
-      return {};
-    })();
+        const body0 = (() => {
+  if (!req.body) return {};
+  if (typeof req.body === "object") return req.body;
+  if (typeof req.body === "string") {
+    try { return JSON.parse(req.body); } catch { return {}; }
+  }
+  return {};
+})();
 
-    const integrationsIn = body.integrations || {};
-    const geminiIn = body.gemini || {};
+// ✅ allow "settings" wrapper too (ex: { settings:{ integrations:{...}} })
+const body = (body0 && typeof body0.settings === "object" && body0.settings) ? body0.settings : body0;
+
+// ✅ allow integrations to be at root OR under settings
+const integrationsIn =
+  (body && typeof body.integrations === "object" && body.integrations) ? body.integrations :
+  (body0 && typeof body0.integrations === "object" && body0.integrations) ? body0.integrations :
+  {};
+
+// ✅ gemini section can be at root OR under settings
+const geminiIn =
+  (body && typeof body.gemini === "object" && body.gemini) ? body.gemini :
+  (body0 && typeof body0.gemini === "object" && body0.gemini) ? body0.gemini :
+  {};
 
     const action = body.action ?? geminiIn.action ?? "replace";
 
     // ✅ gemini_keys: (레거시) top-level gemini_keys OR (신규) gemini.keyring.keys
     const gemini_keys =
-      body.gemini_keys ??
-      geminiIn.keyring?.keys ??
-      geminiIn.keys;
+  body.gemini_keys ??
+  geminiIn.keyring?.keys ??
+  geminiIn.keys;
 
-    // ✅ integrations: (레거시) top-level OR (신규) integrations.* / integrations.<provider>.*
-    const naver_id =
-      body.naver_id ??
-      integrationsIn.naver_id ??
-      integrationsIn.naver?.id ??
-      integrationsIn.naver?.client_id;
+// ✅ integrations: (레거시) top-level OR (신규) integrations.* / integrations.<provider>.*
+const naver_id =
+  body.naver_id ??
+  integrationsIn.naver_id ??
+  integrationsIn.naver?.id ??
+  integrationsIn.naver?.client_id;
 
-    const naver_secret =
-      body.naver_secret ??
-      integrationsIn.naver_secret ??
-      integrationsIn.naver?.secret ??
-      integrationsIn.naver?.client_secret;
+const naver_secret =
+  body.naver_secret ??
+  integrationsIn.naver_secret ??
+  integrationsIn.naver?.secret ??
+  integrationsIn.naver?.client_secret;
 
-    const klaw_key =
-      body.klaw_key ??
-      integrationsIn.klaw_key ??
-      integrationsIn.klaw?.key;
+const klaw_key =
+  body.klaw_key ??
+  integrationsIn.klaw_key ??
+  integrationsIn.klaw?.key;
 
-    const github_token =
-      body.github_token ??
-      integrationsIn.github_token ??
-      integrationsIn.github?.token;
+const github_token =
+  body.github_token ??
+  integrationsIn.github_token ??
+  integrationsIn.github?.token;
 
-    const deepl_key =
-      body.deepl_key ??
-      integrationsIn.deepl_key ??
-      integrationsIn.deepl?.key;
+const deepl_key =
+  body.deepl_key ??
+  integrationsIn.deepl_key ??
+  integrationsIn.deepl?.key;
 
-    const hasOtherPayload =
-      naver_id !== undefined ||
-      naver_secret !== undefined ||
-      klaw_key !== undefined ||
-      github_token !== undefined ||
-      deepl_key !== undefined;
+// ✅ Groq (router)
+const groq_key =
+  body.groq_key ??
+  body.groq_api_key ??
+  integrationsIn.groq_key ??
+  integrationsIn.groq_api_key ??
+  integrationsIn.groq?.key ??
+  integrationsIn.groq?.api_key ??
+  integrationsIn.groq?.token;
+
+const hasOtherPayload =
+  naver_id !== undefined ||
+  naver_secret !== undefined ||
+  klaw_key !== undefined ||
+  github_token !== undefined ||
+  deepl_key !== undefined ||
+  groq_key !== undefined;
 
     const hasGeminiPayload =
       (Array.isArray(gemini_keys) && gemini_keys.length > 0) ||
@@ -2761,12 +2791,13 @@ app.post("/api/settings/save", async (req, res) => {
 
     // ✅ NEW: 기타 키 저장(암호화). 빈 문자열이면 삭제
     secrets = applyIntegrationsSecretPatch(secrets, {
-      naver_id,
-      naver_secret,
-      klaw_key,
-      github_token,
-      deepl_key,
-    });
+  naver_id,
+  naver_secret,
+  klaw_key,
+  github_token,
+  deepl_key,
+  groq_key, // ✅ ADD: store groq key to secrets.integrations.groq.api_key_enc
+});
 
     // ✅ Gemini keyring 저장은 gemini_keys가 들어왔을 때만
     let keys = Array.isArray(secrets.gemini.keyring.keys) ? secrets.gemini.keyring.keys : [];
@@ -2812,9 +2843,10 @@ app.post("/api/settings/save", async (req, res) => {
         next_reset_utc: pac?.next_reset_utc || null,
 
         has_naver: !!(it.naver?.id_enc && it.naver?.secret_enc),
-        has_klaw: !!it.klaw?.key_enc,
-        has_github: !!it.github?.token_enc,
-        has_deepl: !!it.deepl?.key_enc,
+has_klaw: !!it.klaw?.key_enc,
+has_github: !!it.github?.token_enc,
+has_deepl: !!it.deepl?.key_enc,
+has_groq: !!it.groq?.api_key_enc, // ✅ ADD
       })
     );
   } catch (e) {
@@ -5658,6 +5690,7 @@ const verifyCoreHandler = async (req, res) => {
     } = req.body;
 
   let safeMode = String(req.body?.mode ?? mode ?? "").trim().toLowerCase();
+  const rawMode = safeMode; // ✅ 요청된 원래 mode를 보존(뒤에서 fallback plan에서 사용)
 
 // ✅ /api/verify-snippet(또는 snippet_meta.is_snippet)는 "항상 FV 고정" + 라우터 개입 금지
 const __isSnippetEndpoint =
@@ -5789,14 +5822,33 @@ try {
       __routerPlan = __cachedPlan;
       __routerCached = true;
     } else {
-      // NOTE: groqRoutePlan 내부에서 "사용자별 Groq key"를 로드하도록 구현돼 있어야 함
-      __routerPlan = await groqRoutePlan({
-        authUser: __au,
-        query: __rq0,
-        snippet: String(req.body?.snippet ?? req.body?.core_text ?? "").slice(0, 1800),
-        question: String(req.body?.question ?? "").slice(0, 800),
-        hintMode: (_rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route") ? null : _rawMode,
-      });
+      // ✅ load user Groq key (Supabase vault) — 없으면 라우터 스킵하고 qv로 진행
+const __groqKey = await __getUserGroqKey(req);
+
+if (!__groqKey) {
+  // 라우터는 "키 없는 사용자"에겐 실행하지 않음 (기본 qv)
+  safeMode = "qv";
+  __runLvExtra = false;
+
+  __routerPlan = {
+    raw_mode: _rawMode,
+    safe_mode_final: "qv",
+    primary: "qv",
+    plan: [{ mode: "qv", priority: 1, reason: "router_skipped_no_user_groq_key" }],
+    runs: ["qv"],
+    cached: false,
+    lv_extra: false,
+  };
+} else {
+  __routerPlan = await groqRoutePlan({
+    authUser: __au,
+    groq_api_key: __groqKey, // ✅ extra field: groqRoutePlan이 안 쓰면 무시됨
+    query: __rq0,
+    snippet: String(req.body?.snippet ?? req.body?.core_text ?? "").slice(0, 1800),
+    question: String(req.body?.question ?? "").slice(0, 800),
+    hintMode: (_rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route") ? null : _rawMode,
+  });
+}
 
       __routerCached = false;
       try { __routerCacheSet(__routerCacheKey, __routerPlan); } catch (_) {}
