@@ -5805,16 +5805,21 @@ try {
           ? sha16(__rUidRaw)
           : __rUidRaw.slice(0, 16);
 
-    const __rQHash =
+         const __rQHash =
       (typeof sha16 === "function")
         ? sha16(__rq0)
         : __rq0.slice(0, 64);
+    
+        const __rSn0 = String(req.body?.snippet ?? req.body?.core_text ?? req.body?.snippet_meta?.snippet_core ?? "").slice(0, 1800);
+        const __rHasSn = __rSn0.trim().length >= 20 ? "1" : "0";
+        const __rSnHash = (typeof sha16 === "function") ? sha16(__rSn0) : __rSn0.slice(0, 64);
 
-    // ✅ router cache key (separate from other __cacheKey uses)
+        // ✅ router cache key (separate from other __cacheKey uses)
+    // - include snippet presence/hash to avoid "fv cached" leaking into non-snippet requests
     __routerCacheKey =
       (typeof sha16 === "function")
-        ? sha16(`router:v2|u=${__rUHash}|p=${__rPath0}|m=${_rawMode}|q=${__rQHash}`.slice(0, 4000))
-        : `router:v2|u=${__rUHash}|p=${__rPath0}|m=${_rawMode}|q=${__rQHash}`.slice(0, 4000);
+        ? sha16(`router:v2|u=${__rUHash}|p=${__rPath0}|m=${_rawMode}|hs=${__rHasSn}|s=${__rSnHash}|q=${__rQHash}`.slice(0, 4000))
+        : `router:v2|u=${__rUHash}|p=${__rPath0}|m=${_rawMode}|hs=${__rHasSn}|s=${__rSnHash}|q=${__rQHash}`.slice(0, 4000);
 
     // cache hit?
     const __cachedPlan = __routerCacheGet(__routerCacheKey);
@@ -5854,55 +5859,112 @@ if (!__groqKey) {
       try { __routerCacheSet(__routerCacheKey, __routerPlan); } catch (_) {}
     }
 
-        // plan 해석: primary 모드 + 추가 실행
-    const primaryRaw =
-      String(
-        __routerPlan?.primary ??
-          __routerPlan?.mode ??
-          (__routerPlan?.plan?.[0]?.mode ?? "qv")
-      )
-        .toLowerCase()
-        .trim();
+       // plan 해석: primary 모드 + 추가 실행
+const primaryRaw =
+  String(
+    __routerPlan?.primary ??
+      __routerPlan?.mode ??
+      (__routerPlan?.plan?.[0]?.mode ?? "qv")
+  )
+    .toLowerCase()
+    .trim();
 
-    const runsRaw = Array.isArray(__routerPlan?.runs)
-      ? __routerPlan.runs.map((x) => String(x).toLowerCase().trim()).filter(Boolean)
-      : Array.isArray(__routerPlan?.plan)
-        ? __routerPlan.plan
-            .map((x) => String(x?.mode ?? x).toLowerCase().trim())
-            .filter(Boolean)
-        : [];
+const runsRaw = Array.isArray(__routerPlan?.runs)
+  ? __routerPlan.runs.map((x) => String(x).toLowerCase().trim()).filter(Boolean)
+  : Array.isArray(__routerPlan?.plan)
+    ? __routerPlan.plan
+        .map((x) => String(x?.mode ?? x).toLowerCase().trim())
+        .filter(Boolean)
+    : [];
 
-    // ✅ top-level safeMode는 qv/fv만 허용 (lv는 extra로만)
-    const topPrimary = primaryRaw === "fv" ? "fv" : "qv";
+// ✅ FV top-level 게이트: "검증할 스니펫/클레임"이 있을 때만 fv 허용
+const __snClaim0 = String(
+  req.body?.snippet ??
+  req.body?.core_text ??
+  req.body?.snippet_meta?.snippet_core ??
+  ""
+).trim();
+const __hasSnippetClaim = __snClaim0.length >= 20;
 
-    // top-level mode 확정
-    safeMode = topPrimary;
+// ✅ top-level safeMode는 qv/fv만 허용 (lv는 extra로만)
+let topPrimary = "qv";
+if (primaryRaw === "fv" && __hasSnippetClaim) topPrimary = "fv";
 
-    // lv extra 조건: primary가 lv였거나, runs에 lv가 포함되어 있으면 ON
-    const wantLvExtra = primaryRaw === "lv" || runsRaw.includes("lv");
-    if (wantLvExtra) __runLvExtra = true;
+// top-level mode 확정
+safeMode = topPrimary;
 
-    // ✅ router plan도 "top-level lv"로 보이지 않도록 정규화 (diagnostics 안정화)
-    // - primary/safe_mode_final: qv or fv
-    // - plan/runs: [topPrimary] (+ lv extra면 lv를 뒤에 추가)
-    // - qv+fv 조합은 만들지 않음
-    try {
-      if (__routerPlan && typeof __routerPlan === "object") {
-        __routerPlan.safe_mode_final = topPrimary;
-        __routerPlan.primary = topPrimary;
+// ─────────────────────────────
+// ✅ LV extra 게이트(서버에서 보수적으로 차단)
+// - auto에서 기본 lv로 튀는 리스크 방지
+// - "법/조항/판례/처벌/소송/계약" 등 법률 신호 있을 때만 허용
+function __looksLegalLike(s) {
+  const t = String(s || "").trim();
+  if (!t) return false;
 
-        const _plan0 = [
-          { mode: topPrimary, priority: 1, reason: "router_primary_top" },
-        ];
-        if (wantLvExtra) {
-          _plan0.push({ mode: "lv", priority: 2, reason: "router_lv_extra" });
-        }
+  const reKo =
+    /(민법|형법|형사|민사|행정법|상법|근로기준법|개인정보보호법|저작권법|상표법|특허법|부동산|임대차|상가임대차|소송|고소|고발|기소|항소|상고|판결|판례|대법원|헌재|헌법재판소|처벌|벌금|징역|과태료|손해배상|위자료|계약|해지|해제|위약금|조항|제\s*\d+\s*조|시행령|시행규칙|법률|법령)/i;
 
-        __routerPlan.plan = _plan0;
-        __routerPlan.runs = _plan0.map((x) => x.mode);
-        __routerPlan.lv_extra = !!wantLvExtra;
-      }
-    } catch (_) {}
+  const reEn =
+    /\b(statute|case law|precedent|supreme court|criminal|civil|lawsuit|litigation|penalty|fine|imprisonment|contract|breach|termination)\b/i;
+
+  return reKo.test(t) || reEn.test(t);
+}
+
+const __q0 = String(req.body?.query ?? query ?? "").trim();
+const __qu0 = String(req.body?.question ?? "").trim();
+const __sn0 = String(req.body?.snippet ?? req.body?.core_text ?? req.body?.snippet_meta?.snippet_core ?? "").trim();
+
+// 법률 신호는 query/question/snippet 중 하나라도 잡히면 OK
+const __legalSignal = __looksLegalLike(__q0) || __looksLegalLike(__qu0) || __looksLegalLike(__sn0);
+
+// 라우터 confidence가 있으면 최소 기준 요구(없으면 “신호 기반”으로만)
+const __conf0 =
+  (typeof __routerPlan?.confidence === "number" && Number.isFinite(__routerPlan.confidence))
+    ? __routerPlan.confidence
+    : null;
+
+const __lvAllowed = __legalSignal && (__conf0 === null || __conf0 >= 0.55);
+
+// lv extra 조건: primary가 lv였거나, runs에 lv가 포함되어 있으면 ON
+// 단, __lvAllowed를 통과해야만 ON
+const wantLvExtraRaw = primaryRaw === "lv" || runsRaw.includes("lv");
+const wantLvExtra = wantLvExtraRaw && __lvAllowed;
+__runLvExtra = !!wantLvExtra;
+
+// ✅ router plan도 "top-level lv"로 보이지 않도록 정규화 (diagnostics 안정화)
+// - primary/safe_mode_final: qv or fv
+// - plan/runs: [topPrimary] (+ lv extra면 lv를 뒤에 추가)
+// - qv+fv 조합은 만들지 않음
+try {
+  if (__routerPlan && typeof __routerPlan === "object") {
+    // fv를 원했는데 스니펫이 없어서 서버가 qv로 내린 경우 흔적 남김
+    if (primaryRaw === "fv" && !__hasSnippetClaim) {
+      __routerPlan.reason = (__routerPlan.reason || "") ? __routerPlan.reason : "server_downgrade_fv_no_snippet";
+    }
+
+    // lv를 원했는데 서버가 차단한 경우 흔적 남김
+    if (wantLvExtraRaw && !__lvAllowed) {
+      __routerPlan.reason = (__routerPlan.reason || "") ? __routerPlan.reason : "server_block_lv_not_legal";
+    }
+
+    __routerPlan.safe_mode_final = topPrimary;
+    __routerPlan.primary = topPrimary;
+
+    const _plan0 = [
+      { mode: topPrimary, priority: 1, reason: "router_primary_top" },
+    ];
+
+    if (wantLvExtra) {
+      _plan0.push({ mode: "lv", priority: 2, reason: "router_lv_extra_gated" });
+      __routerPlan.lv_extra = true;
+    } else {
+      __routerPlan.lv_extra = false;
+    }
+
+    __routerPlan.plan = _plan0;
+    __routerPlan.runs = _plan0.map((x) => x.mode);
+  }
+} catch (_) {}
   }
 } catch (e) {
   // 라우터 실패해도 기존 흐름 유지 (qv/fv 강제/기본 로직으로 진행)
@@ -5981,44 +6043,42 @@ if (!safeMode) safeMode = "qv";
 
 // ✅ router diagnostics (응답 partial_scores에서 확인 가능) — 요약/길이제한 + 민감정보 최소화
 try {
-  if (partial_scores && typeof partial_scores === "object") {
-    const p0 = __routerPlan || null;
+  const p0 = __routerPlan || null;
 
-    const primary0 =
-      String(p0?.primary ?? p0?.mode ?? "").toLowerCase().trim() || null;
+  const primary0 =
+    String(p0?.primary ?? p0?.mode ?? "").toLowerCase().trim() || null;
 
-    const runs0 = Array.isArray(p0?.runs)
-      ? p0.runs.map((x) => String(x).toLowerCase()).filter(Boolean).slice(0, 5)
-      : null;
+  const runs0 = Array.isArray(p0?.runs)
+    ? p0.runs.map((x) => String(x).toLowerCase()).filter(Boolean).slice(0, 5)
+    : null;
 
-    // plan은 "모드/우선순위"만 남기고 제한
-    const plan0 = Array.isArray(p0?.plan)
-      ? p0.plan
-          .map((x) => ({
-            mode: String(x?.mode || "").toLowerCase(),
-            priority: Number.isFinite(Number(x?.priority)) ? Number(x.priority) : undefined,
-          }))
-          .filter((x) => !!x.mode)
-          .slice(0, 5)
-      : null;
+  // plan은 "모드/우선순위"만 남기고 제한
+  const plan0 = Array.isArray(p0?.plan)
+    ? p0.plan
+        .map((x) => ({
+          mode: String(x?.mode || "").toLowerCase(),
+          priority: Number.isFinite(Number(x?.priority)) ? Number(x.priority) : undefined,
+        }))
+        .filter((x) => !!x.mode)
+        .slice(0, 5)
+    : null;
 
-    __routerPlanPublic = {
-      enabled: !!GROQ_ROUTER_ENABLE,
-      used: !!p0,
-      cached: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
-      safe_mode_final: String(safeMode || "").toLowerCase(),
-      primary: primary0,
-      runs: runs0,
-      plan: plan0,
-      confidence: (p0 && typeof p0.confidence === "number") ? p0.confidence : null,
-      reason: p0?.reason ?? null,
-      run_lv_extra: !!__runLvExtra,
-      is_snippet: (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : null,
-      cache_hit: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
-      cache_key: null,
-      // cache_key는 노출하지 않음(길이/민감도 이슈 방지)
-    };
-  }
+  __routerPlanPublic = {
+    enabled: !!GROQ_ROUTER_ENABLE,
+    used: !!p0,
+    cached: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
+    safe_mode_final: String(safeMode || "").toLowerCase(),
+    primary: primary0,
+    runs: runs0,
+    plan: plan0,
+    confidence: (p0 && typeof p0.confidence === "number") ? p0.confidence : null,
+    reason: p0?.reason ?? null,
+    run_lv_extra: !!__runLvExtra,
+    is_snippet: (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : null,
+    cache_hit: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
+    cache_key: null,
+    // cache_key는 노출하지 않음(길이/민감도 이슈 방지)
+  };
 } catch (_) {}
 
 // ─────────────────────────────
@@ -6039,34 +6099,79 @@ function _safeJsonParse(s) {
 }
 
 function _normalizeRouterPlan(obj) {
-  // 강제 형태 보정
-  const out = { plan: [], confidence: null, raw: obj };
-  const plan = Array.isArray(obj?.plan) ? obj.plan : (Array.isArray(obj?.runs) ? obj.runs : []);
-  const conf = (typeof obj?.confidence === "number" && Number.isFinite(obj.confidence))
-    ? Math.max(0, Math.min(1, obj.confidence))
-    : null;
+  // 강제 형태 보정 + 안전장치(절대 lv가 primary가 되지 않게 / qv+fv 동시 방지)
+  const out = {
+    plan: [],
+    runs: [],
+    primary: "qv",
+    confidence: null,
+    reason: null,
+    raw: obj ?? null,
+  };
 
-  const modes = new Set(["qv","fv","lv"]);
+  const conf =
+    (typeof obj?.confidence === "number" && Number.isFinite(obj.confidence))
+      ? Math.max(0, Math.min(1, obj.confidence))
+      : null;
+
+  const topReason = String(obj?.reason ?? "").slice(0, 120) || null;
+
+  // 입력 후보: plan 우선, 없으면 runs 배열도 허용
+  const src = Array.isArray(obj?.plan) ? obj.plan : (Array.isArray(obj?.runs) ? obj.runs : []);
+  const modes = new Set(["qv", "fv", "lv"]);
   const norm = [];
 
-  for (const it of plan) {
-    const m = String(it?.mode || it?.m || "").trim().toLowerCase();
+  for (const it of src) {
+    const m = String(it?.mode ?? it?.m ?? it ?? "").trim().toLowerCase();
     if (!modes.has(m)) continue;
-    norm.push({
-      mode: m,
-      priority: (typeof it?.priority === "number" && Number.isFinite(it.priority)) ? it.priority : 1,
-      reason: String(it?.reason || it?.why || "").slice(0, 180),
-    });
+
+    const pr0 = (typeof it?.priority === "number" && Number.isFinite(it.priority)) ? it.priority : 1;
+    const r0 = String(it?.reason ?? it?.why ?? "").slice(0, 180);
+
+    norm.push({ mode: m, priority: pr0, reason: r0 });
   }
 
-  // priority 정렬 + 중복 제거(첫 등장 유지)
-  norm.sort((a,b) => (a.priority||1) - (b.priority||1));
-  const seen = new Set();
-  out.plan = norm.filter(x => (seen.has(x.mode) ? false : (seen.add(x.mode), true)));
-  out.confidence = conf;
+  // priority 정렬
+  norm.sort((a, b) => (a.priority || 1) - (b.priority || 1));
 
-  // plan이 비면 안전 fallback
-  if (!out.plan.length) out.plan = [{ mode: "qv", priority: 1, reason: "fallback" }];
+  // 중복 제거(첫 등장 유지)
+  const seen = new Set();
+  let plan = norm.filter(x => (seen.has(x.mode) ? false : (seen.add(x.mode), true)));
+
+  // plan 비면 안전 fallback
+  if (!plan.length) {
+    plan = [{ mode: "qv", priority: 1, reason: "fallback" }];
+  }
+
+  // ✅ qv+fv 동시 방지: 둘 다 있으면 priority가 더 낮은 것만 유지(동률이면 qv 우선)
+  const hasQv = plan.some(x => x.mode === "qv");
+  const hasFv = plan.some(x => x.mode === "fv");
+  if (hasQv && hasFv) {
+    const qv = plan.find(x => x.mode === "qv");
+    const fv = plan.find(x => x.mode === "fv");
+    const keep = (fv.priority < qv.priority) ? "fv" : "qv";
+    plan = plan.filter(x => x.mode === keep || x.mode === "lv");
+  }
+
+  // ✅ lv가 1순위로 오면 절대 허용하지 않음: lv는 뒤로 내리고, primary는 qv/fv로 강제
+  if (plan[0]?.mode === "lv") {
+    const maxP = Math.max(...plan.map(x => Number(x.priority || 1)));
+    plan = plan
+      .filter(x => x.mode !== "lv")
+      .concat([{ mode: "lv", priority: maxP + 1, reason: "demote_lv_primary" }]);
+  }
+
+  // runs/primary 구성
+  out.plan = plan;
+  out.runs = plan.map(x => x.mode);
+
+  // primary는 qv/fv만
+  const p0 = String(plan[0]?.mode || "qv").toLowerCase();
+  out.primary = (p0 === "fv") ? "fv" : "qv";
+
+  out.confidence = conf;
+  out.reason = topReason;
+
   return out;
 }
 
@@ -6074,41 +6179,71 @@ async function _getGroqApiKeyForUser(authUser) {
   // authUser 없으면 null
   if (!authUser?.id) return null;
 
+  // ✅ 1) 단일 소스: user_secrets(integrations.groq.api_key_enc) 우선
   try {
-    const row = await loadUserSecretsRow(authUser.id);
-    const secrets = row?.secrets || {};
-    const dec = decryptIntegrationsSecrets(secrets);
-    const k = String(dec?.groq_key || dec?.groq_api_key || "").trim();
-    if (k) return k;
+    if (typeof __getGroqApiKeyForUser === "function") {
+      const k1 = await __getGroqApiKeyForUser({ supabase, userId: authUser.id });
+      const kk1 = String(k1 || "").trim();
+      if (kk1) return kk1;
+    }
   } catch (_) {}
 
-  if (GROQ_ALLOW_ENV_FALLBACK) {
-    const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
-    if (envK) return envK;
-  }
+  // ✅ 2) 레거시(있으면만): loadUserSecretsRow + decryptIntegrationsSecrets 방식도 fallback으로 유지
+  try {
+    if (typeof loadUserSecretsRow === "function" && typeof decryptIntegrationsSecrets === "function") {
+      const row = await loadUserSecretsRow(authUser.id);
+      const secrets = row?.secrets || {};
+      const dec = decryptIntegrationsSecrets(secrets);
+      const k2 = String(dec?.groq_key || dec?.groq_api_key || "").trim();
+      if (k2) return k2;
+    }
+  } catch (_) {}
+
+  // ✅ 3) (선택) env fallback
+  try {
+    if (typeof GROQ_ALLOW_ENV_FALLBACK !== "undefined" && GROQ_ALLOW_ENV_FALLBACK) {
+      const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+      if (envK) return envK;
+    }
+  } catch (_) {}
+
   return null;
 }
 
-async function groqRoutePlan({ authUser, query, snippet, question, hintMode }) {
+async function groqRoutePlan({ authUser, groq_api_key, query, snippet, question, hintMode }) {
   if (!ENABLE_GROQ_ROUTER) {
     return { plan: [{ mode: (hintMode || "qv"), priority: 1, reason: "router_disabled" }], confidence: null, raw: null };
   }
 
-  const apiKey = await _getGroqApiKeyForUser(authUser);
+    const apiKey = (groq_api_key && String(groq_api_key).trim().length >= 10)
+    ? String(groq_api_key).trim()
+    : await _getGroqApiKeyForUser(authUser);
+
   if (!apiKey) {
-    return { plan: [{ mode: (hintMode || "qv"), priority: 1, reason: "no_groq_key" }], confidence: null, raw: null };
+    return {
+      plan: [{ mode: (hintMode || (String(snippet || "").trim() ? "fv" : "qv")), priority: 1, reason: "no_groq_key" }],
+      confidence: null,
+      raw: null,
+      router_ms: 0,
+      model: GROQ_ROUTER_MODEL,
+    };
   }
 
-  const q = String(query || "").trim();
+    const q = String(query || "").trim();
   const sn = String(snippet || "").trim();
   const qu = String(question || "").trim();
+
+  // ✅ FV는 “검증할 claim/snippet”이 있을 때만 의미가 있음 (너무 짧으면 질문일 확률 ↑)
+  const __hasSnippetClaim = sn.length >= 20;
 
   // 라우터 입력 구성(너무 길면 잘라서 비용/지연 감소)
   const input = {
     query: q.slice(0, 1200),
-    snippet: sn.slice(0, 1800),
+    snippet: (__hasSnippetClaim ? sn : "").slice(0, 1800),
     question: qu.slice(0, 800),
     hint_mode: String(hintMode || "").trim().toLowerCase() || null,
+    has_snippet_claim: __hasSnippetClaim,
+    snippet_len: sn.length,
     policy: {
       allow_multi: true,
       prefer: "qv_or_fv",
@@ -6117,28 +6252,30 @@ async function groqRoutePlan({ authUser, query, snippet, question, hintMode }) {
   };
 
   const sys = [
-    "You are a strict mode router for a verification system.",
-    "Return ONLY valid JSON.",
-    "Decide plan modes among: qv (fact/general), fv (snippet/answer verification), lv (Korean law/legal).",
-    "Use lv only if the user is asking about Korean law/statutes/cases or legal interpretation.",
-    "If snippet is provided, fv is usually needed.",
-    "Multi-run allowed: e.g., [fv, lv] when legal and snippet-based.",
-    'JSON schema: {"plan":[{"mode":"qv|fv|lv","priority":1,"reason":"..."}],"confidence":0.0}',
-  ].join("\n");
+  "You are a strict mode router for a fact-checking / verification system.",
+  "Return ONLY valid JSON. No prose. No markdown. No code fences.",
+  "",
+  "Allowed modes: qv, fv, lv.",
+  "Definitions:",
+  "- qv: general fact questions / knowledge queries.",
+  "- fv: verifying a provided factual sentence/snippet/AI answer (claim-check).",
+  "- lv: explicit Korean legal/statute/case interpretation (조/항/호, 법령/시행령/시행규칙, 판례/대법원/헌재, specific law names, or asks for 조문/법적근거).",
+  "",
+  "STRICT RULES:",
+  "- Default is qv.",
+  "- Use fv ONLY when user supplies a snippet/claim to verify (not just a question).",
+  "- Use lv ONLY when explicit legal/statute/case interpretation is requested.",
+  "- NEVER output lv as the first (primary) plan item.",
+  "  If legal is needed, output: [{mode:'qv',priority:1,...},{mode:'lv',priority:2,...}]",
+  "- Do NOT output qv+fv together.",
+  "- If unsure, output ONLY [{mode:'qv',priority:1,reason:'default_uncertain'}] and set confidence <= 0.60.",
+  "- Keep reason short (<= 8 words).",
+  "",
+  "JSON schema:",
+  '{"plan":[{"mode":"qv|fv|lv","priority":1,"reason":"short"}],"confidence":0.0,"reason":"short"}',
+].join("\n");
 
   const user = JSON.stringify(input);
-
-    // ✅ router: apiKey 없으면 호출 스킵(불필요한 401/timeout 방지)
-  if (!apiKey || String(apiKey).trim().length < 10) {
-    return {
-      plan: [{ mode: (hintMode || (sn ? "fv" : "qv")), priority: 1, reason: "router_no_key" }],
-      confidence: null,
-      raw: null,
-      router_ms: 0,
-      model: GROQ_ROUTER_MODEL,
-    };
-  }
-
   const payload = {
     model: GROQ_ROUTER_MODEL,
     temperature: 0.0,
@@ -6174,6 +6311,48 @@ async function groqRoutePlan({ authUser, query, snippet, question, hintMode }) {
     const norm = _normalizeRouterPlan(parsed || {});
     norm.router_ms = Date.now() - t0;
     norm.model = GROQ_ROUTER_MODEL;
+        // ✅ 서버측 sanitize: 모델이 규칙을 어겨도 최종 plan을 보수적으로 고정
+    try {
+      const __hasSnippetClaim = String(sn || "").trim().length >= 20;
+
+      let plan = Array.isArray(norm?.plan) ? norm.plan : [];
+      plan = plan
+        .map((x) => ({
+          mode: String(x?.mode || "").toLowerCase().trim(),
+          priority: Number.isFinite(Number(x?.priority)) ? Number(x.priority) : 1,
+          reason: String(x?.reason || "").slice(0, 120),
+        }))
+        .filter((x) => x.mode === "qv" || x.mode === "fv" || x.mode === "lv");
+
+      // 1) snippet claim 없으면 fv 제거
+      if (!__hasSnippetClaim) plan = plan.filter((x) => x.mode !== "fv");
+
+      // 2) qv+fv 동시 나오면 fv만 남김(단, claim 있을 때)
+      const hasQv = plan.some((x) => x.mode === "qv");
+      const hasFv = plan.some((x) => x.mode === "fv");
+      if (hasQv && hasFv) {
+        plan = plan.filter((x) => x.mode !== "qv");
+      }
+
+      // 3) lv가 첫 아이템이면 qv를 앞에 강제 삽입 (lv primary 금지)
+      if (plan.length > 0 && plan[0].mode === "lv") {
+        plan = [
+          { mode: "qv", priority: 1, reason: "server_insert_qv" },
+          ...plan.map((x, i) => ({ ...x, priority: i + 2 })),
+        ];
+      }
+
+      // 4) plan 비면 qv fallback
+      if (!plan.length) {
+        plan = [{ mode: "qv", priority: 1, reason: "server_fallback" }];
+      }
+
+      norm.plan = plan;
+      norm.primary = plan[0]?.mode || "qv";
+      norm.runs = plan.map((x) => x.mode);
+      if (!norm.reason) norm.reason = plan[0]?.reason || null;
+      norm.has_snippet_claim = __hasSnippetClaim;
+    } catch (_) {}
     return norm;
   } catch (e) {
     return {
@@ -6344,7 +6523,47 @@ if (safeMode === "auto" || safeMode === "overlay" || safeMode === "route") {
   safeMode = "qv";
 }
 
-  const allowedModes = ["qv", "fv", "dv", "cv", "lv"];
+// ✅ /api/verify에서 lv 직접 호출 금지 (LV는 /api/lv 전용)
+// - 라우터가 qv + lv_extra 형태로 추가실행하는 건 OK
+try {
+  const __path0 = String(req.path || "");
+  if (__path0 === "/api/verify" && String(safeMode || "").toLowerCase() === "lv") {
+    return res
+      .status(400)
+      .json(buildError("INVALID_MODE", "LV는 /api/lv 전용입니다. (/api/verify에서는 qv/fv/dv/cv만 허용)"));
+  }
+} catch (_) {}
+
+// ✅ FV는 “검증할 스니펫/클레임”이 있을 때만 허용 (없으면 QV로 강제)
+// - /api/verify-snippet은 이미 위에서 FV 고정이라 여기서 건드리지 않음
+try {
+  if (!__isSnippetEndpoint && String(safeMode || "").toLowerCase() === "fv") {
+    const __snClaim = String(
+      req.body?.snippet ??
+      req.body?.core_text ??
+      req.body?.snippet_meta?.snippet_core ??
+      ""
+    ).trim();
+
+    const __hasSnippetClaim = __snClaim.length >= 20;
+    if (!__hasSnippetClaim) {
+      safeMode = "qv";
+      // (선택) router plan이 있으면 진단용으로 같이 정리
+      try {
+        if (__routerPlan && typeof __routerPlan === "object") {
+          __routerPlan.primary = "qv";
+          __routerPlan.safe_mode_final = "qv";
+          __routerPlan.plan = [{ mode: "qv", priority: 1, reason: "server_downgrade_fv_no_snippet" }];
+          __routerPlan.runs = ["qv"];
+          __routerPlan.lv_extra = !!(__routerPlan.lv_extra || __runLvExtra);
+          __routerPlan.reason = __routerPlan.reason || "server_downgrade_fv_no_snippet";
+        }
+      } catch (_) {}
+    }
+  }
+} catch (_) {}
+
+const allowedModes = ["qv", "fv", "dv", "cv", "lv"];
 if (!allowedModes.includes(safeMode)) {
   return res
     .status(400)
@@ -6375,6 +6594,13 @@ if (safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === 
   const external = {};
   const start = Date.now();
   let partial_scores = {};
+  // ✅ attach router diagnostics to partial_scores (avoid TDZ issues)
+try {
+  if (partial_scores && typeof partial_scores === "object") {
+    partial_scores.router_plan = __routerPlanPublic || null;
+  }
+} catch (_) {}
+
   let truthscore = 0.0;
   let engineStatsMap = {};
   let engineFactor = 1.0;
