@@ -8829,11 +8829,12 @@ const __canonUrlKey = (u0) => {
 //          Remove duplicate “stamp-to-blocks” steps to avoid duplication and confusion.
 
 
-// ✅ Swap-in A: compute soft_penalty_factor (QV/FV evidence 기반, drop 없이 소프트 패널티만)
+// ✅ Swap-in A: compute soft_penalty_factor (QV/FV evidence 기반 + numeric/year mismatch touch 포함)
 // - year miss: ev._soft_year_miss_penalty (없으면 NAVER_YEAR_MISS_PENALTY fallback)
 // - numeric miss: ev._soft_numeric_miss_penalty (없으면 NUMERIC_SOFT_WARNING_PENALTY fallback)
 // - per-evidence: ev._soft_penalty_product 저장
 // - overall factor: penalized evidence들의 geometric mean
+// - IMPORTANT: numeric_evidence_match.touched / naver_soft_year_miss.samples 로 찍힌 penalty도 합산
 try {
   if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
     let sumLog = 0;
@@ -8842,59 +8843,118 @@ try {
     let yearMiss = 0;
     let numMiss = 0;
 
+    let itemsTotal = 0;
+    let itemsUnknown = 0; // url이 없는 evidence 카운트(중복 제거 불가)
+
+    const __known = new Set();   // "최종 evidence로 살아있는" url 집합(드랍 제외용)
+    const __counted = new Set(); // 이미 penalty를 집계한 url 집합(이중 집계 방지)
+    const __strictPrune = !!(numeric_evidence_match && numeric_evidence_match.strict_prune);
+    const __keyOf = (x) => {
+      const u = x?.url || x?.link || x?.href || x?.source_url || x?.sourceUrl || null;
+      return (typeof u === "string" && u) ? u : null;
+    };
+
+    const __clamp01 = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return null;
+      return Math.max(0.0, Math.min(1.0, n));
+    };
+
+    const __defaultYearPenalty = __clamp01((typeof NAVER_YEAR_MISS_PENALTY !== "undefined" ? NAVER_YEAR_MISS_PENALTY : null)) ?? 0.90;
+    const __defaultNumPenalty  = __clamp01((typeof NUMERIC_SOFT_WARNING_PENALTY !== "undefined" ? NUMERIC_SOFT_WARNING_PENALTY : null)) ?? 0.95;
+
+        // key canonicalize + (strict_prune일 때) "현재 살아있는 evidence"만 집계
+    // - __known: 최종 blocks에서 살아있는 URL 집합
+    // - __counted: 이미 penalty를 집계한 URL 집합(중복 집계 방지)
+    const __accPenalty = (p, flags, key0) => {
+      const key = key0 ? __canonUrlKey(key0) : null;
+
+      // STRICT prune일 때는 "살아있는 evidence"가 아닌 URL은 집계에서 제외
+      if (__strictPrune && key && !__known.has(key)) return;
+
+      // URL 기준 중복 집계 방지
+      if (key && __counted.has(key)) return;
+      if (key) __counted.add(key);
+
+      const pp = __clamp01(p);
+      if (pp == null) return;
+
+      // "패널티"로 간주할 건 (0 < p < 1) 만
+      if (pp > 0 && pp < 1) {
+        sumLog += Math.log(pp);
+        cnt += 1;
+        if (minP == null || pp < minP) minP = pp;
+      }
+
+      if (flags?.year_miss) yearMiss += 1;
+      if (flags?.num_miss) numMiss += 1;
+    };
+
+    // 1) blocksForVerify 내부 evidence(ev) 기반
     for (const b of blocksForVerify) {
-      const evObj = (b && typeof b === "object") ? (b.evidence || {}) : {};
-      const groups = Object.values(evObj).filter(Array.isArray);
+      const evs = Array.isArray(b?.evidence_items) ? b.evidence_items : (Array.isArray(b?.evidence) ? b.evidence : []);
+            for (const ev of evs) {
+        const key0 = __keyOf(ev);
+        const key = key0 ? __canonUrlKey(key0) : null;
 
-      for (const arr of groups) {
-        for (const ev of arr) {
-          if (!ev || typeof ev !== "object") continue;
+        // "최종 evidence로 살아있는" URL 집합 구성
+        if (key) __known.add(key);
+        else itemsUnknown += 1;
 
-          let p = 1.0;
+        const _y = !!ev?._soft_year_miss;
+        const _n = !!ev?._soft_numeric_miss;
 
-          // year miss
-          if (ev._soft_year_miss) {
-            yearMiss++;
-            const yp =
-              (typeof ev._soft_year_miss_penalty === "number" && Number.isFinite(ev._soft_year_miss_penalty))
-                ? ev._soft_year_miss_penalty
-                : NAVER_YEAR_MISS_PENALTY;
-            p *= Math.max(0.0, Math.min(1.0, yp));
-          }
+        // 기본은 1.0, 미스면 penalty 적용
+        const py = _y ? (__clamp01(ev?._soft_year_miss_penalty) ?? __defaultYearPenalty) : 1.0;
+        const pn = _n ? (__clamp01(ev?._soft_numeric_miss_penalty) ?? __defaultNumPenalty) : 1.0;
 
-          // numeric miss
-          if (ev._soft_numeric_miss) {
-            numMiss++;
-            const np =
-              (typeof ev._soft_numeric_miss_penalty === "number" && Number.isFinite(ev._soft_numeric_miss_penalty))
-                ? ev._soft_numeric_miss_penalty
-                : NUMERIC_SOFT_WARNING_PENALTY;
-            p *= Math.max(0.0, Math.min(1.0, np));
-          }
+        const prod = Math.max(0.0, Math.min(1.0, py * pn));
 
-          // clamp + store per-evidence
-p = Math.max(1e-6, Math.min(1.0, p));
+        // per-evidence debug 저장
+        if ((_y || _n) && typeof ev === "object" && ev) {
+          try { ev._soft_penalty_product = Number(prod.toFixed(6)); } catch {}
+        }
 
-// 기존에 누적된 soft_penalty_product가 있으면(예: numeric_evidence_match에서 이미 계산)
-// Swap-in A는 덮어쓰지 말고 "더 강한 감점(min)"만 유지
-const prevProd =
-  (typeof ev._soft_penalty_product === "number" && Number.isFinite(ev._soft_penalty_product))
-    ? Math.max(1e-6, Math.min(1.0, ev._soft_penalty_product))
-    : null;
+        if (_y) yearMiss += 1;
+        if (_n) numMiss += 1;
 
-const pEff = (prevProd == null) ? p : Math.min(prevProd, p);
-ev._soft_penalty_product = pEff;
-
-// aggregate only if meaningfully penalized
-if (pEff < 0.999999) {
-  cnt++;
-  sumLog += Math.log(pEff);
-  minP = (minP == null) ? pEff : Math.min(minP, pEff);
-}
+        if (prod > 0 && prod < 1) {
+          sumLog += Math.log(prod);
+          cnt += 1;
+          if (minP == null || prod < minP) minP = prod;
         }
       }
     }
 
+    // 2) numeric_evidence_match.touched 기반 (ev에 안 묻는 케이스 보완)
+    if (numeric_evidence_match && Array.isArray(numeric_evidence_match.touched)) {
+      for (const t of numeric_evidence_match.touched) {
+        const key = (__keyOf(t) || (typeof t?.url === "string" ? t.url : null));
+        __accPenalty(
+          t?.penalty,
+          { year_miss: !!t?.year_miss, num_miss: !!t?.num_miss },
+          key
+        );
+      }
+    }
+
+    // 3) naver_soft_year_miss.samples 기반 (year miss가 samples로만 남는 케이스 보완)
+    if (naver_soft_year_miss && Array.isArray(naver_soft_year_miss.samples)) {
+      for (const s of naver_soft_year_miss.samples) {
+        const key = __keyOf(s) || (typeof s?.url === "string" ? s.url : null);
+        __accPenalty(
+          s?.penalty,
+          { year_miss: true, num_miss: false },
+          key
+        );
+      }
+    }
+
+        // ✅ itemsTotal: "최종 살아있는 evidence" 기준으로 확정(중복 제거)
+    // - url 없는 evidence는 itemsUnknown으로 보정
+    itemsTotal = (__known ? __known.size : 0) + (itemsUnknown || 0);
+
+    // geometric mean
     const factor = (cnt > 0) ? Math.exp(sumLog / cnt) : 1.0;
 
     partial_scores.soft_penalty_factor = Number(Math.max(0.0, Math.min(1.0, factor)).toFixed(6));
@@ -8904,9 +8964,29 @@ if (pEff < 0.999999) {
       year_miss_items: yearMiss,
       num_miss_items: numMiss,
     };
+    partial_scores.soft_penalties_overview = {
+      items: itemsTotal,
+      penalized: cnt,
+      year_miss: yearMiss,
+      num_miss: numMiss,
+    };
   } else {
     // non QV/FV or no blocks
     partial_scores.soft_penalty_factor = 1.0;
+    try {
+      partial_scores.soft_penalty_meta = {
+        penalized_evidence_items: 0,
+        min_penalty: null,
+        year_miss_items: 0,
+        num_miss_items: 0,
+      };
+      partial_scores.soft_penalties_overview = {
+        items: 0,
+        penalized: 0,
+        year_miss: 0,
+        num_miss: 0,
+      };
+    } catch {}
   }
 } catch (_) {
   try { partial_scores.soft_penalty_factor = 1.0; } catch {}
