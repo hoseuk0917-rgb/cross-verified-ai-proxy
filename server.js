@@ -10119,14 +10119,15 @@ await supabase.from("verification_logs").insert([
       // compat aliases (아래에서 truthscore_pct/text 참조가 남아있어도 안전)
       const truthscore_pct = truthscore_pct_final;
       const truthscore_text = truthscore_text_final;
+      const truthscore_01 = truthscore_01_final;
 
-const normalizedPartial = partial_scores;
-  const payload = {
-    mode: safeMode,
-    truthscore: truthscore_text_final,
-truthscore_pct: truthscore_pct_final,
-truthscore_01: truthscore_01_final,
-    elapsed,
+      const normalizedPartial = partial_scores;
+      const payload = {
+       mode: safeMode,
+       truthscore: truthscore_text_final,
+       truthscore_pct: truthscore_pct_final,
+       truthscore_01: truthscore_01_final,
+       elapsed,
 
   // ??S-15: engines_used ?먮룞 ?곗텧(紐낆떆 ?몄텧)
   engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
