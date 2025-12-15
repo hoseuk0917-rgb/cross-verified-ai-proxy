@@ -9959,7 +9959,14 @@ await supabase.from("verification_logs").insert([
       // - 기본값: 스무딩이 점수를 올리는 방향은 금지(급상승 방지)
       // - soft_penalty_factor 곱감점은 (B)에서 1회만 수행
 
-      const __truthscore_01_raw = Number.isFinite(truthscore_01) ? Number(truthscore_01) : 0;
+      const __truthscore_01_raw =
+  (typeof truthscore_01_raw === "number" && Number.isFinite(truthscore_01_raw))
+    ? Number(truthscore_01_raw)
+    : (typeof partial_scores?.truthscore_01_raw === "number" && Number.isFinite(partial_scores.truthscore_01_raw))
+      ? Number(partial_scores.truthscore_01_raw)
+      : 0;
+
+let truthscore_01 = __truthscore_01_raw; // ✅ smoothing에서 참조/대입할 변수 생성
 
       try {
         const __m0 = String(safeMode || "").toLowerCase();
@@ -10068,9 +10075,11 @@ await supabase.from("verification_logs").insert([
       let softPenaltiesOverview = null;
 
       let truthscore_01_final =
-  (typeof __truthscore_01_raw === "number" && Number.isFinite(__truthscore_01_raw))
-    ? __truthscore_01_raw
-    : 0;
+  (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01))
+    ? truthscore_01
+    : (typeof __truthscore_01_raw === "number" && Number.isFinite(__truthscore_01_raw))
+      ? __truthscore_01_raw
+      : 0;
 
       try {
         if (safeMode === "qv" || safeMode === "fv") {
