@@ -7146,13 +7146,36 @@ const __shouldEarlyStopApprox = ({ cr = [], oa = [], wd = [], gd = [], nv = [] }
   }
 };
 
-// ✅ 쿼리가 비면 호출하지 않고 result=[]로 처리 + cap 초과도 호출 안 함
 const runOrEmpty = async (name, fn, q) => {
   const qq = String(q || "").trim();
-  if (!qq) return { result: [], ms: 0, skipped: true, reason: "empty_query" };
-  if (!__capConsume(name)) return { result: [], ms: 0, skipped: true, reason: "cap" };
+  if (!qq) return { result: [], ms: 0, skipped: true };
   return await safeFetchTimed(name, fn, qq, engineTimes, engineMetrics);
 };
+
+// ✅ 쿼리가 비면 호출하지 않고 result=[]로 처리 + cap 초과도 호출 안 함
+// ✅ GDELT: block마다 돌리지 말고 "요청당 1회"만(기본 on)
+// - env: GDELT_SINGLE_QUERY=false 로 끄면 기존처럼 block별 호출
+const __gdeltSingle = String(process.env.GDELT_SINGLE_QUERY ?? "true").toLowerCase() !== "false";
+
+// "대표 gdelt 쿼리"를 블록 0개여도 안정적으로 만든다
+const __firstEq =
+  (Array.isArray(qvfvPre?.blocks) && qvfvPre.blocks[0] && typeof qvfvPre.blocks[0] === "object")
+    ? (qvfvPre.blocks[0].engine_queries || {})
+    : {};
+
+const gdeltGlobalQ = __gdeltSingle
+  ? String(__firstEq.gdelt || qvfvPre?.english_core || qvfvBaseText || query || "").trim()
+  : "";
+
+let gdeltGlobalPack = { result: [], ms: 0, skipped: true };
+
+if (__gdeltSingle) {
+  const qq = limitChars(gdeltGlobalQ, 120);
+  if (String(qq || "").trim()) {
+    gdeltGlobalPack = await safeFetchTimed("gdelt", fetchGDELT, qq, engineTimes, engineMetrics);
+    engineQueriesUsed.gdelt.push(qq);
+  }
+}
 
 const __isSnippetReq =
   !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
@@ -7181,13 +7204,13 @@ for (const b of __blocksInput) {
   const qCrossref = String(eq.crossref || "").trim();
   const qOpenalex = String(eq.openalex || "").trim();
   const qWikidata = String(eq.wikidata || "").trim();
-  const qGdelt   = String(eq.gdelt   || "").trim();
+  const qGdelt = __gdeltSingle ? String(gdeltGlobalQ || "").trim() : String(eq.gdelt || "").trim();
 
   // ✅ 엔진별 쿼리 기록(빈 값 제외)
   if (qCrossref) engineQueriesUsed.crossref.push(qCrossref);
   if (qOpenalex) engineQueriesUsed.openalex.push(qOpenalex);
   if (qWikidata) engineQueriesUsed.wikidata.push(qWikidata);
-  if (qGdelt) engineQueriesUsed.gdelt.push(qGdelt);
+  if (!__gdeltSingle && qGdelt) engineQueriesUsed.gdelt.push(qGdelt);
 
   let naverQueries = Array.isArray(eq.naver) ? eq.naver : [];
   naverQueries = naverQueries
@@ -7207,12 +7230,23 @@ for (const b of __blocksInput) {
     if (s) engineQueriesUsed.naver.push(s);
   }
 
-  const [crPack, oaPack, wdPack, gdPack] = await Promise.all([
+  let crPack, oaPack, wdPack, gdPack;
+
+if (__gdeltSingle) {
+  [crPack, oaPack, wdPack] = await Promise.all([
+    runOrEmpty("crossref", fetchCrossref, qCrossref),
+    runOrEmpty("openalex", fetchOpenAlex, qOpenalex),
+    runOrEmpty("wikidata", fetchWikidata, qWikidata),
+  ]);
+  gdPack = gdeltGlobalPack;
+} else {
+  [crPack, oaPack, wdPack, gdPack] = await Promise.all([
     runOrEmpty("crossref", fetchCrossref, qCrossref),
     runOrEmpty("openalex", fetchOpenAlex, qOpenalex),
     runOrEmpty("wikidata", fetchWikidata, qWikidata),
     runOrEmpty("gdelt", fetchGDELT, qGdelt),
   ]);
+}
 
   // ─────────────────────────────
   // ✅ Naver 결과: 표시용(all)과 verify용(topK + whitelist + relevance) 분리
@@ -7302,7 +7336,7 @@ for (const b of __blocksInput) {
   external.crossref.push(...(crPack.result || []));
   external.openalex.push(...(oaPack.result || []));
   external.wikidata.push(...(wdPack.result || []));
-  external.gdelt.push(...(gdPack.result || []));
+  if (!__gdeltSingle) external.gdelt.push(...(gdPack.result || []));
   external.naver.push(...(naverItemsAll || []));
 
   blocksForVerify.push({
@@ -7356,6 +7390,10 @@ try {
     early_stop_reason: __capState.early_stop_reason,
   };
 } catch {}
+
+if (__gdeltSingle) {
+  external.gdelt = Array.isArray(gdeltGlobalPack?.result) ? gdeltGlobalPack.result.slice() : [];
+}
 
 external.naver = dedupeByLink(external.naver).slice(0, NAVER_MULTI_MAX_ITEMS);
 qvfvBlocksForVerifyFull = blocksForVerify;
