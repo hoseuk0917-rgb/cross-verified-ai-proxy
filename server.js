@@ -12000,6 +12000,14 @@ function _parsePort(v, fallback = 3000) {
 const _PORT_FALLBACK = (typeof PORT !== "undefined") ? PORT : "";
 const _PORT0 = _parsePort(process.env.PORT || _PORT_FALLBACK, 3000);
 
+// ✅ Render health check (must be plain /health if Render is configured so)
+app.get("/health", (req, res) => {
+  return res.status(200).json({
+    ok: true,
+    ts: new Date().toISOString(),
+  });
+});
+
 function _startServer(port, attempt = 0) {
   const server = app.listen(port, _HOST, () => {
     console.log(`🚀 Cross-Verified AI Proxy v18.4.0-pre running on ${_HOST}:${port}`);
