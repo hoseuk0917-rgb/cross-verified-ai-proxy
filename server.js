@@ -9613,10 +9613,28 @@ const E_cov = (() => {
 // (로그용) partial_scores에 남겨두면 디버깅 편함
 partial_scores.effective_engines_used = enginesUsed;
 partial_scores.effective_engines = effEngines;
-partial_scores.effective_engine_item_counts =
-  (typeof effective_engine_item_counts !== "undefined")
-    ? effective_engine_item_counts
-    : null;
+// ✅ effective_engine_item_counts는 항상 정의(예전 런타임 ReferenceError 방지)
+const effective_engine_item_counts = (() => {
+  try {
+    if (!Array.isArray(blocksForVerify)) return null;
+    const keys = Array.isArray(effEngines) ? effEngines : [];
+    const out = {};
+    for (const k of keys) out[k] = 0;
+
+    for (const b of blocksForVerify) {
+      const ev = b?.evidence || {};
+      for (const k of keys) {
+        const arr = ev?.[k];
+        if (Array.isArray(arr)) out[k] += arr.length;
+      }
+    }
+    return out;
+  } catch (_) {
+    return null;
+  }
+})();
+
+partial_scores.effective_engine_item_counts = effective_engine_item_counts;
 partial_scores.effective_engines_count = E_eff;
 partial_scores.coverage_factor = E_cov;
 
@@ -9677,16 +9695,22 @@ partial_scores.naver_soft_miss = __naverSoftMiss;
 partial_scores.naver_soft_miss_factor = __naverSoftMiss.factor;
 
 // ✅ 기존 tier factor와 결합해서 최종 N 산출
+// NOTE: year/number soft miss 패널티는 Swap-in A/B의 soft_penalty_factor로 "최종 TruthScore"에서만 반영한다.
+//       여기(N factor)에서 다시 곱하면 이중 감점이 될 수 있음.
 const __N_tier =
   (safeMode === "qv" || safeMode === "fv") &&
   useNaver &&
-  typeof partial_scores.naver_tier_factor === "number"
-    ? Math.max(0.9, Math.min(1.05, partial_scores.naver_tier_factor))
+  typeof partial_scores.naver_tier_factor === "number" &&
+  Number.isFinite(partial_scores.naver_tier_factor)
+    ? partial_scores.naver_tier_factor
     : 1.0;
+
+// ✅ naver_soft_miss는 "진단용"으로만 유지(점수에 직접 반영 X)
+try { partial_scores.naver_soft_miss_applied_to_N = false; } catch {}
 
 const N =
   (safeMode === "qv" || safeMode === "fv") && useNaver
-    ? Math.max(0.85, Math.min(1.05, __N_tier * (__naverSoftMiss.factor || 1.0)))
+    ? Math.max(0.85, Math.min(1.05, __N_tier))
     : 1.0;
 
 // DV/CV: GitHub 유효성 Vᵣ, 없으면 0.7 중립값
