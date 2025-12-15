@@ -7591,13 +7591,42 @@ if (String(qWikidata || "").trim()) {
     naverItemsForVerify = topArr(__poolFinal, BLOCK_NAVER_EVIDENCE_TOPK);
   }
 
-  // ----- gdelt / external / blocksForVerify -----
+    // ----- gdelt / external / blocksForVerify -----
   const gdeltForVerify = topArr(gdPack.result, BLOCK_EVIDENCE_TOPK);
 
-  if (!__academicSingle) external.crossref.push(...(crPack.result || []));
-  if (!__academicSingle) external.openalex.push(...(oaPack.result || []));
+  // ✅ external 누적(early-stop/recency 계산용)
+  // - __academicSingle / __gdeltSingle 은 globalPack 재사용이므로 "한 번만" 주입해서 중복을 막는다.
+  if (__academicSingle) {
+    if (
+      Array.isArray(external.crossref) && external.crossref.length === 0 &&
+      Array.isArray(crPack?.result) && crPack.result.length
+    ) {
+      external.crossref.push(...crPack.result);
+    }
+    if (
+      Array.isArray(external.openalex) && external.openalex.length === 0 &&
+      Array.isArray(oaPack?.result) && oaPack.result.length
+    ) {
+      external.openalex.push(...oaPack.result);
+    }
+  } else {
+    external.crossref.push(...(crPack.result || []));
+    external.openalex.push(...(oaPack.result || []));
+  }
+
   external.wikidata.push(...(wdPack.result || []));
-  if (!__gdeltSingle) external.gdelt.push(...(gdPack.result || []));
+
+  if (__gdeltSingle) {
+    if (
+      Array.isArray(external.gdelt) && external.gdelt.length === 0 &&
+      Array.isArray(gdPack?.result) && gdPack.result.length
+    ) {
+      external.gdelt.push(...gdPack.result);
+    }
+  } else {
+    external.gdelt.push(...(gdPack.result || []));
+  }
+
   external.naver.push(...(naverItemsAll || []));
 
   blocksForVerify.push({
