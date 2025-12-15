@@ -9910,7 +9910,16 @@ await Promise.all(
         : 1.0;
 
     const adj = Math.max(0.9, Math.min(1.1, adjRaw));
-    const engineTruth = Math.max(0, Math.min(1, hybrid * adj));
+    const baseForWeight =
+  (typeof truthscore_01_final === "number" && Number.isFinite(truthscore_01_final))
+    ? truthscore_01_final
+    : (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01))
+      ? truthscore_01
+      : (typeof hybrid === "number" && Number.isFinite(hybrid))
+        ? hybrid
+        : 0;
+
+const engineTruth = Math.max(0, Math.min(1, baseForWeight * adj));
 
     const engineMs =
       typeof engineTimes[eName] === "number" && engineTimes[eName] > 0
@@ -10193,22 +10202,25 @@ let truthscore_01 = __truthscore_01_raw; // ✅ smoothing에서 참조/대입할
       ? __truthscore_01_raw
       : 0;
 
-      try {
+            try {
         if (safeMode === "qv" || safeMode === "fv") {
+          const ps =
+            (partial_scores && typeof partial_scores === "object") ? partial_scores : {};
+
+          // soft penalty factor
           const spf =
-            (partial_scores &&
-              typeof partial_scores.soft_penalty_factor === "number" &&
-              Number.isFinite(partial_scores.soft_penalty_factor))
-              ? Math.max(0.0, Math.min(1.0, partial_scores.soft_penalty_factor))
+            (ps && typeof ps.soft_penalty_factor === "number" && Number.isFinite(ps.soft_penalty_factor))
+              ? Math.max(0.0, Math.min(1.0, ps.soft_penalty_factor))
               : 1.0;
 
           softPenaltyFactor = spf;
 
           softPenaltiesOverview =
-            (partial_scores && typeof partial_scores.soft_penalties_overview === "object")
-              ? partial_scores.soft_penalties_overview
+            (ps && typeof ps.soft_penalties_overview === "object")
+              ? ps.soft_penalties_overview
               : null;
 
+          // 1) apply soft penalty (기존 동작 유지)
           if (
             spf < 0.999999 &&
             typeof truthscore_01_final === "number" &&
@@ -10225,16 +10237,79 @@ let truthscore_01 = __truthscore_01_raw; // ✅ smoothing에서 참조/대입할
               after_01: truthscore_01_final,
             };
 
-            partial_scores.truthscore_01_pre_soft = Number(before01.toFixed(4));
-            partial_scores.soft_penalty_applied = softPenaltyApplied;
+            ps.truthscore_01_pre_soft = Number(before01.toFixed(4));
+            ps.soft_penalty_applied = softPenaltyApplied;
           } else {
-            partial_scores.soft_penalty_applied = false;
+            ps.soft_penalty_applied = false;
+          }
+
+          // 2) ✅ safe smoothing (과도한 점프 억제)
+          //    - coverage_factor(낮을수록 중립(0.5)으로 당김)
+          //    - conflict_index(높을수록 중립으로 당김)
+          //    - soft_penalty_factor(낮을수록 더 당김)
+          //    수식: t' = 0.5 + (t-0.5) * strength^gamma
+          //    strength = clamp01(coverage) * clamp01(1-conflict) * clamp01(spf)
+          const _cl01 = (x) =>
+            (typeof x === "number" && Number.isFinite(x))
+              ? Math.max(0.0, Math.min(1.0, x))
+              : 0.0;
+
+          const cov =
+            (ps && typeof ps.coverage_factor === "number" && Number.isFinite(ps.coverage_factor))
+              ? _cl01(ps.coverage_factor)
+              : 1.0;
+
+          const cMeta =
+            (ps && ps.conflict_meta && typeof ps.conflict_meta === "object") ? ps.conflict_meta : null;
+
+          const cIndex =
+            (cMeta && typeof cMeta.conflict_index === "number" && Number.isFinite(cMeta.conflict_index))
+              ? _cl01(cMeta.conflict_index)
+              : 0.0;
+
+          // env tunables (기본은 보수적으로)
+          let gamma = Number(process.env.TRUTHSCORE_SMOOTH_GAMMA || 1.25);
+          if (!Number.isFinite(gamma)) gamma = 1.25;
+          gamma = Math.max(0.1, Math.min(4.0, gamma));
+
+          let minStrength = Number(process.env.TRUTHSCORE_SMOOTH_MIN_STRENGTH || 0.15);
+          if (!Number.isFinite(minStrength)) minStrength = 0.15;
+          minStrength = Math.max(0.0, Math.min(1.0, minStrength));
+
+          const strengthRaw = _cl01(cov) * _cl01(1.0 - cIndex) * _cl01(spf);
+          const strength = Math.max(minStrength, Math.min(1.0, strengthRaw));
+
+          if (
+            strength < 0.999999 &&
+            typeof truthscore_01_final === "number" &&
+            Number.isFinite(truthscore_01_final)
+          ) {
+            const beforeSmooth01 = truthscore_01_final;
+            const smoothed01 =
+              0.5 + (beforeSmooth01 - 0.5) * Math.pow(strength, gamma);
+
+            truthscore_01_final = Number(Math.max(0.0, Math.min(1.0, smoothed01)).toFixed(4));
+
+            ps.truthscore_01_pre_smooth = Number(beforeSmooth01.toFixed(4));
+            ps.truthscore_01_post_smooth = truthscore_01_final;
+            ps.truthscore_smoothing = {
+              strength: Number(strength.toFixed(4)),
+              strength_raw: Number(strengthRaw.toFixed(4)),
+              gamma: Number(gamma.toFixed(4)),
+              coverage: Number(cov.toFixed(4)),
+              conflict_index: Number(cIndex.toFixed(4)),
+              spf: Number(_cl01(spf).toFixed(4)),
+            };
+          } else {
+            ps.truthscore_smoothing = false;
           }
         } else {
-          partial_scores.soft_penalty_applied = false;
+          try { partial_scores.soft_penalty_applied = false; } catch {}
+          try { partial_scores.truthscore_smoothing = false; } catch {}
         }
       } catch (_) {
         try { partial_scores.soft_penalty_applied = false; } catch {}
+        try { partial_scores.truthscore_smoothing = false; } catch {}
       }
 
       const truthscore_pct_final = Math.round(truthscore_01_final * 10000) / 100; // 2 decimals
