@@ -11881,6 +11881,15 @@ app.get("/api/admin/errors/recent", (req, res) => {
   );
 });
 
+// ✅ Health check (Render / uptime / external monitor)
+app.get("/api/health", (req, res) => {
+  return res.status(200).json({
+    success: true,
+    ok: true,
+    ts: new Date().toISOString(),
+  });
+});
+
 // ─────────────────────────────
 // ✅ (선택 권장) API 404도 JSON으로 통일
 //   - /api/* 중 라우트에 매칭 안 되면 여기로 옴
@@ -11988,7 +11997,8 @@ function _parsePort(v, fallback = 3000) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-const _PORT0 = _parsePort(process.env.PORT || PORT, 3000);
+const _PORT_FALLBACK = (typeof PORT !== "undefined") ? PORT : "";
+const _PORT0 = _parsePort(process.env.PORT || _PORT_FALLBACK, 3000);
 
 function _startServer(port, attempt = 0) {
   const server = app.listen(port, _HOST, () => {
