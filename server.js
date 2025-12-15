@@ -8866,32 +8866,34 @@ try {
         // key canonicalize + (strict_prune일 때) "현재 살아있는 evidence"만 집계
     // - __known: 최종 blocks에서 살아있는 URL 집합
     // - __counted: 이미 penalty를 집계한 URL 집합(중복 집계 방지)
-        const __accPenalty = (p, flags, keyRaw) => {
-      // key canonicalize
-      const key = keyRaw ? __canonUrlKey(keyRaw) : null;
+        const __accPenalty = (p, flags, keyRaw, opts) => {
+  // key canonicalize
+  const key = keyRaw ? __canonUrlKey(keyRaw) : null;
+  const force = !!(opts && opts.force);
 
-      // STRICT prune가 켜져 있으면: "최종 blocks evidence에 살아있는 URL"만 집계
-      if (__strictPrune && key && !__known.has(key)) return;
+  // STRICT prune가 켜져 있으면: 기본은 "최종 blocks evidence에 살아있는 URL"만 집계
+  // 단, touched/samples 등 “로그 기반 penalty”는 force로 우회 집계
+  if (!force && __strictPrune && key && !__known.has(key)) return;
 
-      // 이미 집계한 URL은 중복 집계 금지
-      if (key && __counted.has(key)) return;
-      if (key) __counted.add(key);
+  // 이미 집계한 URL은 중복 집계 금지
+  if (key && __counted.has(key)) return;
+  if (key) __counted.add(key);
 
-      itemsTotal += 1;
+  itemsTotal += 1;
 
-      const pp = __clamp01(p);
-      if (pp == null) return;
+  const pp = __clamp01(p);
+  if (pp == null) return;
 
-      // "패널티"로 간주할 건 (0 < p < 1) 만
-      if (pp > 0 && pp < 1) {
-        sumLog += Math.log(pp);
-        cnt += 1;
-        if (minP == null || pp < minP) minP = pp;
-      }
+  // "패널티"로 간주할 건 (0 < p < 1) 만
+  if (pp > 0 && pp < 1) {
+    sumLog += Math.log(pp);
+    cnt += 1;
+    if (minP == null || pp < minP) minP = pp;
+  }
 
-      if (flags?.year_miss) yearMiss += 1;
-      if (flags?.num_miss) numMiss += 1;
-    };
+  if (flags?.year_miss) yearMiss += 1;
+  if (flags?.num_miss) numMiss += 1;
+};
 
         // 0) __known 채우기: 최종 blocks evidence에 "살아있는" URL만 모음
     for (const b of blocksForVerify) {
@@ -8944,10 +8946,11 @@ try {
       for (const t of numeric_evidence_match.touched) {
         const key = (__keyOf(t) || (typeof t?.url === "string" ? t.url : null));
         __accPenalty(
-          t?.penalty,
-          { year_miss: !!t?.year_miss, num_miss: !!t?.num_miss },
-          key
-        );
+  t?.penalty,
+  { year_miss: !!t?.year_miss, num_miss: !!t?.num_miss },
+  key,
+  { force: true }
+);
       }
     }
 
@@ -8956,10 +8959,11 @@ try {
       for (const s of naver_soft_year_miss.samples) {
         const key = __keyOf(s) || (typeof s?.url === "string" ? s.url : null);
         __accPenalty(
-          s?.penalty,
-          { year_miss: true, num_miss: false },
-          key
-        );
+  s?.penalty,
+  { year_miss: true, num_miss: false },
+  key,
+  { force: true }
+);
       }
     }
 
