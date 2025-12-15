@@ -3624,20 +3624,42 @@ async function fetchWikidata(q, ctx = {}) {
   return data?.search?.map((i) => i.label) || [];
 }
 
-// 🔹 GDELT 뉴스 기반 시의성 엔진
+// 🔹 GDELT 뉴스 기반 시의성 엔진 (timeout/maxrecords 분리)
 async function fetchGDELT(q, ctx = {}) {
   const signal = ctx?.signal;
+
+  const qq = String(q || "").trim();
+  if (!qq) return [];
+
+  const GDELT_TIMEOUT_MS = (() => {
+    const n = Number(process.env.GDELT_TIMEOUT_MS);
+    return Number.isFinite(n) ? n : HTTP_TIMEOUT_MS;
+  })();
+
+  const MAXRECORDS = (() => {
+    const n = Number(process.env.GDELT_MAXRECORDS);
+    const v = Number.isFinite(n) ? n : 3;
+    return Math.max(1, Math.min(10, Math.trunc(v)));
+  })();
+
+  const qMax = (() => {
+    const n = Number(process.env.GDELT_QUERY_MAXLEN);
+    const v = Number.isFinite(n) ? n : 120;
+    return Math.max(40, Math.min(240, Math.trunc(v)));
+  })();
+
+  const qFinal = qq.length > qMax ? qq.slice(0, qMax).trim() : qq;
+
   const { data } = await axios.get(
-    `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&format=json&maxrecords=3`,
-    { timeout: HTTP_TIMEOUT_MS, signal }
+    `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(qFinal)}&format=json&maxrecords=${MAXRECORDS}`,
+    { timeout: GDELT_TIMEOUT_MS, signal }
   );
 
-  return (
-    data?.articles?.map((i) => {
-      const d = parseGdeltSeenDate(i.seendate);
-      return { title: i.title, date: d ? d.toISOString() : null };
-    }) || []
-  );
+  const arts = Array.isArray(data?.articles) ? data.articles : [];
+  return arts.map((i) => {
+    const d = parseGdeltSeenDate(i.seendate);
+    return { title: i.title, date: d ? d.toISOString() : null };
+  });
 }
 
 // 🔹 GitHub 리포 검색 엔진 (DV/CV용)
@@ -6994,20 +7016,172 @@ const engineQueriesUsed = {
 
 const blocksForVerify = [];
 
-// ✅ 쿼리가 비면 아예 호출하지 않고 result=[]로 처리 (calls 안 늘어남)
+// ✅ call caps + early-stop (QV/FV)
+const __capNum = (v, d) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+
+const __caps = {
+  total: __capNum(process.env.ENGINE_CALL_CAP_TOTAL, 999),
+  academic: __capNum(process.env.ENGINE_CALL_CAP_ACADEMIC, 999), // crossref+openalex 합
+  gdelt: __capNum(process.env.ENGINE_CALL_CAP_GDELT, 999),
+  naver: __capNum(process.env.ENGINE_CALL_CAP_NAVER, 999), // naver query 호출 수
+
+  // ✅ blocks cap (verify prompt size / runtime cap)
+  blocks: __capNum(process.env.QVFV_BLOCKS_CAP, 4),
+  blocks_snippet: __capNum(process.env.QVFV_BLOCKS_CAP_SNIPPET, 2),
+
+  early_min_eeff: __capNum(process.env.EARLY_STOP_MIN_EEFF, 2),
+  early_min_evidence: __capNum(process.env.EARLY_STOP_MIN_EVIDENCE, 6),
+  early_require_strong: String(process.env.EARLY_STOP_REQUIRE_STRONG_OFFICIAL ?? "true").toLowerCase() !== "false",
+};
+
+const __capState = {
+  calls_total: 0,
+  calls_academic: 0,
+  calls_gdelt: 0,
+  calls_naver: 0,
+  early_stop: false,
+  early_stop_reason: null,
+};
+
+const __capConsume = (name) => {
+  if (__capState.calls_total >= __caps.total) return false;
+
+  if (name === "crossref" || name === "openalex") {
+    if (__capState.calls_academic >= __caps.academic) return false;
+    __capState.calls_total += 1;
+    __capState.calls_academic += 1;
+    return true;
+  }
+
+  if (name === "gdelt") {
+    if (__capState.calls_gdelt >= __caps.gdelt) return false;
+    __capState.calls_total += 1;
+    __capState.calls_gdelt += 1;
+    return true;
+  }
+
+  if (name === "naver") {
+    if (__capState.calls_naver >= __caps.naver) return false;
+    __capState.calls_total += 1;
+    __capState.calls_naver += 1;
+    return true;
+  }
+
+  __capState.calls_total += 1;
+  return true;
+};
+
+const __hasStrongOfficialEvidence = (arr) => {
+  try {
+    if (!Array.isArray(arr) || arr.length === 0) return false;
+
+    const isOfficialHost = (host) => {
+      const h = String(host || "").toLowerCase();
+      if (!h) return false;
+      if (h.includes("kosis.kr")) return true;
+      if (h.endsWith(".go.kr")) return true;
+      if (typeof hostLooksOfficial === "function" && hostLooksOfficial(h)) return true;
+      return false;
+    };
+
+    for (const x of arr) {
+      if (typeof __isEvidenceLikeItem === "function" && !__isEvidenceLikeItem(x)) continue;
+
+      const host = String(x?.source_host || x?.host || x?.domain || "").toLowerCase();
+      const tw =
+        (typeof x?.tier_weight === "number" && Number.isFinite(x.tier_weight))
+          ? x.tier_weight
+          : null;
+
+      const tier = String(x?.tier || "").toLowerCase();
+      const wl = (x?.whitelisted === true) || !!x?.tier;
+      const inferred = x?.inferred === true;
+
+      if (tw != null && tw >= 0.95) return true;
+      if (tier === "tier1") return true;
+      if (wl && !inferred && isOfficialHost(host)) return true;
+      if (isOfficialHost(host)) return true;
+    }
+    return false;
+  } catch (_) {
+    return false;
+  }
+};
+
+const __shouldEarlyStopApprox = ({ cr = [], oa = [], wd = [], gd = [], nv = [] }) => {
+  try {
+    const counts = {
+      crossref: Array.isArray(cr) ? cr.length : 0,
+      openalex: Array.isArray(oa) ? oa.length : 0,
+      wikidata: Array.isArray(wd) ? wd.length : 0,
+      gdelt: Array.isArray(gd) ? gd.length : 0,
+      naver: Array.isArray(nv) ? nv.length : 0,
+    };
+
+    const enginesNonEmpty = Object.entries(counts).filter(([k, v]) => v > 0).map(([k]) => k);
+    const eEffApprox = enginesNonEmpty.filter((x) => x !== "klaw").length;
+    const totalEvidence = Object.values(counts).reduce((a, b) => a + (Number(b) || 0), 0);
+
+    const strong =
+      __hasStrongOfficialEvidence(nv) ||
+      __hasStrongOfficialEvidence(cr) ||
+      __hasStrongOfficialEvidence(oa) ||
+      __hasStrongOfficialEvidence(wd) ||
+      __hasStrongOfficialEvidence(gd);
+
+    if (__caps.early_require_strong && !strong) {
+      return { ok: false, strong, eEffApprox, totalEvidence, enginesNonEmpty };
+    }
+
+    if (eEffApprox >= __caps.early_min_eeff && totalEvidence >= __caps.early_min_evidence) {
+      return { ok: true, strong, eEffApprox, totalEvidence, enginesNonEmpty };
+    }
+
+    return { ok: false, strong, eEffApprox, totalEvidence, enginesNonEmpty };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+};
+
+// ✅ 쿼리가 비면 호출하지 않고 result=[]로 처리 + cap 초과도 호출 안 함
 const runOrEmpty = async (name, fn, q) => {
   const qq = String(q || "").trim();
-  if (!qq) return { result: [], ms: 0, skipped: true };
+  if (!qq) return { result: [], ms: 0, skipped: true, reason: "empty_query" };
+  if (!__capConsume(name)) return { result: [], ms: 0, skipped: true, reason: "cap" };
   return await safeFetchTimed(name, fn, qq, engineTimes, engineMetrics);
 };
 
-for (const b of (qvfvPre.blocks || [])) {
+const __isSnippetReq =
+  !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
+
+const __maxBlocksInput = __isSnippetReq ? __caps.blocks_snippet : __caps.blocks;
+
+const __blocksInput = Array.isArray(qvfvPre.blocks)
+  ? qvfvPre.blocks.slice(0, Math.max(1, Math.trunc(__maxBlocksInput)))
+  : [];
+
+try {
+  partial_scores.qvfv_block_cap = {
+    is_snippet: __isSnippetReq,
+    cap: Math.max(1, Math.trunc(__maxBlocksInput)),
+    original: Array.isArray(qvfvPre.blocks) ? qvfvPre.blocks.length : 0,
+    used: __blocksInput.length,
+    truncated: Array.isArray(qvfvPre.blocks) ? (qvfvPre.blocks.length > __blocksInput.length) : false,
+  };
+} catch {}
+
+for (const b of __blocksInput) {
+  if (__capState.early_stop) break;
+
   const eq = b.engine_queries || {};
 
-const qCrossref = String(eq.crossref || "").trim();
-const qOpenalex = String(eq.openalex || "").trim();
-const qWikidata = String(eq.wikidata || "").trim();
-const qGdelt   = String(eq.gdelt   || "").trim();
+  const qCrossref = String(eq.crossref || "").trim();
+  const qOpenalex = String(eq.openalex || "").trim();
+  const qWikidata = String(eq.wikidata || "").trim();
+  const qGdelt   = String(eq.gdelt   || "").trim();
 
   // ✅ 엔진별 쿼리 기록(빈 값 제외)
   if (qCrossref) engineQueriesUsed.crossref.push(qCrossref);
@@ -7015,17 +7189,17 @@ const qGdelt   = String(eq.gdelt   || "").trim();
   if (qWikidata) engineQueriesUsed.wikidata.push(qWikidata);
   if (qGdelt) engineQueriesUsed.gdelt.push(qGdelt);
 
-let naverQueries = Array.isArray(eq.naver) ? eq.naver : [];
-naverQueries = naverQueries
-  .map((q) => limitChars(buildNaverAndQuery(q), 30))
-  .filter(Boolean)
-  .slice(0, BLOCK_NAVER_MAX_QUERIES);
+  let naverQueries = Array.isArray(eq.naver) ? eq.naver : [];
+  naverQueries = naverQueries
+    .map((q) => limitChars(buildNaverAndQuery(q), 30))
+    .filter(Boolean)
+    .slice(0, BLOCK_NAVER_MAX_QUERIES);
 
-// ✅ 핵심: 혹시 여기까지 왔는데도 비면, 최소 1개는 생성해서 Naver 호출이 끊기지 않게
-if (!naverQueries.length) {
-  const seed = String(b?.text || "").trim() || qvfvPre?.korean_core || qvfvBaseText || query;
-  naverQueries = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
-}
+  // ✅ 핵심: 혹시 여기까지 왔는데도 비면, 최소 1개는 생성해서 Naver 호출이 끊기지 않게
+  if (!naverQueries.length) {
+    const seed = String(b?.text || "").trim() || qvfvPre?.korean_core || qvfvBaseText || query;
+    naverQueries = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
+  }
 
   // ✅ 네이버 쿼리 기록(빈 값 제외)
   for (const nq of naverQueries) {
@@ -7040,11 +7214,14 @@ if (!naverQueries.length) {
     runOrEmpty("gdelt", fetchGDELT, qGdelt),
   ]);
 
-    // ─────────────────────────────
+  // ─────────────────────────────
   // ✅ Naver 결과: 표시용(all)과 verify용(topK + whitelist + relevance) 분리
   // ─────────────────────────────
   let naverItemsAll = [];
   for (const nq0 of naverQueries) {
+    // cap: naver query 호출 제한
+    if (!__capConsume("naver")) break;
+
     const nq = String(nq0 || "").trim();
     if (!nq) continue;
 
@@ -7055,8 +7232,28 @@ if (!naverQueries.length) {
       engineTimes,
       engineMetrics
     );
+
     if (Array.isArray(result) && result.length) naverItemsAll.push(...result);
-    }
+
+    // ✅ 같은 블록 내에서 “이미 충분”하면 naver 추가 호출 조기 중단
+    try {
+      const _nvDedup = dedupeByLink(naverItemsAll);
+      const chk = __shouldEarlyStopApprox({
+        cr: (crPack && Array.isArray(crPack.result)) ? crPack.result : [],
+        oa: (oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [],
+        wd: (wdPack && Array.isArray(wdPack.result)) ? wdPack.result : [],
+        gd: (gdPack && Array.isArray(gdPack.result)) ? gdPack.result : [],
+        nv: _nvDedup,
+      });
+
+      if (chk && chk.ok) {
+        __capState.early_stop = true;
+        __capState.early_stop_reason = { where: "naver_loop", ...chk };
+        break;
+      }
+    } catch {}
+  }
+
   naverItemsAll = dedupeByLink(naverItemsAll).slice(0, BLOCK_NAVER_MAX_ITEMS);
 
   // ✅ qvfvPre에서 korean_core / english_core를 안전하게 꺼냄
@@ -7071,34 +7268,29 @@ if (!naverQueries.length) {
 
   // ✅ 확장된 쿼리를 기준으로 evidence 선택
   let naverItemsForVerify = pickTopNaverEvidenceForVerify({
-  items: naverItemsAll,
-  query,
-  blockText: b?.text || "",
-  naverQueries: naverQueriesExpanded,
-  topK: BLOCK_NAVER_EVIDENCE_TOPK,
-  minRelevance: NAVER_RELEVANCE_MIN,
-});
+    items: naverItemsAll,
+    query,
+    blockText: b?.text || "",
+    naverQueries: naverQueriesExpanded,
+    topK: BLOCK_NAVER_EVIDENCE_TOPK,
+    minRelevance: NAVER_RELEVANCE_MIN,
+  });
 
-    // ----- fallback: strict 필터로 0개 나오면 그래도 뭔가 채워주기 -----
+  // ----- fallback: strict 필터로 0개 나오면 그래도 뭔가 채워주기 -----
   if (
     (!Array.isArray(naverItemsForVerify) || naverItemsForVerify.length === 0) &&
     Array.isArray(naverItemsAll) &&
     naverItemsAll.length > 0
   ) {
-        // policy: time-sensitive 질의면 news도 포함할 수 있으니,
-    // 우선 non-news 풀을 만들되, 비면 전체(naverItemsAll)로 폴백
     const __poolNoNews = Array.isArray(naverItemsAll)
       ? naverItemsAll.filter((r) => {
           const t = String(r?.type || r?.source_type || r?.kind || "").toLowerCase().trim();
-          if (!t) return true;          // 타입 정보 없으면 일단 keep
-          return t !== "news";          // news만 제외
+          if (!t) return true;
+          return t !== "news";
         })
       : [];
 
-    const __poolPrefer = (__poolNoNews.length ? __poolNoNews : naverItemsAll).filter((r) =>
-      !!(r?.tier || r?.whitelisted)
-    );
-
+    const __poolPrefer = (__poolNoNews.length ? __poolNoNews : naverItemsAll).filter((r) => !!(r?.tier || r?.whitelisted));
     const __poolFinal = __poolPrefer.length > 0 ? __poolPrefer : naverItemsAll;
 
     naverItemsForVerify = topArr(__poolFinal, BLOCK_NAVER_EVIDENCE_TOPK);
@@ -7121,7 +7313,6 @@ if (!naverQueries.length) {
       openalex: qOpenalex,
       wikidata: qWikidata,
       gdelt: qGdelt,
-      // ✅ 여기서도 bare korean_core 안 쓰고 확장 쿼리만 사용
       naver: naverQueriesExpanded,
     },
     evidence: {
@@ -7132,7 +7323,39 @@ if (!naverQueries.length) {
       naver: topArr(naverItemsForVerify, BLOCK_NAVER_EVIDENCE_TOPK),
     },
   });
+
+  // ✅ 블록 1개 끝난 시점에서도 early-stop 판단 (다음 블록 스킵용)
+  try {
+    const chk2 = __shouldEarlyStopApprox({
+      cr: (external && Array.isArray(external.crossref)) ? external.crossref : [],
+      oa: (external && Array.isArray(external.openalex)) ? external.openalex : [],
+      wd: (external && Array.isArray(external.wikidata)) ? external.wikidata : [],
+      gd: (external && Array.isArray(external.gdelt)) ? external.gdelt : [],
+      nv: (external && Array.isArray(external.naver)) ? external.naver : [],
+    });
+
+    if (chk2 && chk2.ok) {
+      __capState.early_stop = true;
+      __capState.early_stop_reason = { where: "after_block", ...chk2 };
+      break;
+    }
+  } catch {}
 }
+
+// ✅ cap/early-stop 로그
+try {
+  partial_scores.call_caps = {
+    limits: __caps,
+    used: {
+      total: __capState.calls_total,
+      academic: __capState.calls_academic,
+      gdelt: __capState.calls_gdelt,
+      naver: __capState.calls_naver,
+    },
+    early_stop: __capState.early_stop,
+    early_stop_reason: __capState.early_stop_reason,
+  };
+} catch {}
 
 external.naver = dedupeByLink(external.naver).slice(0, NAVER_MULTI_MAX_ITEMS);
 qvfvBlocksForVerifyFull = blocksForVerify;
