@@ -6999,12 +6999,50 @@ if (!qvfvPre) {
   };
 }
 
-    // ✅ 블록별 엔진 호출 → verify에 넣을 “블록+증거” 패키지 구성
-    external.crossref = [];
-    external.openalex = [];
-    external.wikidata = [];
-    external.gdelt = [];
-    external.naver = [];
+   // ✅ 블록별 엔진 호출 → verify에 넣을 “블록+증거” 패키지 구성
+
+// ✅ (NEW) block cap: snippet이면 더 공격적으로 제한해서 전체 runtime 줄이기
+const __isSnippetVerify =
+  !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
+
+const __maxBlocksNormal = (() => {
+  const v = Number(process.env.QVFV_MAX_BLOCKS ?? process.env.QVFV_BLOCKS_MAX ?? 2);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 2;
+})();
+const __maxBlocksSnippet = (() => {
+  const v = Number(process.env.QVFV_SNIPPET_MAX_BLOCKS ?? 1);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 1;
+})();
+const __maxBlocks = __isSnippetVerify ? __maxBlocksSnippet : __maxBlocksNormal;
+
+try {
+  if (qvfvPre && Array.isArray(qvfvPre.blocks)) {
+    const beforeN = qvfvPre.blocks.length;
+    if (beforeN > __maxBlocks) {
+      qvfvPre.blocks = qvfvPre.blocks.slice(0, __maxBlocks);
+    }
+    if (partial_scores && typeof partial_scores === "object") {
+      partial_scores.qvfv_blocks_capped = {
+        before: beforeN,
+        after: Array.isArray(qvfvPre.blocks) ? qvfvPre.blocks.length : 0,
+        max: __maxBlocks,
+        is_snippet: __isSnippetVerify,
+      };
+    }
+  }
+} catch (e) {
+  try {
+    if (partial_scores && typeof partial_scores === "object") {
+      partial_scores.qvfv_blocks_capped = { error: true, message: e?.message || String(e) };
+    }
+  } catch {}
+}
+
+external.crossref = [];
+external.openalex = [];
+external.wikidata = [];
+external.gdelt = [];
+external.naver = [];
 
 const engineQueriesUsed = {
   crossref: [],
@@ -7169,21 +7207,49 @@ const runOrEmpty = async (name, fn, q) => {
 };
 
 // ✅ 쿼리가 비면 호출하지 않고 result=[]로 처리 + cap 초과도 호출 안 함
-// ✅ GDELT: block마다 돌리지 말고 "요청당 1회"만(기본 on)
+// ✅ ACADEMIC(Crossref/OpenAlex) + GDELT: block마다 돌리지 말고 "요청당 1회"만(기본 on)
+// - env: ACADEMIC_SINGLE_QUERY=false 로 끄면 기존처럼 block별 호출
 // - env: GDELT_SINGLE_QUERY=false 로 끄면 기존처럼 block별 호출
+const __academicSingle = String(process.env.ACADEMIC_SINGLE_QUERY ?? "true").toLowerCase() !== "false";
 const __gdeltSingle = String(process.env.GDELT_SINGLE_QUERY ?? "true").toLowerCase() !== "false";
 
-// "대표 gdelt 쿼리"를 블록 0개여도 안정적으로 만든다
+// "대표 엔진 쿼리"를 블록 0개여도 안정적으로 만든다
 const __firstEq =
   (Array.isArray(qvfvPre?.blocks) && qvfvPre.blocks[0] && typeof qvfvPre.blocks[0] === "object")
     ? (qvfvPre.blocks[0].engine_queries || {})
     : {};
 
-const gdeltGlobalQ = __gdeltSingle
-  ? String(__firstEq.gdelt || qvfvPre?.english_core || qvfvBaseText || query || "").trim()
+const academicBaseEn = String(qvfvPre?.english_core || qvfvBaseText || query || "").trim();
+
+const crossrefGlobalQ = __academicSingle
+  ? String(__firstEq.crossref || academicBaseEn || "").trim()
   : "";
 
+const openalexGlobalQ = __academicSingle
+  ? String(__firstEq.openalex || academicBaseEn || "").trim()
+  : "";
+
+const gdeltGlobalQ = __gdeltSingle
+  ? String(__firstEq.gdelt || academicBaseEn || "").trim()
+  : "";
+
+let crossrefGlobalPack = { result: [], ms: 0, skipped: true };
+let openalexGlobalPack = { result: [], ms: 0, skipped: true };
 let gdeltGlobalPack = { result: [], ms: 0, skipped: true };
+
+if (__academicSingle) {
+  const qc = limitChars(crossrefGlobalQ, 90);
+  const qo = limitChars(openalexGlobalQ, 90);
+
+  if (String(qc || "").trim()) {
+    crossrefGlobalPack = await safeFetchTimed("crossref", fetchCrossref, qc, engineTimes, engineMetrics);
+    engineQueriesUsed.crossref.push(qc);
+  }
+  if (String(qo || "").trim()) {
+    openalexGlobalPack = await safeFetchTimed("openalex", fetchOpenAlex, qo, engineTimes, engineMetrics);
+    engineQueriesUsed.openalex.push(qo);
+  }
+}
 
 if (__gdeltSingle) {
   const qq = limitChars(gdeltGlobalQ, 120);
@@ -7217,14 +7283,14 @@ for (const b of __blocksInput) {
 
   const eq = b.engine_queries || {};
 
-  const qCrossref = String(eq.crossref || "").trim();
-  const qOpenalex = String(eq.openalex || "").trim();
+  const qCrossref = __academicSingle ? String(crossrefGlobalQ || "").trim() : String(eq.crossref || "").trim();
+  const qOpenalex = __academicSingle ? String(openalexGlobalQ || "").trim() : String(eq.openalex || "").trim();
   const qWikidata = String(eq.wikidata || "").trim();
   const qGdelt = __gdeltSingle ? String(gdeltGlobalQ || "").trim() : String(eq.gdelt || "").trim();
 
   // ✅ 엔진별 쿼리 기록(빈 값 제외)
-  if (qCrossref) engineQueriesUsed.crossref.push(qCrossref);
-  if (qOpenalex) engineQueriesUsed.openalex.push(qOpenalex);
+  if (!__academicSingle && qCrossref) engineQueriesUsed.crossref.push(qCrossref);
+  if (!__academicSingle && qOpenalex) engineQueriesUsed.openalex.push(qOpenalex);
   if (qWikidata) engineQueriesUsed.wikidata.push(qWikidata);
   if (!__gdeltSingle && qGdelt) engineQueriesUsed.gdelt.push(qGdelt);
 
@@ -7333,8 +7399,8 @@ try {
   // ----- gdelt / external / blocksForVerify -----
   const gdeltForVerify = topArr(gdPack.result, BLOCK_EVIDENCE_TOPK);
 
-  external.crossref.push(...(crPack.result || []));
-  external.openalex.push(...(oaPack.result || []));
+  if (!__academicSingle) external.crossref.push(...(crPack.result || []));
+  if (!__academicSingle) external.openalex.push(...(oaPack.result || []));
   external.wikidata.push(...(wdPack.result || []));
   if (!__gdeltSingle) external.gdelt.push(...(gdPack.result || []));
   external.naver.push(...(naverItemsAll || []));
@@ -7391,6 +7457,10 @@ try {
   };
 } catch {}
 
+if (__academicSingle) {
+  external.crossref = Array.isArray(crossrefGlobalPack?.result) ? crossrefGlobalPack.result.slice() : [];
+  external.openalex = Array.isArray(openalexGlobalPack?.result) ? openalexGlobalPack.result.slice() : [];
+}
 if (__gdeltSingle) {
   external.gdelt = Array.isArray(gdeltGlobalPack?.result) ? gdeltGlobalPack.result.slice() : [];
 }
