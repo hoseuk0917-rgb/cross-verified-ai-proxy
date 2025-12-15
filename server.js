@@ -9613,7 +9613,10 @@ const E_cov = (() => {
 // (로그용) partial_scores에 남겨두면 디버깅 편함
 partial_scores.effective_engines_used = enginesUsed;
 partial_scores.effective_engines = effEngines;
-partial_scores.effective_engine_item_counts = effective_engine_item_counts;
+partial_scores.effective_engine_item_counts =
+  (typeof effective_engine_item_counts !== "undefined")
+    ? effective_engine_item_counts
+    : null;
 partial_scores.effective_engines_count = E_eff;
 partial_scores.coverage_factor = E_cov;
 
