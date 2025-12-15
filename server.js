@@ -11997,8 +11997,7 @@ function _parsePort(v, fallback = 3000) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-const _PORT_FALLBACK = (typeof PORT !== "undefined") ? PORT : "";
-const _PORT0 = _parsePort(process.env.PORT || _PORT_FALLBACK, 3000);
+const _PORT0 = _parsePort(process.env.PORT, 3000);
 
 // ✅ Render health check (must be plain /health if Render is configured so)
 app.get("/health", (req, res) => {
