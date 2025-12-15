@@ -5705,9 +5705,69 @@ if (__isSnippetEndpoint) {
 // - safeMode가 비었거나 auto/overlay 류일 때만 개입
 // - qv+lv는 허용, qv+fv는 버림(필요없다고 했으니)
 let __routerPlan = null;
-let __routerPlanPublic = null; // ✅ 응답에 최종으로 붙일 공개용 plan
 let __runLvExtra = false;
 let __routerCacheKey = null; // ✅ S-17: router plan cache key (separate from __cacheKey)
+// ✅ helper: build router_plan for response (always reflect final safeMode)
+function __buildRouterPlanPublicFinal({ safeMode, rawMode, routerPlan, runLvExtra }) {
+  try {
+    const __sf0 = String(safeMode || "qv").toLowerCase();
+    const __sf =
+      __sf0 === "auto" || __sf0 === "null" || __sf0 === "undefined" ? "qv" : __sf0;
+
+    const __plan =
+      Array.isArray(routerPlan?.plan) && routerPlan.plan.length > 0
+        ? routerPlan.plan
+        : [{ mode: __sf, priority: 1, reason: "router_missing_or_failed" }];
+
+    const __runs =
+      Array.isArray(routerPlan?.runs) && routerPlan.runs.length > 0
+        ? routerPlan.runs.map((x) => String(x).toLowerCase()).filter(Boolean)
+        : __plan.map((x) => String(x?.mode ?? x).toLowerCase()).filter(Boolean);
+
+    return {
+      enabled: !!GROQ_ROUTER_ENABLE,
+      used: !!routerPlan,
+      cached: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
+
+      // ✅ always final safeMode (stale 방지)
+      safe_mode_final: String(__sf).toLowerCase(),
+
+      primary: String(
+        routerPlan?.primary ??
+          routerPlan?.mode ??
+          routerPlan?.safe_mode_final ??
+          __sf
+      ).toLowerCase(),
+
+      runs: (__runs.length > 0 ? __runs : [__sf]).slice(0, 5),
+
+      plan: __plan.slice(0, 5).map((x) => ({
+        mode: String(x?.mode ?? "").toLowerCase(),
+        priority: Number.isFinite(Number(x?.priority)) ? Number(x.priority) : undefined,
+      })),
+
+      confidence:
+        (routerPlan && typeof routerPlan.confidence === "number") ? routerPlan.confidence : null,
+
+      reason: routerPlan?.reason ?? null,
+      run_lv_extra: !!runLvExtra,
+      is_snippet: (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : null,
+      cache_hit: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
+
+      model:
+        routerPlan?.model ??
+        (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
+
+      lv_extra: !!(routerPlan?.lv_extra || runLvExtra),
+      status: routerPlan ? (__plan.length > 0 ? "ok" : "ok_no_plan") : "missing_plan",
+
+      cache_key: null,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 let __routerCached = false;
 
 // NOTE: __cacheKey는 이 핸들러의 "다른 캐시(응답/verify 캐시 등)"에서 계속 쓰이므로 유지
@@ -5741,7 +5801,16 @@ function __routerCacheGet(k) {
     // refresh recency (LRU-ish)
     __ROUTER_CACHE.delete(k);
     __ROUTER_CACHE.set(k, hit);
-    return hit.v ?? null;
+    const v = hit.v ?? null;
+if (!v || typeof v !== "object") return v;
+// ✅ return a clone so later mutations won't poison the cache object
+try {
+  return (typeof structuredClone === "function")
+    ? structuredClone(v)
+    : JSON.parse(JSON.stringify(v));
+} catch (_) {
+  return { ...v };
+}
   } catch (_) {
     return null;
   }
@@ -5778,8 +5847,11 @@ async function __getUserGroqKey(req) {
 }
 
 // ✅ S-17: Groq Router execution (sets safeMode + __runLvExtra + __routerPlan, with in-memory plan cache)
+let __routerUsed = false; // ✅ 실제 라우터 실행/캐시히트 여부
 try {
   const _rawMode = String(safeMode || "").trim().toLowerCase();
+  const __cacheMode =
+  (_rawMode === "overlay" || _rawMode === "route") ? "auto" : _rawMode;
 
   const _shouldRoute =
     GROQ_ROUTER_ENABLE &&
@@ -5817,18 +5889,24 @@ try {
         // ✅ router cache key (separate from other __cacheKey uses)
     // - include snippet presence/hash to avoid "fv cached" leaking into non-snippet requests
     __routerCacheKey =
-      (typeof sha16 === "function")
-        ? sha16(`router:v2|u=${__rUHash}|p=${__rPath0}|m=${_rawMode}|hs=${__rHasSn}|s=${__rSnHash}|q=${__rQHash}`.slice(0, 4000))
-        : `router:v2|u=${__rUHash}|p=${__rPath0}|m=${_rawMode}|hs=${__rHasSn}|s=${__rSnHash}|q=${__rQHash}`.slice(0, 4000);
+  (typeof sha16 === "function")
+    ? sha16(
+        `router:v3|u=${__rUHash}|p=${__rPath0}|m=${__cacheMode}|hs=${__rHasSn}|s=${__rSnHash}|q=${__rQHash}`.slice(0, 4000)
+      )
+    : `router:v3|u=${__rUHash}|p=${__rPath0}|m=${__cacheMode}|hs=${__rHasSn}|s=${__rSnHash}|q=${__rQHash}`.slice(0, 4000);
 
     // cache hit?
     const __cachedPlan = __routerCacheGet(__routerCacheKey);
     if (__cachedPlan) {
-      __routerPlan = __cachedPlan;
-      __routerCached = true;
-    } else {
+  __routerPlan = __cachedPlan;
+  __routerCached = true;
+
+  __routerUsed = true; // ✅ cache hit도 "used"
+  try { if (__routerPlan && typeof __routerPlan === "object") __routerPlan.cached = true; } catch (_) {}
+} else {
       // ✅ load user Groq key (Supabase vault) — 없으면 라우터 스킵하고 qv로 진행
-const __groqKey = await __getUserGroqKey(req);
+      let __routerCacheable = false; // ✅ only cache when user has groq key and router actually ran
+      const __groqKey = await __getUserGroqKey(req);
 
 if (!__groqKey) {
   // 라우터는 "키 없는 사용자"에겐 실행하지 않음 (기본 qv)
@@ -5844,7 +5922,12 @@ if (!__groqKey) {
     cached: false,
     lv_extra: false,
   };
+
+  __routerCacheable = false; // ✅ DO NOT cache this result
 } else {
+  __routerUsed = true; // ✅ 실제 라우터 호출 경로
+  __routerCacheable = true;
+
   __routerPlan = await groqRoutePlan({
     authUser: __au,
     groq_api_key: __groqKey, // ✅ extra field: groqRoutePlan이 안 쓰면 무시됨
@@ -5854,9 +5937,12 @@ if (!__groqKey) {
     hintMode: (_rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route") ? null : _rawMode,
   });
 }
-
       __routerCached = false;
-      try { __routerCacheSet(__routerCacheKey, __routerPlan); } catch (_) {}
+try {
+  if (__routerCacheable && __routerCacheKey && __routerPlan) {
+    __routerCacheSet(__routerCacheKey, __routerPlan);
+  }
+} catch (_) {}
     }
 
        // plan 해석: primary 모드 + 추가 실행
@@ -5978,8 +6064,14 @@ try {
   // ✅ S-17d: normalize + fallback router_plan (never keep "auto" in plan/runs/primary)
 try {
   const __sf0 = String(safeMode || "qv").toLowerCase();
-  const __sf =
-    __sf0 === "auto" || __sf0 === "null" || __sf0 === "undefined" ? "qv" : __sf0;
+const __sf =
+  (__sf0 === "auto" ||
+   __sf0 === "overlay" ||
+   __sf0 === "route" ||
+   __sf0 === "null" ||
+   __sf0 === "undefined")
+    ? "qv"
+    : __sf0;
 
   // 0) ✅ fallback: never leave __routerPlan null
   if (!__routerPlan) {
@@ -6038,48 +6130,22 @@ try {
   }
 } catch (_) {}
 
-// ✅ safety: 라우터 미사용/실패/빈값이면 기본 qv
-if (!safeMode) safeMode = "qv";
+// ✅ safety: 라우터 미사용/실패/빈값이면 기본 qv (auto/overlay/route 포함)
+const __sm0 = String(safeMode || "").toLowerCase();
+if (
+  !__sm0 ||
+  __sm0 === "auto" ||
+  __sm0 === "overlay" ||
+  __sm0 === "route" ||
+  __sm0 === "null" ||
+  __sm0 === "undefined"
+) {
+  safeMode = "qv";
+}
 
-// ✅ router diagnostics (응답 partial_scores에서 확인 가능) — 요약/길이제한 + 민감정보 최소화
-try {
-  const p0 = __routerPlan || null;
-
-  const primary0 =
-    String(p0?.primary ?? p0?.mode ?? "").toLowerCase().trim() || null;
-
-  const runs0 = Array.isArray(p0?.runs)
-    ? p0.runs.map((x) => String(x).toLowerCase()).filter(Boolean).slice(0, 5)
-    : null;
-
-  // plan은 "모드/우선순위"만 남기고 제한
-  const plan0 = Array.isArray(p0?.plan)
-    ? p0.plan
-        .map((x) => ({
-          mode: String(x?.mode || "").toLowerCase(),
-          priority: Number.isFinite(Number(x?.priority)) ? Number(x.priority) : undefined,
-        }))
-        .filter((x) => !!x.mode)
-        .slice(0, 5)
-    : null;
-
-  __routerPlanPublic = {
-    enabled: !!GROQ_ROUTER_ENABLE,
-    used: !!p0,
-    cached: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
-    safe_mode_final: String(safeMode || "").toLowerCase(),
-    primary: primary0,
-    runs: runs0,
-    plan: plan0,
-    confidence: (p0 && typeof p0.confidence === "number") ? p0.confidence : null,
-    reason: p0?.reason ?? null,
-    run_lv_extra: !!__runLvExtra,
-    is_snippet: (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : null,
-    cache_hit: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
-    cache_key: null,
-    // cache_key는 노출하지 않음(길이/민감도 이슈 방지)
-  };
-} catch (_) {}
+// ✅ router diagnostics
+// - router_plan은 “응답에 붙일 때” __buildRouterPlanPublicFinal(...)로만 생성/부착한다.
+// - 여기서는 사전 계산/캐시를 만들지 않는다. (safeMode가 뒤에서 바뀔 수 있어 불일치 위험)
 
 // ─────────────────────────────
 // ✅ Groq Router (mode judge) — OpenAI-compatible endpoint
@@ -6518,9 +6584,10 @@ const filterGithubEvidence = (items, rawQuery) => {
       .json(buildError("VALIDATION_ERROR", "query가 누락되었습니다."));
   }
 
-  // ✅ allow auto/overlay/route: 라우터 실패/비활성 대비 기본 qv로 강제
+// ✅ allow auto/overlay/route: 아직 raw 값이면 (라우터 결과가 있으면 그걸 우선) 최종 top-level로 정규화
 if (safeMode === "auto" || safeMode === "overlay" || safeMode === "route") {
-  safeMode = "qv";
+  const __sf = String(__routerPlan?.safe_mode_final || "qv").toLowerCase();
+  safeMode = (__sf === "fv") ? "fv" : "qv";
 }
 
 // ✅ /api/verify에서 lv 직접 호출 금지 (LV는 /api/lv 전용)
@@ -6597,7 +6664,12 @@ if (safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === 
   // ✅ attach router diagnostics to partial_scores (avoid TDZ issues)
 try {
   if (partial_scores && typeof partial_scores === "object") {
-    partial_scores.router_plan = __routerPlanPublic || null;
+    partial_scores.router_plan = __buildRouterPlanPublicFinal({
+      safeMode,
+      rawMode,
+      routerPlan: __routerPlan,
+      runLvExtra: __runLvExtra,
+    });
   }
 } catch (_) {}
 
@@ -7229,43 +7301,21 @@ if (__cachedPayload) {
   } else {
     out.partial_scores = { cache_hit: true };
   }
-  // ✅ S-17b: 응답 직전 router_plan 재부착 (cache-hit path)
+// ✅ S-17b: 응답 직전 router_plan 재부착 (cache-hit path)
+// - 최종 safeMode 반영 (stale 방지)
 try {
-  const __sf0 = String(safeMode || "qv").toLowerCase();
-  const __sf =
-    __sf0 === "auto" || __sf0 === "null" || __sf0 === "undefined" ? "qv" : __sf0;
+  const __rp = __buildRouterPlanPublicFinal({
+    safeMode,
+    rawMode,
+    routerPlan: __routerPlan,
+    runLvExtra: __runLvExtra,
+  });
 
-  const __plan =
-    Array.isArray(__routerPlan?.plan) && __routerPlan.plan.length > 0
-      ? __routerPlan.plan
-      : [{ mode: __sf, priority: 1, reason: "router_missing_or_failed" }];
-
-  const __runs =
-    Array.isArray(__routerPlan?.runs) && __routerPlan.runs.length > 0
-      ? __routerPlan.runs.map(x => String(x).toLowerCase()).filter(Boolean)
-      : __plan.map(x => String(x?.mode ?? x).toLowerCase()).filter(Boolean);
-
-  __ps.router_plan = {
-    enabled: !!GROQ_ROUTER_ENABLE,
-    raw_mode: String(rawMode || "auto").toLowerCase(),
-    safe_mode_final: String(__routerPlan?.safe_mode_final ?? __sf).toLowerCase(),
-    primary: String(
-      __routerPlan?.primary ??
-        __routerPlan?.mode ??
-        __routerPlan?.safe_mode_final ??
-        __sf
-    ).toLowerCase(),
-    plan: __plan,
-    runs: __runs.length > 0 ? __runs : [__sf],
-    model:
-      __routerPlan?.model ??
-      (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
-    cached: !!__routerPlan?.cached,
-    lv_extra: !!(__routerPlan?.lv_extra || __runLvExtra),
-    status: __routerPlan
-      ? (__plan.length > 0 ? "ok" : "ok_no_plan")
-      : "missing_plan",
-  };
+  if (out.partial_scores && typeof out.partial_scores === "object") {
+    out.partial_scores.router_plan = __rp;
+  } else {
+    out.partial_scores = { cache_hit: true, router_plan: __rp };
+  }
 } catch (_) {}
   return res.json(buildSuccess(out));
 }
@@ -8425,33 +8475,31 @@ try {
   numeric_soft_warnings,
   year_soft_warnings,
 };
-// ✅ E_eff (effective engines) + coverage_factor (E_eff 기반)
+// ✅ E_eff (effective engines) helpers (DETAIL ONLY)
+// - 최종 effective_engines/coverage_factor는 아래(9460: E_cov/E_eff 블록)에서 단일 소스로 확정
+// - 여기서는 "counts/ratio/detail"만 기록 + exclusion_reasons 보강만 수행
 try {
   const __counts = __calcEngineEvidenceCounts(blocksForVerify);
   const __requested = Array.isArray(engines_requested) ? engines_requested : [];
   const __eff = __getEffectiveEngines(__requested, __counts);
 
-  // 너가 아래에서 Array로 읽고 있으니: effective_engines는 "배열"로 유지
-  partial_scores.effective_engines = __eff.slice();
-  partial_scores.effective_engines_count = __eff.length;
-
-  // ✅ coverage_factor = (effective / requested)
-  const __cov01 =
+  // (detail) 최종값을 덮어쓰지 않도록 *_detail / *_ratio 로만 남김
+  const __ratio01 =
     (__requested.length > 0)
       ? Math.min(1.0, Math.max(0.0, (__eff.length / __requested.length)))
       : 0.0;
 
-  partial_scores.coverage_factor = __cov01;
-
-  // (선택) 디버깅용 상세도 같이 남겨두기
-  partial_scores.coverage = {
+  partial_scores.coverage_detail = {
     requested: __requested.length,
     effective: __eff.length,
-    coverage_01: __cov01,
+    ratio_01: __ratio01,
     counts: __counts,
   };
+  partial_scores.effective_engines_detail = __eff.slice();
+  partial_scores.effective_engines_count_detail = __eff.length;
+  partial_scores.coverage_ratio_01 = __ratio01;
 
-  // ✅ engine_exclusion_reasons에 "no_effective_evidence" 동기화
+  // ✅ engine_exclusion_reasons에 "no_effective_evidence" 동기화(coverage penalty target)
   if (engine_exclusion_reasons && typeof engine_exclusion_reasons === "object") {
     for (const e of __requested) {
       const c = (__counts?.[e] || 0);
@@ -9407,50 +9455,165 @@ const enginesUsedSet = new Set(
   Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines
 );
 
-// ✅ E_eff(Effective engines): 실제로 evidence가 남아있는 엔진 개수 기반 coverage factor
-const effEngines = Array.from(enginesUsedSet).filter((e) => e && e !== "klaw");
+// ✅ E_eff(Effective engines): "실제로 유효 evidence가 남아있는" 엔진 개수 기반 coverage factor
+// - enginesUsedSet(호출/사용 시도) 기준이 아니라 external[engine]의 "kept evidence" 기준으로 산출
+// - klaw는 제외(법률 모드는 coverage 개념이 다름)
+const enginesUsed = Array.from(enginesUsedSet).filter((e) => e && e !== "klaw");
+
+// helper: evidence-like item 판정(엔진별 스키마가 달라도 최대한 안전하게)
+function __isEvidenceLikeItem(x) {
+  if (!x || typeof x !== "object") return false;
+
+  // 명시적으로 버려진/제외된 것들은 제외
+  if (x.pruned === true) return false;
+  if (x.excluded === true) return false;
+  if (x.irrelevant === true) return false;
+  if (x.discarded === true) return false;
+
+  const url = String(x.url || x.link || x.source_url || x.sourceUrl || x.href || "").trim();
+  const host = String(x.host || x.source_host || x.sourceHost || x.domain || "").trim();
+  const title = String(x.title || x.source_title || x.name || "").trim();
+  const text = String(
+    x.snippet || x.summary || x.text || x.evidence_text || x.evidenceText || ""
+  ).trim();
+
+  // 최소 하나라도 있으면 evidence로 간주(엔진별로 title/host만 있는 경우도 있음)
+  return !!(url || host || title || text);
+}
+
+// helper: external[eng]에서 "evidence 배열" 최대한 안전하게 꺼내기
+const __extractEvidenceArrayForEeff = (eng, ext) => {
+  if (!ext || typeof ext !== "object") return [];
+  const v = ext?.[eng];
+
+  if (!v) return [];
+
+  // 1) 이미 배열이면 그대로
+  if (Array.isArray(v)) return v;
+
+  // 2) 흔한 래핑 형태들
+  if (Array.isArray(v?.items)) return v.items;
+  if (Array.isArray(v?.results)) return v.results;
+  if (Array.isArray(v?.data)) return v.data;
+  if (Array.isArray(v?.evidence)) return v.evidence;
+  if (Array.isArray(v?.sources)) return v.sources;
+
+  // 3) { list: [...] } 류
+  if (Array.isArray(v?.list)) return v.list;
+
+  return [];
+};
+
+// 1) 엔진별 kept evidence 개수 계산
+const engineEvidenceCountsFinal = {};
+for (const eng of enginesUsed) {
+  const arr = __extractEvidenceArrayForEeff(eng, external);
+  const kept = Array.isArray(arr) ? arr.filter(__isEvidenceLikeItem) : [];
+  engineEvidenceCountsFinal[eng] = kept.length;
+}
+
+// 2) E_eff = kept evidence가 1개 이상인 엔진들
+const effEngines = enginesUsed.filter((eng) => (engineEvidenceCountsFinal[eng] || 0) > 0);
 const E_eff = effEngines.length;
 
+// (로그) 최종 산출 근거도 남김(나중에 디버깅/어드민 UI에서 유용)
+partial_scores.engine_evidence_counts_final = engineEvidenceCountsFinal;
+
 // ✅ coverage factor (QV/FV에만 의미있게 적용, DV/CV는 1.0 유지)
+// ✅ coverage factor (QV/FV에만 의미있게 적용, DV/CV는 1.0 유지)
+// - 기본값은 기존과 동일
+// - ENV로 튜닝 가능:
+//   COVERAGE_EFF_GE3=1.0
+//   COVERAGE_EFF_2=0.96
+//   COVERAGE_EFF_1=0.90
+//   COVERAGE_EFF_0=0.85
+//   COVERAGE_STRONG_OFFICIAL_MIN=0.97
 const E_cov = (() => {
   if (!(safeMode === "qv" || safeMode === "fv")) return 1.0;
 
+  const _num = (v, d) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  };
+
+  const F_GE3 = _num(process.env.COVERAGE_EFF_GE3, 1.0);
+  const F_2   = _num(process.env.COVERAGE_EFF_2, 0.96);
+  const F_1   = _num(process.env.COVERAGE_EFF_1, 0.90);
+  const F_0   = _num(process.env.COVERAGE_EFF_0, 0.85);
+  const STRONG_MIN = _num(process.env.COVERAGE_STRONG_OFFICIAL_MIN, 0.97);
+
+  // 기본 f
   let f = 1.0;
-  if (E_eff >= 3) f = 1.0;
-  else if (E_eff === 2) f = 0.96;
-  else if (E_eff === 1) f = 0.90;
-  else f = 0.85;
+  if (E_eff >= 3) f = F_GE3;
+  else if (E_eff === 2) f = F_2;
+  else if (E_eff === 1) f = F_1;
+  else f = F_0;
 
   // ✅ 예외: 엔진이 1개여도 “강한 공식/통계/정부급” 근거면 감점 완화
+  // - naver만 보지 않고 external 전체의 kept evidence를 스캔
   const hasStrongOfficial = (() => {
-    if (!enginesUsedSet.has("naver")) return false;
-    const nv = Array.isArray(external?.naver) ? external.naver : [];
-    return nv.some((x) => {
-      const host = String(x?.source_host || x?.host || "").toLowerCase();
-      const tw =
-        typeof x?.tier_weight === "number" && Number.isFinite(x.tier_weight)
-          ? x.tier_weight
-          : null;
-      const tier = String(x?.tier || "").toLowerCase();
-      const wl = (x?.whitelisted === true) || !!x?.tier;
-      const inferred = x?.inferred === true;
+    try {
+      const isOfficialHost = (host) => {
+        const h = String(host || "").toLowerCase();
+        if (!h) return false;
+        if (h.includes("kosis.kr")) return true;
+        if (h.endsWith(".go.kr")) return true;
+        if (typeof hostLooksOfficial === "function" && hostLooksOfficial(h)) return true;
+        return false;
+      };
 
-      if (tw != null && tw >= 0.95) return true;
-      if (tier === "tier1") return true;
-      if (host.includes("kosis.kr")) return true;
-      if (host.endsWith(".go.kr")) return true;
-      if (wl && !inferred && (typeof hostLooksOfficial === "function") && hostLooksOfficial(host)) return true;
+      // enginesUsed는 바로 위에서 "klaw 제외"로 만든 상태(너 코드 기준)
+      for (const eng of Array.isArray(enginesUsed) ? enginesUsed : []) {
+        const arr = (typeof __extractEvidenceArrayForEeff === "function")
+          ? __extractEvidenceArrayForEeff(eng, external)
+          : (Array.isArray(external?.[eng]) ? external[eng] : []);
+
+        if (!Array.isArray(arr) || arr.length === 0) continue;
+
+        // kept evidence만 대상으로
+        for (const x of arr) {
+          if (typeof __isEvidenceLikeItem === "function" && !__isEvidenceLikeItem(x)) continue;
+
+          const host = String(x?.source_host || x?.host || x?.domain || "").toLowerCase();
+
+          // tier_weight/tier/whitelisted는 naver에 많지만, 있으면 엔진 불문하고 활용
+          const tw =
+            (typeof x?.tier_weight === "number" && Number.isFinite(x.tier_weight))
+              ? x.tier_weight
+              : null;
+
+          const tier = String(x?.tier || "").toLowerCase();
+          const wl = (x?.whitelisted === true) || !!x?.tier;
+          const inferred = x?.inferred === true;
+
+          if (tw != null && tw >= 0.95) return true;
+          if (tier === "tier1") return true;
+          if (wl && !inferred && isOfficialHost(host)) return true;
+
+          if (isOfficialHost(host)) return true;
+        }
+      }
 
       return false;
-    });
+    } catch (_) {
+      return false;
+    }
   })();
 
-  if (E_eff <= 1 && hasStrongOfficial) f = Math.max(f, 0.97);
+  if (E_eff <= 1 && hasStrongOfficial) f = Math.max(f, STRONG_MIN);
+
+  // 로그로 남김(디버깅/어드민)
+  partial_scores.coverage_has_strong_official = !!hasStrongOfficial;
+
+  // 안전 클램프(과도 튜닝 방지)
+  f = Math.max(0.80, Math.min(1.0, f));
   return f;
 })();
 
 // (로그용) partial_scores에 남겨두면 디버깅 편함
+partial_scores.effective_engines_used = enginesUsed;
 partial_scores.effective_engines = effEngines;
+partial_scores.effective_engine_item_counts = effective_engine_item_counts;
 partial_scores.effective_engines_count = E_eff;
 partial_scores.coverage_factor = E_cov;
 
@@ -9464,11 +9627,63 @@ const R_t =
     ? Math.max(0, Math.min(1, partial_scores.recency))
     : 1.0;
 
-const N =
+// ✅ Naver soft-miss penalty factor (year/number) — score에 실제 반영
+const __naverSoftMiss = (() => {
+  if (!((safeMode === "qv" || safeMode === "fv") && useNaver)) {
+    return { total: 0, year_miss: 0, num_miss: 0, factor: 1.0 };
+  }
+
+  const nv = Array.isArray(external?.naver) ? external.naver : [];
+  const total = nv.length;
+
+  let yearMiss = 0;
+  let numMiss = 0;
+
+  for (const x of nv) {
+    const y =
+      x?._soft_year_miss === true ||
+      x?.soft_year_miss === true ||
+      x?.year_soft_miss === true;
+
+    const n =
+      x?._soft_num_miss === true ||
+      x?._soft_numeric_miss === true ||
+      x?.soft_num_miss === true ||
+      x?.numeric_soft_miss === true;
+
+    if (y) yearMiss++;
+    if (n) numMiss++;
+  }
+
+  // env로 조절 가능(기본은 “살짝만” 깎기)
+  const PY = Math.max(0, Math.min(0.2, parseFloat(process.env.NAVER_YEAR_MISS_PENALTY || "0.03")));
+  const PN = Math.max(0, Math.min(0.2, parseFloat(process.env.NAVER_NUM_MISS_PENALTY || "0.02")));
+
+  const yr = total > 0 ? (yearMiss / total) : 0;
+  const nr = total > 0 ? (numMiss / total) : 0;
+
+  // year/num 미스 비율에 따라 감점(너무 과하게 떨어지지 않게 하한 설정)
+  const raw = 1.0 - (PY * yr) - (PN * nr);
+  const factor = Math.max(0.90, Math.min(1.0, raw));
+
+  return { total, year_miss: yearMiss, num_miss: numMiss, factor };
+})();
+
+// (로그용)
+partial_scores.naver_soft_miss = __naverSoftMiss;
+partial_scores.naver_soft_miss_factor = __naverSoftMiss.factor;
+
+// ✅ 기존 tier factor와 결합해서 최종 N 산출
+const __N_tier =
   (safeMode === "qv" || safeMode === "fv") &&
   useNaver &&
   typeof partial_scores.naver_tier_factor === "number"
     ? Math.max(0.9, Math.min(1.05, partial_scores.naver_tier_factor))
+    : 1.0;
+
+const N =
+  (safeMode === "qv" || safeMode === "fv") && useNaver
+    ? Math.max(0.85, Math.min(1.05, __N_tier * (__naverSoftMiss.factor || 1.0)))
     : 1.0;
 
 // DV/CV: GitHub 유효성 Vᵣ, 없으면 0.7 중립값
@@ -9497,6 +9712,9 @@ if (safeMode === "dv" || safeMode === "cv") {
   const rawHybrid = R_t * N * G * C * E_cov;
   hybrid = Math.max(0, Math.min(1, rawHybrid));
 }
+
+// ✅ debug: coverage(E_cov)가 hybrid에 적용되었는지 표시
+partial_scores.coverage_applied_in_hybrid = (safeMode === "qv" || safeMode === "fv");
 
     // 최종 TruthScore (0.6 ~ 0.97 범위)
     truthscore = hybrid; // 0~1
@@ -9669,91 +9887,115 @@ await supabase.from("verification_logs").insert([
   },
 ]);
 
-  // ?????????????????????????????
-  // ??野껉퀗??獄쏆꼹??(??깅?域뱀뮇鍮??類κ묶嚥???묐릅)
-  //   - truthscore(0~1)를 바로 퍼센트로 쓰지 않고
-  //   - conflict_meta / effective_engines / coverage_factor 기반으로
-  //     한번 더 "안전하게" 스무딩해서 truthscore_01을 만든다.
-  // ?????????????????????????????
+      // (A) post-hybrid safety smoothing (single source of truth)
+  // - QV/FV에만 적용(DV/CV는 별도 validity 흐름)
+  // - coverage_factor / soft_penalty_factor는 "risk 입력"으로만 사용(곱 감점 금지: 중복 감점 방지)
 
   // 1) raw truthscore → 0~1 스케일 기본값
   let truthscore_01_raw = Number(truthscore.toFixed(4));
   let truthscore_01 = truthscore_01_raw;
 
   try {
-    const effEngines = Array.isArray(partial_scores?.effective_engines)
-      ? partial_scores.effective_engines
-      : [];
-    const effCount =
-      typeof partial_scores?.effective_engines_count === "number"
-        ? partial_scores.effective_engines_count
-        : effEngines.length;
+    const __m0 = String(safeMode || "").toLowerCase();
+    if (__m0 === "qv" || __m0 === "fv") {
+      const __clamp01_ts = (x) =>
+        Math.max(0, Math.min(1, Number.isFinite(x) ? x : 0));
+      const __num_ts = (v, d) =>
+        Number.isFinite(Number(v)) ? Number(v) : d;
 
-    const coverage =
-      typeof partial_scores?.coverage_factor === "number"
-        ? partial_scores.coverage_factor
-        : 1;
+      // inputs (risk-only)
+      const coverage01 = __clamp01_ts(__num_ts(partial_scores?.coverage_factor, 1.0));
+      const conflict01 = __clamp01_ts(
+        __num_ts(partial_scores?.conflict_meta?.conflict_index, 0.0)
+      );
+      const softPenalty01 = __clamp01_ts(
+        __num_ts(partial_scores?.soft_penalty_factor, 1.0)
+      );
+      const Eeff =
+        Number.isFinite(partial_scores?.effective_engines_count)
+          ? Math.max(
+              0,
+              Math.min(10, Math.trunc(partial_scores.effective_engines_count))
+            )
+          : null;
 
-    const conflictIdx =
-      typeof partial_scores?.conflict_meta?.conflict_index === "number"
-        ? partial_scores.conflict_meta.conflict_index
-        : 0;
+      // keep compat logs (optional)
+      try {
+        partial_scores.coverage_factor_raw = coverage01;
+        partial_scores.coverage_factor_used_in_smoothing = coverage01; // risk-only
+      } catch (_) {}
 
-    const hasStrongConflict = conflictIdx >= 0.8;          // (예) 대부분 conflict일 때
-    const lowCoverage = coverage < 0.5 || effCount <= 1;   // 엔진이 너무 적거나 coverage가 낮을 때
+      // env knobs
+      const TS_ENABLED =
+        String(process.env.TRUTH_SMOOTH_ENABLED ?? "true").toLowerCase() !== "false";
+      const TS_TARGET = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_TARGET, 0.5));
+      const TS_STRENGTH = __clamp01_ts(
+        __num_ts(process.env.TRUTH_SMOOTH_STRENGTH, 0.55)
+      );
 
-    let t = truthscore_01;
-// ✅ S-13: soft warnings penalty (year miss / numeric soft warnings)
-try {
-  const __clamp01 = (x) => Math.min(1, Math.max(0, Number(x) || 0));
+      const W_CONFLICT = __clamp01_ts(
+        __num_ts(process.env.TRUTH_SMOOTH_W_CONFLICT, 0.55)
+      );
+      const W_COV = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_COV, 0.30));
+      const W_SOFT = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_SOFT, 0.15));
+      const W_EEFF = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_EEFF, 0.10));
 
-  const __pr = partial_scores?.evidence_prune || {};
-  const __y = Array.isArray(__pr.year_soft_warnings) ? __pr.year_soft_warnings.length : 0;
-  const __n = Array.isArray(__pr.numeric_soft_warnings) ? __pr.numeric_soft_warnings.length : 0;
+      const MAX_ALPHA = __clamp01_ts(
+        __num_ts(process.env.TRUTH_SMOOTH_MAX_ALPHA, 0.60)
+      );
 
-  const __yP = __clamp01(NAVER_YEAR_MISS_PENALTY);
-  const __nP = __clamp01(NUMERIC_SOFT_WARNING_PENALTY);
+      if (TS_ENABLED) {
+        const weakEff =
+          Eeff !== null && Eeff <= 1 ? 1.0 : Eeff !== null && Eeff === 2 ? 0.5 : 0.0;
 
-  const __factor_year = (__y > 0) ? Math.pow(__yP, __y) : 1;
-  const __factor_numeric = (__n > 0) ? Math.pow(__nP, __n) : 1;
-  const __soft_factor = __factor_year * __factor_numeric;
+        const risk = __clamp01_ts(
+          W_CONFLICT * conflict01 +
+            W_COV * (1 - coverage01) +
+            W_SOFT * (1 - softPenalty01) +
+            W_EEFF * weakEff
+        );
 
-  const __before = t;
-  t = __clamp01(t * __soft_factor);
+        const alpha = Math.min(MAX_ALPHA, __clamp01_ts(TS_STRENGTH * risk));
 
-  partial_scores.soft_penalties = {
-    year_soft_warnings: __y,
-    numeric_soft_warnings: __n,
-    NAVER_YEAR_MISS_PENALTY: __yP,
-    NUMERIC_SOFT_WARNING_PENALTY: __nP,
-    factor_year: __factor_year,
-    factor_numeric: __factor_numeric,
-    factor_total: __soft_factor,
-    t_before: __before,
-    t_after: t,
-  };
-} catch (_e) {}
+        const before = __clamp01_ts(truthscore_01);
+        const after = __clamp01_ts((1 - alpha) * before + alpha * TS_TARGET);
 
-    // 1-A) 강한 상충(conflict) + 낮은 점수(≤0.5)면 false 쪽으로 조금 더 눌러줌
-    //      - 예: 0.15 → 0.12 정도로 내려가서 "거짓 + 상충"이 더 분명해짐
-    if (hasStrongConflict && t <= 0.5) {
-      t *= 0.8;
+        truthscore_01 = Number(after.toFixed(4));
+
+        partial_scores.truthscore_smoothing = {
+          applied: true,
+          version: "A-v2",
+          raw: truthscore_01_raw,
+          before,
+          after: truthscore_01,
+          target: TS_TARGET,
+          strength: TS_STRENGTH,
+          max_alpha: MAX_ALPHA,
+          weights: {
+            conflict: W_CONFLICT,
+            coverage: W_COV,
+            soft: W_SOFT,
+            E_eff: W_EEFF,
+          },
+          inputs: {
+            coverage_factor: coverage01,
+            conflict_index: conflict01,
+            soft_penalty_factor: softPenalty01,
+            effective_engines_count: Eeff,
+          },
+          risk,
+          alpha,
+          note:
+            "risk-only; no extra multiplicative penalty here (avoid double with hybrid/Swap-in B).",
+        };
+      } else {
+        partial_scores.truthscore_smoothing = { applied: false, disabled: true };
+      }
     }
-
-    // 1-B) coverage가 낮고 엔진도 1~2개뿐이면 "불확실 → 0.5 근처"로 가볍게 스무딩
-    //      - 너무 낮은 점수/높은 점수를 0.5 쪽으로 살짝 당겨서
-    //        "엔진 부족한 상황에서의 과신"을 줄이기 위함
-    if (lowCoverage) {
-      t = 0.5 * t + 0.25;   //  t ← 0.5·t + 0.25   (0 → 0.25, 1 → 0.75 쪽으로)
-    }
-
-    // 1-C) 최종 클램프
-    if (t < 0) t = 0;
-    if (t > 1) t = 1;
-
-    truthscore_01 = Number(t.toFixed(4));
-  } catch (_e) {
-    // 스무딩 중 에러가 나면 raw 그대로 사용
+  } catch (_) {
+    try {
+      partial_scores.truthscore_smoothing = { applied: false, error: true };
+    } catch {}
     truthscore_01 = truthscore_01_raw;
   }
 
@@ -10053,43 +10295,17 @@ try {
   } catch (_) {}
 
   payload.verdict_message_ko = msg;
-  // ✅ S-17b: 응답 직전 router_plan 재부착 (cache-hit path)
+// ✅ S-17b: 응답 직전 router_plan 재부착
+// - 최종 safeMode 반영 (stale 방지)
 try {
-  const __sf0 = String(safeMode || "qv").toLowerCase();
-  const __sf =
-    __sf0 === "auto" || __sf0 === "null" || __sf0 === "undefined" ? "qv" : __sf0;
-
-  const __plan =
-    Array.isArray(__routerPlan?.plan) && __routerPlan.plan.length > 0
-      ? __routerPlan.plan
-      : [{ mode: __sf, priority: 1, reason: "router_missing_or_failed" }];
-
-  const __runs =
-    Array.isArray(__routerPlan?.runs) && __routerPlan.runs.length > 0
-      ? __routerPlan.runs.map(x => String(x).toLowerCase()).filter(Boolean)
-      : __plan.map(x => String(x?.mode ?? x).toLowerCase()).filter(Boolean);
-
-  __ps.router_plan = {
-    enabled: !!GROQ_ROUTER_ENABLE,
-    raw_mode: String(rawMode || "auto").toLowerCase(),
-    safe_mode_final: String(__routerPlan?.safe_mode_final ?? __sf).toLowerCase(),
-    primary: String(
-      __routerPlan?.primary ??
-        __routerPlan?.mode ??
-        __routerPlan?.safe_mode_final ??
-        __sf
-    ).toLowerCase(),
-    plan: __plan,
-    runs: __runs.length > 0 ? __runs : [__sf],
-    model:
-      __routerPlan?.model ??
-      (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
-    cached: !!__routerPlan?.cached,
-    lv_extra: !!(__routerPlan?.lv_extra || __runLvExtra),
-    status: __routerPlan
-      ? (__plan.length > 0 ? "ok" : "ok_no_plan")
-      : "missing_plan",
-  };
+  if (__ps && typeof __ps === "object") {
+    __ps.router_plan = __buildRouterPlanPublicFinal({
+      safeMode,
+      rawMode,
+      routerPlan: __routerPlan,
+      runLvExtra: __runLvExtra,
+    });
+  }
 } catch (_) {}
 }
   }
