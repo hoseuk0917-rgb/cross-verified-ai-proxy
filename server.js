@@ -7016,6 +7016,17 @@ const engineQueriesUsed = {
 
 const blocksForVerify = [];
 
+// ✅ Naver total call budget (요청 전체: 블록 합산)
+// - __caps.naver 는 "naver query 호출 수" 총 상한
+let __naverBudget =
+  (Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : 999999);
+
+try {
+  partial_scores.naver_budget_total_cap =
+    Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : null;
+  partial_scores.naver_budget_remaining = __naverBudget;
+} catch {}
+
 // ✅ call caps + early-stop (QV/FV)
 const __capNum = (v, d) => {
   const n = Number(v);
@@ -7026,7 +7037,11 @@ const __caps = {
   total: __capNum(process.env.ENGINE_CALL_CAP_TOTAL, 999),
   academic: __capNum(process.env.ENGINE_CALL_CAP_ACADEMIC, 999), // crossref+openalex 합
   gdelt: __capNum(process.env.ENGINE_CALL_CAP_GDELT, 999),
-  naver: __capNum(process.env.ENGINE_CALL_CAP_NAVER, 999), // naver query 호출 수
+  naver: __capNum(process.env.ENGINE_CALL_CAP_NAVER, 999), // ✅ 요청 전체 naver query 호출 상한
+
+  // ✅ Naver per-block cap (블록당 naver query cap)
+  naver_per_block: __capNum(process.env.NAVER_QUERIES_PER_BLOCK_CAP, 2),
+  naver_per_block_snippet: __capNum(process.env.NAVER_QUERIES_PER_BLOCK_CAP_SNIPPET, 1),
 
   // ✅ blocks cap (verify prompt size / runtime cap)
   blocks: __capNum(process.env.QVFV_BLOCKS_CAP, 4),
@@ -7034,7 +7049,8 @@ const __caps = {
 
   early_min_eeff: __capNum(process.env.EARLY_STOP_MIN_EEFF, 2),
   early_min_evidence: __capNum(process.env.EARLY_STOP_MIN_EVIDENCE, 6),
-  early_require_strong: String(process.env.EARLY_STOP_REQUIRE_STRONG_OFFICIAL ?? "true").toLowerCase() !== "false",
+  early_require_strong:
+    String(process.env.EARLY_STOP_REQUIRE_STRONG_OFFICIAL ?? "true").toLowerCase() !== "false",
 };
 
 const __capState = {
@@ -7212,52 +7228,52 @@ for (const b of __blocksInput) {
   if (qWikidata) engineQueriesUsed.wikidata.push(qWikidata);
   if (!__gdeltSingle && qGdelt) engineQueriesUsed.gdelt.push(qGdelt);
 
-  let naverQueries = Array.isArray(eq.naver) ? eq.naver : [];
-  naverQueries = naverQueries
-    .map((q) => limitChars(buildNaverAndQuery(q), 30))
-    .filter(Boolean)
-    .slice(0, BLOCK_NAVER_MAX_QUERIES);
+  let naverQueriesBase = Array.isArray(eq.naver) ? eq.naver : [];
+naverQueriesBase = naverQueriesBase
+  .map((q) => limitChars(buildNaverAndQuery(q), 30))
+  .filter(Boolean)
+  .slice(0, BLOCK_NAVER_MAX_QUERIES);
 
-  // ✅ 핵심: 혹시 여기까지 왔는데도 비면, 최소 1개는 생성해서 Naver 호출이 끊기지 않게
-  if (!naverQueries.length) {
-    const seed = String(b?.text || "").trim() || qvfvPre?.korean_core || qvfvBaseText || query;
-    naverQueries = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
-  }
-
-  // ✅ 네이버 쿼리 기록(빈 값 제외)
-  for (const nq of naverQueries) {
-    const s = String(nq || "").trim();
-    if (s) engineQueriesUsed.naver.push(s);
-  }
-
-  let crPack, oaPack, wdPack, gdPack;
-
-if (__gdeltSingle) {
-  [crPack, oaPack, wdPack] = await Promise.all([
-    runOrEmpty("crossref", fetchCrossref, qCrossref),
-    runOrEmpty("openalex", fetchOpenAlex, qOpenalex),
-    runOrEmpty("wikidata", fetchWikidata, qWikidata),
-  ]);
-  gdPack = gdeltGlobalPack;
-} else {
-  [crPack, oaPack, wdPack, gdPack] = await Promise.all([
-    runOrEmpty("crossref", fetchCrossref, qCrossref),
-    runOrEmpty("openalex", fetchOpenAlex, qOpenalex),
-    runOrEmpty("wikidata", fetchWikidata, qWikidata),
-    runOrEmpty("gdelt", fetchGDELT, qGdelt),
-  ]);
+// ✅ 혹시 여기까지 왔는데도 비면, 최소 1개는 생성해서 Naver 호출이 끊기지 않게
+if (!naverQueriesBase.length) {
+  const seed = String(b?.text || "").trim() || qvfvPre?.korean_core || qvfvBaseText || query;
+  naverQueriesBase = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
 }
 
-  // ─────────────────────────────
-  // ✅ Naver 결과: 표시용(all)과 verify용(topK + whitelist + relevance) 분리
-  // ─────────────────────────────
-  let naverItemsAll = [];
-  for (const nq0 of naverQueries) {
-    // cap: naver query 호출 제한
-    if (!__capConsume("naver")) break;
+// ✅ qvfvPre에서 korean_core / english_core를 안전하게 꺼냄
+const qvfvKoreanCore = String(qvfvPre?.korean_core ?? "").trim();
+const qvfvEnglishCore = String(qvfvPre?.english_core ?? "").trim();
+
+// ✅ Naver용 확장 쿼리: 여기서 한 번만 계산 → "블록당 cap" 적용
+const naverQueriesExpandedAll = __expandNaverQueries(naverQueriesBase, {
+  korean_core: qvfvKoreanCore,
+  english_core: qvfvEnglishCore,
+});
+
+const __naverPerBlockCap =
+  (__isSnippetReq ? __caps.naver_per_block_snippet : __caps.naver_per_block);
+
+let naverQueriesExpanded = Array.isArray(naverQueriesExpandedAll)
+  ? naverQueriesExpandedAll.map((q) => String(q || "").trim()).filter(Boolean)
+  : [];
+
+naverQueriesExpanded = naverQueriesExpanded.slice(0, Math.max(1, Math.trunc(__naverPerBlockCap)));
+
+// ─────────────────────────────
+// ✅ Naver 결과: 표시용(all)과 verify용(topK + whitelist + relevance) 분리
+// - 블록당 쿼리 cap + 요청 전체 budget(__naverBudget) 적용
+// ─────────────────────────────
+let naverItemsAll = [];
+
+if (__naverBudget > 0 && naverQueriesExpanded.length > 0) {
+  for (const nq0 of naverQueriesExpanded) {
+    if (__naverBudget <= 0) break;
 
     const nq = String(nq0 || "").trim();
     if (!nq) continue;
+
+    // ✅ 실제로 호출하는 쿼리만 기록
+    engineQueriesUsed.naver.push(nq);
 
     const { result } = await safeFetchTimed(
       "naver",
@@ -7267,38 +7283,22 @@ if (__gdeltSingle) {
       engineMetrics
     );
 
+    __naverBudget = Math.max(0, __naverBudget - 1);
+
     if (Array.isArray(result) && result.length) naverItemsAll.push(...result);
-
-    // ✅ 같은 블록 내에서 “이미 충분”하면 naver 추가 호출 조기 중단
-    try {
-      const _nvDedup = dedupeByLink(naverItemsAll);
-      const chk = __shouldEarlyStopApprox({
-        cr: (crPack && Array.isArray(crPack.result)) ? crPack.result : [],
-        oa: (oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [],
-        wd: (wdPack && Array.isArray(wdPack.result)) ? wdPack.result : [],
-        gd: (gdPack && Array.isArray(gdPack.result)) ? gdPack.result : [],
-        nv: _nvDedup,
-      });
-
-      if (chk && chk.ok) {
-        __capState.early_stop = true;
-        __capState.early_stop_reason = { where: "naver_loop", ...chk };
-        break;
-      }
-    } catch {}
   }
+}
 
-  naverItemsAll = dedupeByLink(naverItemsAll).slice(0, BLOCK_NAVER_MAX_ITEMS);
+naverItemsAll = dedupeByLink(naverItemsAll).slice(0, BLOCK_NAVER_MAX_ITEMS);
 
-  // ✅ qvfvPre에서 korean_core / english_core를 안전하게 꺼냄
-  const qvfvKoreanCore = String(qvfvPre?.korean_core ?? "").trim();
-  const qvfvEnglishCore = String(qvfvPre?.english_core ?? "").trim();
-
-  // ✅ Naver용 확장 쿼리: 여기서 한 번만 계산
-  const naverQueriesExpanded = __expandNaverQueries(naverQueries, {
-    korean_core: qvfvKoreanCore,
-    english_core: qvfvEnglishCore,
-  });
+try {
+  partial_scores.naver_budget_remaining = __naverBudget;
+  partial_scores.naver_queries_cap = {
+    per_block_cap: Math.max(1, Math.trunc(__naverPerBlockCap)),
+    used_queries: naverQueriesExpanded.slice(0, 12),
+    used_queries_count: naverQueriesExpanded.length,
+  };
+} catch {}
 
   // ✅ 확장된 쿼리를 기준으로 evidence 선택
   let naverItemsForVerify = pickTopNaverEvidenceForVerify({
