@@ -7331,29 +7331,93 @@ naverQueriesExpanded = naverQueriesExpanded.slice(0, Math.max(1, Math.trunc(__na
 // ─────────────────────────────
 let naverItemsAll = [];
 
-if (__naverBudget > 0 && naverQueriesExpanded.length > 0) {
-  for (const nq0 of naverQueriesExpanded) {
-    if (__naverBudget <= 0) break;
+// ✅ (NEW) request-level Naver call budget stored in partial_scores (persists across blocks)
+try {
+  const __isSnippet =
+    !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
 
-    const nq = String(nq0 || "").trim();
-    if (!nq) continue;
+  const __maxNormal = (() => {
+    const v = Number(process.env.NAVER_MAX_CALLS_PER_REQUEST ?? 6);
+    return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 6;
+  })();
 
-    // ✅ 실제로 호출하는 쿼리만 기록
-    engineQueriesUsed.naver.push(nq);
+  const __maxSnippet = (() => {
+    const v = Number(process.env.NAVER_SNIPPET_MAX_CALLS_PER_REQUEST ?? 2);
+    return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 2;
+  })();
 
-    const { result } = await safeFetchTimed(
-      "naver",
-      (qq, ctx) => callNaver(qq, naverIdFinal, naverSecretFinal, ctx),
-      nq,
-      engineTimes,
-      engineMetrics
-    );
+  if (partial_scores && typeof partial_scores === "object") {
+    if (!partial_scores.__naver_call_budget || typeof partial_scores.__naver_call_budget !== "object") {
+      partial_scores.__naver_call_budget = {};
+    }
+    const b = partial_scores.__naver_call_budget;
 
-    __naverBudget = Math.max(0, __naverBudget - 1);
+    // init only once per request
+    if (b._init !== true) {
+      b._init = true;
+      b.is_snippet = __isSnippet;
+      b.max = __isSnippet ? __maxSnippet : __maxNormal;
+      b.left = b.max;
+      b.used = 0;
+      b.used_last_block = 0;
+      b.left_before_block = b.left;
+    }
 
-    if (Array.isArray(result) && result.length) naverItemsAll.push(...result);
+    // reset per-block counters
+    b.used_last_block = 0;
+    b.left_before_block = b.left;
   }
+} catch {}
+
+for (const nq0 of naverQueries) {
+  const nq = String(nq0 || "").trim();
+  if (!nq) continue;
+
+  // ✅ enforce request-level budget across blocks
+  let __left = null;
+  try {
+    __left =
+      (partial_scores &&
+        typeof partial_scores === "object" &&
+        partial_scores.__naver_call_budget &&
+        typeof partial_scores.__naver_call_budget === "object")
+        ? Number(partial_scores.__naver_call_budget.left)
+        : null;
+  } catch {}
+
+  if (Number.isFinite(__left) && __left <= 0) break;
+
+  // consume 1 call
+  try {
+    if (partial_scores && typeof partial_scores === "object") {
+      const b = partial_scores.__naver_call_budget;
+      if (b && typeof b === "object") {
+        b.left = Math.max(0, Number(b.left || 0) - 1);
+        b.used = Number(b.used || 0) + 1;
+        b.used_last_block = Number(b.used_last_block || 0) + 1;
+      }
+    }
+  } catch {}
+
+  const { result } = await safeFetchTimed(
+    "naver",
+    (qq, ctx) => callNaver(qq, naverIdFinal, naverSecretFinal, ctx),
+    nq,
+    engineTimes,
+    engineMetrics
+  );
+  if (Array.isArray(result) && result.length) naverItemsAll.push(...result);
 }
+
+// update budget snapshot after this block
+try {
+  if (partial_scores && typeof partial_scores === "object") {
+    const b = partial_scores.__naver_call_budget;
+    if (b && typeof b === "object") {
+      b.left_after_block = b.left;
+    }
+  }
+} catch {}
 
 naverItemsAll = dedupeByLink(naverItemsAll).slice(0, BLOCK_NAVER_MAX_ITEMS);
 
@@ -7466,6 +7530,19 @@ if (__gdeltSingle) {
 }
 
 external.naver = dedupeByLink(external.naver).slice(0, NAVER_MULTI_MAX_ITEMS);
+
+// ✅ finalize request-level budget log
+try {
+  if (partial_scores && typeof partial_scores === "object") {
+    const b = partial_scores.__naver_call_budget;
+    if (b && typeof b === "object") {
+      b.used_final = Number(b.used || 0);
+      b.left_final = Number(b.left || 0);
+      b.applied = true;
+    }
+  }
+} catch {}
+
 qvfvBlocksForVerifyFull = blocksForVerify;
 
 // ✅ 엔진별 쿼리를 partial_scores.engine_queries에 “전부” 저장
