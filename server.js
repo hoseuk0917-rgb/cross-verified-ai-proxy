@@ -5079,13 +5079,14 @@ const hasExactNum = numTokensCompact.length
 
     let bonus = 1.0;
     if (needNum) bonus *= hasAnyNum ? 1.15 : 0.85;
-    // ✅ year soft penalty (no hard drop) + tag for logging
+  // ✅ year soft flag (no hard drop) + tag for logging
+// - NOTE: 여기(선정/스코어링)에서 __pen으로 감점하지 않는다 (중복 감점 방지)
+// - 최종 TruthScore 감점은 Swap-in A/B(soft_penalty_factor → 1회 곱)에서만 수행
 if (NAVER_STRICT_YEAR_MATCH && yearTokens.length) {
   if (hasYear) {
     bonus *= 1.10;
   } else {
     const __pen = Math.min(1.0, Math.max(0.0, Number(NAVER_YEAR_MISS_PENALTY) || 0.90));
-    bonus *= __pen;
 
     // "메타(제목/스니펫)" 기준 soft-year-miss 태깅
     // (이미 excerpt 단계에서 찍혔으면 덮어쓰지 않음)
@@ -5096,12 +5097,16 @@ if (NAVER_STRICT_YEAR_MATCH && yearTokens.length) {
       it._soft_year_miss_where = "naver_item_meta";
     } else {
       // 기존 플래그는 유지하되 penalty가 없으면 채움
-      if (!(typeof it._soft_year_miss_penalty === "number" && Number.isFinite(it._soft_year_miss_penalty))) {
+      if (
+        !(typeof it._soft_year_miss_penalty === "number" && Number.isFinite(it._soft_year_miss_penalty))
+      ) {
         it._soft_year_miss_penalty = __pen;
       }
+      if (!it._soft_year_miss_where) it._soft_year_miss_where = "naver_item_meta";
     }
   }
 }
+
     if (numTokens.length && hasExactNum) bonus *= NAVER_NUM_MATCH_BOOST;
 
     const hostRaw = String(it?.host || it?.source_host || "").toLowerCase();
@@ -8741,20 +8746,28 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
           penalty *= numPenalty;
         }
 
-        // ✅ penalty가 실질적으로 있으면 tier_weight에 반영(선정/점수 로직에 바로 먹게)
-        if (penalty < 0.999999) {
-          ev._tier_weight_before_soft = baseTw;
-          ev._soft_penalty_product = penalty;
-          ev.tier_weight = baseTw * penalty;
+        // ✅ penalty가 실질적으로 있으면 기록만 남김 (tier_weight 직접 변경 금지: double-penalty 방지)
+// - soft penalty는 Swap-in A/B에서 final truthscore_01에 "딱 1번"만 적용
+if (penalty < 0.999999) {
+  ev._tier_weight_before_soft = baseTw;
 
-          touched.push({
-            url: ev?.url || ev?.link || ev?.source_url || null,
-            host: ev?.host || ev?.source_host || null,
-            year_miss: !!yearMiss,
-            num_miss: !!numMiss,
-            penalty,
-          });
-        }
+  // per-evidence soft penalty product 기록(나중에 Swap-in A의 geometric mean에도 쓰임)
+  ev._soft_penalty_product = penalty;
+
+  // debug-only: tier_weight에 반영했다면 이 정도였다는 참고값만 남김
+  ev._tier_weight_soft_suggested = baseTw * penalty;
+
+  // ❌ DO NOT APPLY:
+  // ev.tier_weight = baseTw * penalty;
+
+  touched.push({
+    url: ev?.url || ev?.link || ev?.source_url || null,
+    host: ev?.host || ev?.source_host || null,
+    year_miss: !!yearMiss,
+    num_miss: !!numMiss,
+    penalty,
+  });
+}
 
         // ✅ STRICT=true일 때만 하드 프룬(단, trusted는 보호)
         const passOrTrusted = r.pass || trusted;
@@ -8789,6 +8802,32 @@ if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) &
     };
   } catch (_e) {}
 }
+
+// ✅ URL canonical key: query/hash 제거 + https 통일 + trailing slash 제거
+const __canonUrlKey = (u0) => {
+  try {
+    let s = String(u0 || "").trim();
+    if (!s) return "";
+
+    const h = s.indexOf("#");
+    if (h >= 0) s = s.slice(0, h);
+
+    const q = s.indexOf("?");
+    if (q >= 0) s = s.slice(0, q);
+
+    s = s.replace(/^http:\/\//i, "https://");
+    s = s.replace(/\/+$/g, "");
+
+    return s;
+  } catch (_) {
+    return String(u0 || "").trim();
+  }
+};
+
+// ✅ NOTE: year/number soft-miss flags & penalties are stamped earlier (numeric_evidence_match / prune).
+//          Swap-in A reads ev._soft_year_miss/_penalty and ev._soft_numeric_miss/_penalty directly.
+//          Remove duplicate “stamp-to-blocks” steps to avoid duplication and confusion.
+
 
 // ✅ Swap-in A: compute soft_penalty_factor (QV/FV evidence 기반, drop 없이 소프트 패널티만)
 // - year miss: ev._soft_year_miss_penalty (없으면 NAVER_YEAR_MISS_PENALTY fallback)
@@ -8834,15 +8873,24 @@ try {
           }
 
           // clamp + store per-evidence
-          p = Math.max(1e-6, Math.min(1.0, p));
-          ev._soft_penalty_product = p;
+p = Math.max(1e-6, Math.min(1.0, p));
 
-          // aggregate only if meaningfully penalized
-          if (p < 0.999999) {
-            cnt++;
-            sumLog += Math.log(p);
-            minP = (minP == null) ? p : Math.min(minP, p);
-          }
+// 기존에 누적된 soft_penalty_product가 있으면(예: numeric_evidence_match에서 이미 계산)
+// Swap-in A는 덮어쓰지 말고 "더 강한 감점(min)"만 유지
+const prevProd =
+  (typeof ev._soft_penalty_product === "number" && Number.isFinite(ev._soft_penalty_product))
+    ? Math.max(1e-6, Math.min(1.0, ev._soft_penalty_product))
+    : null;
+
+const pEff = (prevProd == null) ? p : Math.min(prevProd, p);
+ev._soft_penalty_product = pEff;
+
+// aggregate only if meaningfully penalized
+if (pEff < 0.999999) {
+  cnt++;
+  sumLog += Math.log(pEff);
+  minP = (minP == null) ? pEff : Math.min(minP, pEff);
+}
         }
       }
     }
@@ -9614,12 +9662,30 @@ const E_cov = (() => {
 partial_scores.effective_engines_used = enginesUsed;
 partial_scores.effective_engines = effEngines;
 // ✅ effective_engine_item_counts는 항상 정의(예전 런타임 ReferenceError 방지)
+// - 우선: engine_evidence_counts_final(= kept evidence 기준)
+// - fallback: blocksForVerify evidence 합
 const effective_engine_item_counts = (() => {
   try {
-    if (!Array.isArray(blocksForVerify)) return null;
     const keys = Array.isArray(effEngines) ? effEngines : [];
     const out = {};
     for (const k of keys) out[k] = 0;
+
+    const finalCounts =
+      (partial_scores && typeof partial_scores.engine_evidence_counts_final === "object")
+        ? partial_scores.engine_evidence_counts_final
+        : null;
+
+    // 1) kept evidence 기준이 있으면 그걸 우선 사용
+    if (finalCounts) {
+      for (const k of keys) {
+        const v = finalCounts?.[k];
+        if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+      }
+      return out;
+    }
+
+    // 2) fallback: blocksForVerify evidence 합
+    if (!Array.isArray(blocksForVerify)) return out;
 
     for (const b of blocksForVerify) {
       const ev = b?.evidence || {};
@@ -9647,52 +9713,6 @@ const R_t =
   typeof partial_scores.recency === "number"
     ? Math.max(0, Math.min(1, partial_scores.recency))
     : 1.0;
-
-// ✅ Naver soft-miss penalty factor (year/number) — score에 실제 반영
-const __naverSoftMiss = (() => {
-  if (!((safeMode === "qv" || safeMode === "fv") && useNaver)) {
-    return { total: 0, year_miss: 0, num_miss: 0, factor: 1.0 };
-  }
-
-  const nv = Array.isArray(external?.naver) ? external.naver : [];
-  const total = nv.length;
-
-  let yearMiss = 0;
-  let numMiss = 0;
-
-  for (const x of nv) {
-    const y =
-      x?._soft_year_miss === true ||
-      x?.soft_year_miss === true ||
-      x?.year_soft_miss === true;
-
-    const n =
-      x?._soft_num_miss === true ||
-      x?._soft_numeric_miss === true ||
-      x?.soft_num_miss === true ||
-      x?.numeric_soft_miss === true;
-
-    if (y) yearMiss++;
-    if (n) numMiss++;
-  }
-
-  // env로 조절 가능(기본은 “살짝만” 깎기)
-  const PY = Math.max(0, Math.min(0.2, parseFloat(process.env.NAVER_YEAR_MISS_PENALTY || "0.03")));
-  const PN = Math.max(0, Math.min(0.2, parseFloat(process.env.NAVER_NUM_MISS_PENALTY || "0.02")));
-
-  const yr = total > 0 ? (yearMiss / total) : 0;
-  const nr = total > 0 ? (numMiss / total) : 0;
-
-  // year/num 미스 비율에 따라 감점(너무 과하게 떨어지지 않게 하한 설정)
-  const raw = 1.0 - (PY * yr) - (PN * nr);
-  const factor = Math.max(0.90, Math.min(1.0, raw));
-
-  return { total, year_miss: yearMiss, num_miss: numMiss, factor };
-})();
-
-// (로그용)
-partial_scores.naver_soft_miss = __naverSoftMiss;
-partial_scores.naver_soft_miss_factor = __naverSoftMiss.factor;
 
 // ✅ 기존 tier factor와 결합해서 최종 N 산출
 // NOTE: year/number soft miss 패널티는 Swap-in A/B의 soft_penalty_factor로 "최종 TruthScore"에서만 반영한다.
@@ -9745,6 +9765,25 @@ partial_scores.coverage_applied_in_hybrid = (safeMode === "qv" || safeMode === "
 
     // 최종 TruthScore (0.6 ~ 0.97 범위)
     truthscore = hybrid; // 0~1
+
+// ✅ Swap-in B (moved): soft_penalty_factor is applied later ONCE to truthscore_01
+// - 여기서는 double-penalty 방지를 위해 truthscore에 곱하지 않는다.
+// - 단, 디버그용 clamp 값만 남긴다.
+try {
+  const _isQvFv = (safeMode === "qv" || safeMode === "fv");
+
+  const _spfRaw =
+    _isQvFv &&
+    typeof partial_scores?.soft_penalty_factor === "number" &&
+    Number.isFinite(partial_scores.soft_penalty_factor)
+      ? partial_scores.soft_penalty_factor
+      : 1.0;
+
+  const spf = Math.max(0.0, Math.min(1.0, _spfRaw));
+
+  // (debug only)
+  try { partial_scores.soft_penalty_factor_clamped = Number(spf.toFixed(6)); } catch {}
+} catch (_) {}
 
     // 요청당 경과 시간(ms)
     const elapsed = Date.now() - start;
@@ -9914,180 +9953,172 @@ await supabase.from("verification_logs").insert([
   },
 ]);
 
-      // (A) post-hybrid safety smoothing (single source of truth)
-  // - QV/FV에만 적용(DV/CV는 별도 validity 흐름)
-  // - coverage_factor / soft_penalty_factor는 "risk 입력"으로만 사용(곱 감점 금지: 중복 감점 방지)
+          // (A) post-hybrid safety smoothing (single source of truth)
+      // - QV/FV에만 적용(DV/CV는 별도 validity 흐름)
+      // - coverage_factor / soft_penalty_factor는 "risk 입력"으로만 사용
+      // - 기본값: 스무딩이 점수를 올리는 방향은 금지(급상승 방지)
+      // - soft_penalty_factor 곱감점은 (B)에서 1회만 수행
 
-  // 1) raw truthscore → 0~1 스케일 기본값
-  let truthscore_01_raw = Number(truthscore.toFixed(4));
-  let truthscore_01 = truthscore_01_raw;
+      const __truthscore_01_raw = Number.isFinite(truthscore_01) ? Number(truthscore_01) : 0;
 
-  try {
-    const __m0 = String(safeMode || "").toLowerCase();
-    if (__m0 === "qv" || __m0 === "fv") {
-      const __clamp01_ts = (x) =>
-        Math.max(0, Math.min(1, Number.isFinite(x) ? x : 0));
-      const __num_ts = (v, d) =>
-        Number.isFinite(Number(v)) ? Number(v) : d;
-
-      // inputs (risk-only)
-      const coverage01 = __clamp01_ts(__num_ts(partial_scores?.coverage_factor, 1.0));
-      const conflict01 = __clamp01_ts(
-        __num_ts(partial_scores?.conflict_meta?.conflict_index, 0.0)
-      );
-      const softPenalty01 = __clamp01_ts(
-        __num_ts(partial_scores?.soft_penalty_factor, 1.0)
-      );
-      const Eeff =
-        Number.isFinite(partial_scores?.effective_engines_count)
-          ? Math.max(
-              0,
-              Math.min(10, Math.trunc(partial_scores.effective_engines_count))
-            )
-          : null;
-
-      // keep compat logs (optional)
       try {
-        partial_scores.coverage_factor_raw = coverage01;
-        partial_scores.coverage_factor_used_in_smoothing = coverage01; // risk-only
-      } catch (_) {}
+        const __m0 = String(safeMode || "").toLowerCase();
+        if (__m0 === "qv" || __m0 === "fv") {
+          const __clamp01_ts = (x) =>
+            Math.max(0, Math.min(1, Number.isFinite(x) ? x : 0));
+          const __num_ts = (v, d) =>
+            Number.isFinite(Number(v)) ? Number(v) : d;
 
-      // env knobs
-      const TS_ENABLED =
-        String(process.env.TRUTH_SMOOTH_ENABLED ?? "true").toLowerCase() !== "false";
-      const TS_TARGET = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_TARGET, 0.5));
-      const TS_STRENGTH = __clamp01_ts(
-        __num_ts(process.env.TRUTH_SMOOTH_STRENGTH, 0.55)
-      );
+          // inputs (risk-only)
+          const coverage01 = __clamp01_ts(__num_ts(partial_scores?.coverage_factor, 1.0));
+          const conflict01 = __clamp01_ts(
+            __num_ts(partial_scores?.conflict_meta?.conflict_index, 0.0)
+          );
+          const softPenalty01 = __clamp01_ts(
+            __num_ts(partial_scores?.soft_penalty_factor, 1.0)
+          );
+          const Eeff =
+            Number.isFinite(partial_scores?.effective_engines_count)
+              ? Math.max(0, Math.min(10, Math.trunc(partial_scores.effective_engines_count)))
+              : null;
 
-      const W_CONFLICT = __clamp01_ts(
-        __num_ts(process.env.TRUTH_SMOOTH_W_CONFLICT, 0.55)
-      );
-      const W_COV = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_COV, 0.30));
-      const W_SOFT = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_SOFT, 0.15));
-      const W_EEFF = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_EEFF, 0.10));
+          // keep compat logs (optional)
+          try {
+            partial_scores.coverage_factor_raw = coverage01;
+            partial_scores.coverage_factor_used_in_smoothing = coverage01; // risk-only
+          } catch (_) {}
 
-      const MAX_ALPHA = __clamp01_ts(
-        __num_ts(process.env.TRUTH_SMOOTH_MAX_ALPHA, 0.60)
-      );
+          // env knobs
+          const TS_ENABLED =
+            String(process.env.TRUTH_SMOOTH_ENABLED ?? "true").toLowerCase() !== "false";
+          const TS_TARGET = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_TARGET, 0.5));
+          const TS_STRENGTH = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_STRENGTH, 0.55));
 
-      if (TS_ENABLED) {
-        const weakEff =
-          Eeff !== null && Eeff <= 1 ? 1.0 : Eeff !== null && Eeff === 2 ? 0.5 : 0.0;
+          const W_CONFLICT = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_CONFLICT, 0.55));
+          const W_COV = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_COV, 0.30));
+          const W_SOFT = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_SOFT, 0.15));
+          const W_EEFF = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_EEFF, 0.10));
 
-        const risk = __clamp01_ts(
-          W_CONFLICT * conflict01 +
-            W_COV * (1 - coverage01) +
-            W_SOFT * (1 - softPenalty01) +
-            W_EEFF * weakEff
-        );
+          const MAX_ALPHA = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_MAX_ALPHA, 0.60));
 
-        const alpha = Math.min(MAX_ALPHA, __clamp01_ts(TS_STRENGTH * risk));
+          if (TS_ENABLED) {
+            const weakEff =
+              Eeff !== null && Eeff <= 1 ? 1.0 : Eeff !== null && Eeff === 2 ? 0.5 : 0.0;
 
-        const before = __clamp01_ts(truthscore_01);
-        const after = __clamp01_ts((1 - alpha) * before + alpha * TS_TARGET);
+            const risk = __clamp01_ts(
+              W_CONFLICT * conflict01 +
+                W_COV * (1 - coverage01) +
+                W_SOFT * (1 - softPenalty01) +
+                W_EEFF * weakEff
+            );
 
-        truthscore_01 = Number(after.toFixed(4));
+            const alpha = Math.min(MAX_ALPHA, __clamp01_ts(TS_STRENGTH * risk));
 
-        partial_scores.truthscore_smoothing = {
-          applied: true,
-          version: "A-v2",
-          raw: truthscore_01_raw,
-          before,
-          after: truthscore_01,
-          target: TS_TARGET,
-          strength: TS_STRENGTH,
-          max_alpha: MAX_ALPHA,
-          weights: {
-            conflict: W_CONFLICT,
-            coverage: W_COV,
-            soft: W_SOFT,
-            E_eff: W_EEFF,
-          },
-          inputs: {
-            coverage_factor: coverage01,
-            conflict_index: conflict01,
-            soft_penalty_factor: softPenalty01,
-            effective_engines_count: Eeff,
-          },
-          risk,
-          alpha,
-          note:
-            "risk-only; no extra multiplicative penalty here (avoid double with hybrid/Swap-in B).",
-        };
-      } else {
-        partial_scores.truthscore_smoothing = { applied: false, disabled: true };
+            const before = __clamp01_ts(truthscore_01);
+            const blended = __clamp01_ts((1 - alpha) * before + alpha * TS_TARGET);
+
+            // 기본: 스무딩이 점수를 올리지 않게(급상승 방지)
+            const allowIncrease =
+              String(process.env.TRUTH_SMOOTH_ALLOW_INCREASE ?? "false").toLowerCase() === "true";
+            const after = allowIncrease ? blended : Math.min(before, blended);
+
+            truthscore_01 = Number(after.toFixed(4));
+
+            partial_scores.truthscore_smoothing = {
+              applied: true,
+              version: "A-v3",
+              raw: Number(__truthscore_01_raw.toFixed(4)),
+              before,
+              after: truthscore_01,
+              target: TS_TARGET,
+              strength: TS_STRENGTH,
+              max_alpha: MAX_ALPHA,
+              allow_increase: allowIncrease,
+              weights: {
+                conflict: W_CONFLICT,
+                coverage: W_COV,
+                soft: W_SOFT,
+                E_eff: W_EEFF,
+              },
+              inputs: {
+                coverage_factor: coverage01,
+                conflict_index: conflict01,
+                soft_penalty_factor: softPenalty01,
+                effective_engines_count: Eeff,
+              },
+              risk,
+              alpha,
+              note:
+                "risk-only smoothing; default forbids increasing score (anti-spike). soft_penalty_factor is applied once in (B).",
+            };
+          } else {
+            partial_scores.truthscore_smoothing = { applied: false, disabled: true };
+          }
+        }
+      } catch (_) {
+        try {
+          partial_scores.truthscore_smoothing = { applied: false, error: true };
+        } catch {}
+        truthscore_01 = __truthscore_01_raw;
       }
-    }
-  } catch (_) {
-    try {
-      partial_scores.truthscore_smoothing = { applied: false, error: true };
-    } catch {}
-    truthscore_01 = truthscore_01_raw;
-  }
 
-  // 2) 퍼센트 변환은 항상 최종 truthscore_01 기준으로
-  const truthscore_pct = Math.round(truthscore_01 * 10000) / 100; // 2 decimals
-  const truthscore_text = `${truthscore_pct.toFixed(2)}%`;
+      // (B) apply soft_penalty_factor to final TruthScore (QV/FV only) - single multiplicative pass
+      let softPenaltyFactor = 1.0;
+      let softPenaltyApplied = false;
+      let softPenaltiesOverview = null;
 
-  // ??normalizedPartial???怨뺤쨮 ??곸몵????곕뼊 ??덉뵬??띿쓺 ????
-  // ✅ Swap-in B: apply soft_penalty_factor to final TruthScore (QV/FV only)
-// - partial_scores.soft_penalty_factor(0~1)를 truthscore_01에 곱함
-// - truthscore_pct / truthscore_text도 같이 갱신
-let softPenaltyFactor = 1.0;
-let softPenaltyApplied = false;
-let softPenaltiesOverview = null;
+      let truthscore_01_final = truthscore_01;
 
-let truthscore_01_final = truthscore_01;
-let truthscore_pct_final = truthscore_pct;
-let truthscore_text_final = truthscore_text;
+      try {
+        if (safeMode === "qv" || safeMode === "fv") {
+          const spf =
+            (partial_scores &&
+              typeof partial_scores.soft_penalty_factor === "number" &&
+              Number.isFinite(partial_scores.soft_penalty_factor))
+              ? Math.max(0.0, Math.min(1.0, partial_scores.soft_penalty_factor))
+              : 1.0;
 
-try {
-  if (safeMode === "qv" || safeMode === "fv") {
-    const spf =
-      (partial_scores &&
-        typeof partial_scores.soft_penalty_factor === "number" &&
-        Number.isFinite(partial_scores.soft_penalty_factor))
-        ? Math.max(0.0, Math.min(1.0, partial_scores.soft_penalty_factor))
-        : 1.0;
+          softPenaltyFactor = spf;
 
-    softPenaltyFactor = spf;
+          softPenaltiesOverview =
+            (partial_scores && typeof partial_scores.soft_penalties_overview === "object")
+              ? partial_scores.soft_penalties_overview
+              : null;
 
-    softPenaltiesOverview =
-      (partial_scores && typeof partial_scores.soft_penalties_overview === "object")
-        ? partial_scores.soft_penalties_overview
-        : null;
+          if (
+            spf < 0.999999 &&
+            typeof truthscore_01_final === "number" &&
+            Number.isFinite(truthscore_01_final)
+          ) {
+            const before01 = truthscore_01_final;
+            const after01 = Math.max(0.0, Math.min(1.0, before01 * spf));
 
-    if (
-      spf < 0.999999 &&
-      typeof truthscore_01_final === "number" &&
-      Number.isFinite(truthscore_01_final)
-    ) {
-      const before01 = truthscore_01_final;
-      const after01 = Math.max(0.0, Math.min(1.0, before01 * spf));
+            truthscore_01_final = Number(after01.toFixed(4));
 
-      truthscore_01_final = Number(after01.toFixed(4));
-      truthscore_pct_final = Number((truthscore_01_final * 100).toFixed(2));
-      truthscore_text_final = `${truthscore_pct_final.toFixed(2)}%`;
+            softPenaltyApplied = {
+              factor: spf,
+              before_01: Number(before01.toFixed(4)),
+              after_01: truthscore_01_final,
+            };
 
-      softPenaltyApplied = {
-        factor: spf,
-        before_01: Number(before01.toFixed(4)),
-        after_01: truthscore_01_final,
-      };
+            partial_scores.truthscore_01_pre_soft = Number(before01.toFixed(4));
+            partial_scores.soft_penalty_applied = softPenaltyApplied;
+          } else {
+            partial_scores.soft_penalty_applied = false;
+          }
+        } else {
+          partial_scores.soft_penalty_applied = false;
+        }
+      } catch (_) {
+        try { partial_scores.soft_penalty_applied = false; } catch {}
+      }
 
-      // trace
-      partial_scores.truthscore_01_pre_soft = Number(before01.toFixed(4));
-      partial_scores.soft_penalty_applied = softPenaltyApplied;
-    } else {
-      partial_scores.soft_penalty_applied = false;
-    }
-  } else {
-    partial_scores.soft_penalty_applied = false;
-  }
-} catch (_) {
-  try { partial_scores.soft_penalty_applied = false; } catch {}
-}
+      const truthscore_pct_final = Math.round(truthscore_01_final * 10000) / 100; // 2 decimals
+      const truthscore_text_final = `${truthscore_pct_final.toFixed(2)}%`;
+
+      // compat aliases (아래에서 truthscore_pct/text 참조가 남아있어도 안전)
+      const truthscore_pct = truthscore_pct_final;
+      const truthscore_text = truthscore_text_final;
 
 const normalizedPartial = partial_scores;
   const payload = {
@@ -10481,90 +10512,74 @@ if (safeMode === "qv" || safeMode === "fv") {
     console.error("❌ verification_logs insert failed:", logErr.message);
   }
 
-// ✅ Gemini 키 invalid는 401로 명확히 반환
-if (e?.code === "INVALID_GEMINI_KEY") {
-  return res.status(401).json(
-    buildError(
-      "INVALID_GEMINI_KEY",
-      "Gemini API 키가 유효하지 않습니다. 설정에서 키를 다시 저장해 주세요.",
-      e?.detail || e?.message
-    )
-  );
-}
-
-// Admin 대시보드용 에러 기록
+// ✅ Admin 대시보드용 에러 기록 (early-return 전에 먼저 기록)
+try {
   pushAdminError({
     type: "verify",
     code: e?.code || null,
     message: e?.message || String(e),
   });
+} catch (_) {}
 
+// ✅ Gemini rate limit (429) — 기존 정책 유지(200 + success:false)
 if (e?.code === "GEMINI_RATE_LIMIT") {
   return res.status(200).json({
     success: false,
     code: "GEMINI_RATE_LIMIT",
     message: "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.",
     timestamp: new Date().toISOString(),
-    detail: e.detail || null,
+    detail: e?.detail ?? e?.message ?? null,
   });
 }
 
 // ✅ Gemini 키링 모두 소진(쿼터/인증 등)도 코드 유지해서 그대로 반환
 if (e?.code === "GEMINI_KEY_EXHAUSTED") {
-  const st = (typeof e?.httpStatus === "number" ? e.httpStatus : 200);
+  const st = typeof e?.httpStatus === "number" ? e.httpStatus : 200;
   return res.status(st).json(
     buildError(
       "GEMINI_KEY_EXHAUSTED",
       "Gemini 키를 사용할 수 없습니다. (쿼터/인증/키링 상태 확인)",
-      e?.detail || e?.message
+      e?.detail ?? e?.message
     )
   );
 }
 
-// ✅ NAVER id/secret 인증 오류는 401로 명확히 반환
-if (e?.code === "NAVER_AUTH_ERROR") {
-  return res.status(401).json(
-    buildError(
-      "NAVER_AUTH_ERROR",
-      "네이버 API 인증 실패 (ID/Secret 확인 필요)",
-      e?.detail || e?.message
-    )
-  );
-}
-
-// ✅ Gemini 키 문제는 401로 명확히 반환 (GEMINI_SKIPPED로 뭉개지지 않게)
-if (e?.code === "INVALID_GEMINI_KEY") {
-  return res.status(401).json(
-    buildError(
-      "INVALID_GEMINI_KEY",
-      "Gemini API 키가 유효하지 않습니다. (키 확인 필요)",
-      e?.detail || e?.message
-    )
-  );
-}
-
+// ✅ Gemini key missing => 401
 if (e?.code === "GEMINI_KEY_MISSING") {
   return res.status(401).json(
     buildError(
       "GEMINI_KEY_MISSING",
       "Gemini API 키가 없습니다. (앱 설정 저장/로그인 vault 또는 요청 body에 gemini_key 필요)",
-      e?.detail || e?.message
+      e?.detail ?? e?.message
     )
   );
 }
 
-// ✅ Gemini invalid key는 401로 명확히 반환 (안전망)
+// ✅ Gemini invalid/missing key safety-net (code가 안 붙는 케이스)
 {
   const rawMsg =
     e?.response?.data?.error?.message ||
     e?.response?.data?.message ||
     e?.message ||
     "";
-  const isInvalidGeminiKey =
-    e?.code === "INVALID_GEMINI_KEY" ||
-    /API key not valid|API_KEY_INVALID|invalid api key/i.test(String(rawMsg));
+  const s = String(rawMsg);
 
-  if (isInvalidGeminiKey) {
+  const isMissing =
+    /api key.*missing|missing api key|no api key|api_key_missing/i.test(s);
+  const isInvalid =
+    /API key not valid|API_KEY_INVALID|invalid api key/i.test(s);
+
+  if (isMissing) {
+    return res.status(401).json(
+      buildError(
+        "GEMINI_KEY_MISSING",
+        "Gemini API 키가 없습니다. (앱 설정 저장/로그인 vault 또는 요청 body에 gemini_key 필요)",
+        e?.detail ?? rawMsg
+      )
+    );
+  }
+
+  if (isInvalid) {
     return res.status(401).json(
       buildError(
         "INVALID_GEMINI_KEY",
@@ -10573,17 +10588,6 @@ if (e?.code === "GEMINI_KEY_MISSING") {
       )
     );
   }
-}
-
-// ✅ Gemini key invalid => 401
-if (e?.code === "INVALID_GEMINI_KEY") {
-  return res.status(401).json(
-    buildError(
-      "INVALID_GEMINI_KEY",
-      "Gemini API 키가 유효하지 않습니다. (키를 확인/교체하세요)",
-      e?.detail ?? e?.message
-    )
-  );
 }
 
 // ✅ httpStatus/publicMessage/detail 있으면 그대로 반환 (최상위 catch)
