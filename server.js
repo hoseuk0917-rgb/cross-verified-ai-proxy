@@ -10067,7 +10067,10 @@ await supabase.from("verification_logs").insert([
       let softPenaltyApplied = false;
       let softPenaltiesOverview = null;
 
-      let truthscore_01_final = truthscore_01;
+      let truthscore_01_final =
+  (typeof __truthscore_01_raw === "number" && Number.isFinite(__truthscore_01_raw))
+    ? __truthscore_01_raw
+    : 0;
 
       try {
         if (safeMode === "qv" || safeMode === "fv") {
@@ -10119,8 +10122,6 @@ await supabase.from("verification_logs").insert([
       // compat aliases (아래에서 truthscore_pct/text 참조가 남아있어도 안전)
       const truthscore_pct = truthscore_pct_final;
       const truthscore_text = truthscore_text_final;
-      const truthscore_01 = truthscore_01_final;
-
       const normalizedPartial = partial_scores;
       const payload = {
        mode: safeMode,
