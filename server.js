@@ -9959,12 +9959,27 @@ await supabase.from("verification_logs").insert([
       // - 기본값: 스무딩이 점수를 올리는 방향은 금지(급상승 방지)
       // - soft_penalty_factor 곱감점은 (B)에서 1회만 수행
 
-      const __truthscore_01_raw =
-  (typeof truthscore_01_raw === "number" && Number.isFinite(truthscore_01_raw))
-    ? Number(truthscore_01_raw)
-    : (typeof partial_scores?.truthscore_01_raw === "number" && Number.isFinite(partial_scores.truthscore_01_raw))
-      ? Number(partial_scores.truthscore_01_raw)
-      : 0;
+      const __truthscore_01_raw = (() => {
+  // 1) Gemini verify 결과의 overall raw(가장 신뢰할 1순위)
+  const v0 = verifyMeta?.overall?.overall_truthscore_raw;
+  if (typeof v0 === "number" && Number.isFinite(v0)) return Number(v0);
+
+  // 2) 혹시 raw가 아니라 overall_truthscore로 오는 변형 대비
+  const v1 = verifyMeta?.overall?.overall_truthscore;
+  if (typeof v1 === "number" && Number.isFinite(v1)) return Number(v1);
+
+  // 3) 레거시/안전망 (있으면 사용)
+  try {
+    if (typeof truthscore_01_raw === "number" && Number.isFinite(truthscore_01_raw)) {
+      return Number(truthscore_01_raw);
+    }
+  } catch (_) {}
+
+  const v2 = partial_scores?.truthscore_01_raw;
+  if (typeof v2 === "number" && Number.isFinite(v2)) return Number(v2);
+
+  return 0;
+})();
 
 let truthscore_01 = __truthscore_01_raw; // ✅ smoothing에서 참조/대입할 변수 생성
 
