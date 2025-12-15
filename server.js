@@ -7250,12 +7250,29 @@ if (__academicSingle) {
   const qo = limitChars(openalexGlobalQ, 90);
 
   if (String(qc || "").trim()) {
-    crossrefGlobalPack = await safeFetchTimed("crossref", fetchCrossref, qc, engineTimes, engineMetrics);
-    engineQueriesUsed.crossref.push(qc);
+    try {
+      if (__capConsume("crossref")) {
+        crossrefGlobalPack = await safeFetchTimed("crossref", fetchCrossref, qc, engineTimes, engineMetrics);
+        try { engineQueriesUsed.crossref.push(qc); } catch {}
+      } else {
+        crossrefGlobalPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+      }
+    } catch (e) {
+      crossrefGlobalPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+    }
   }
+
   if (String(qo || "").trim()) {
-    openalexGlobalPack = await safeFetchTimed("openalex", fetchOpenAlex, qo, engineTimes, engineMetrics);
-    engineQueriesUsed.openalex.push(qo);
+    try {
+      if (__capConsume("openalex")) {
+        openalexGlobalPack = await safeFetchTimed("openalex", fetchOpenAlex, qo, engineTimes, engineMetrics);
+        try { engineQueriesUsed.openalex.push(qo); } catch {}
+      } else {
+        openalexGlobalPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+      }
+    } catch (e) {
+      openalexGlobalPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+    }
   }
 }
 
@@ -7266,8 +7283,16 @@ if (__gdeltSingle) {
   } else {
     const qq = limitChars(gdeltGlobalQ, 120);
     if (String(qq || "").trim()) {
-      gdeltGlobalPack = await safeFetchTimed("gdelt", fetchGDELT, qq, engineTimes, engineMetrics);
-      engineQueriesUsed.gdelt.push(qq);
+      try {
+        if (__capConsume("gdelt")) {
+          gdeltGlobalPack = await safeFetchTimed("gdelt", fetchGDELT, qq, engineTimes, engineMetrics);
+          try { engineQueriesUsed.gdelt.push(qq); } catch {}
+        } else {
+          gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+        }
+      } catch (e) {
+        gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+      }
     }
   }
 }
@@ -7298,11 +7323,8 @@ for (const b of __blocksInput) {
   const qWikidata = String(eq.wikidata || "").trim();
   const qGdelt = __gdeltSingle ? String(gdeltGlobalQ || "").trim() : String(eq.gdelt || "").trim();
 
-  // ✅ 엔진별 쿼리 기록(빈 값 제외)
-  if (!__academicSingle && qCrossref) engineQueriesUsed.crossref.push(qCrossref);
-  if (!__academicSingle && qOpenalex) engineQueriesUsed.openalex.push(qOpenalex);
-  if (qWikidata) engineQueriesUsed.wikidata.push(qWikidata);
-  if (!__gdeltSingle && qGdelt) engineQueriesUsed.gdelt.push(qGdelt);
+  // ✅ 엔진별 쿼리 기록은 "실제 호출(cap 통과)" 시점에만 push 한다.
+// (여기서는 push 하지 않음)
 
   // ✅ 핵심: crPack/oaPack/wdPack/gdPack "항상 정의" (ReferenceError 방지)
   // - academicSingle / gdeltSingle 이면 globalPack을 재사용
@@ -7318,42 +7340,45 @@ for (const b of __blocksInput) {
     oaPack = openalexGlobalPack || oaPack;
   } else {
     if (String(qCrossref || "").trim()) {
-      try {
-        if (__capConsume("crossref")) {
-          crPack = await safeFetchTimed("crossref", fetchCrossref, qCrossref, engineTimes, engineMetrics);
-        } else {
-          crPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-        }
-      } catch (e) {
-        crPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
-      }
+  try {
+    if (__capConsume("crossref")) {
+      crPack = await safeFetchTimed("crossref", fetchCrossref, qCrossref, engineTimes, engineMetrics);
+      try { engineQueriesUsed.crossref.push(qCrossref); } catch {}
+    } else {
+      crPack = { result: [], ms: 0, skipped: true, reason: "cap" };
     }
+  } catch (e) {
+    crPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+  }
+}
 
     if (String(qOpenalex || "").trim()) {
-      try {
-        if (__capConsume("openalex")) {
-          oaPack = await safeFetchTimed("openalex", fetchOpenAlex, qOpenalex, engineTimes, engineMetrics);
-        } else {
-          oaPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-        }
-      } catch (e) {
-        oaPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
-      }
+  try {
+    if (__capConsume("openalex")) {
+      oaPack = await safeFetchTimed("openalex", fetchOpenAlex, qOpenalex, engineTimes, engineMetrics);
+      try { engineQueriesUsed.openalex.push(qOpenalex); } catch {}
+    } else {
+      oaPack = { result: [], ms: 0, skipped: true, reason: "cap" };
     }
+  } catch (e) {
+    oaPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+  }
+}
   }
 
   // wikidata (per-block)
-  if (String(qWikidata || "").trim()) {
-    try {
-      if (__capConsume("wikidata")) {
-        wdPack = await safeFetchTimed("wikidata", fetchWikidata, qWikidata, engineTimes, engineMetrics);
-      } else {
-        wdPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-      }
-    } catch (e) {
-      wdPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+if (String(qWikidata || "").trim()) {
+  try {
+    if (__capConsume("wikidata")) {
+      wdPack = await safeFetchTimed("wikidata", fetchWikidata, qWikidata, engineTimes, engineMetrics);
+      try { engineQueriesUsed.wikidata.push(qWikidata); } catch {}
+    } else {
+      wdPack = { result: [], ms: 0, skipped: true, reason: "cap" };
     }
+  } catch (e) {
+    wdPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
   }
+}
 
   // gdelt
   if (__gdeltSingle) {
@@ -7363,16 +7388,17 @@ for (const b of __blocksInput) {
     if (__isSnippetReq && __gdeltDisableSnippet) {
       gdPack = { result: [], ms: 0, skipped: true, reason: "snippet_disabled" };
     } else if (String(qGdelt || "").trim()) {
-      try {
-        if (__capConsume("gdelt")) {
-          gdPack = await safeFetchTimed("gdelt", fetchGDELT, qGdelt, engineTimes, engineMetrics);
-        } else {
-          gdPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-        }
-      } catch (e) {
-        gdPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
-      }
+  try {
+    if (__capConsume("gdelt")) {
+      gdPack = await safeFetchTimed("gdelt", fetchGDELT, qGdelt, engineTimes, engineMetrics);
+      try { engineQueriesUsed.gdelt.push(qGdelt); } catch {}
+    } else {
+      gdPack = { result: [], ms: 0, skipped: true, reason: "cap" };
     }
+  } catch (e) {
+    gdPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+  }
+}
   }
 
   let naverQueriesBase = Array.isArray(eq.naver) ? eq.naver : [];
