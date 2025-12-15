@@ -10195,7 +10195,7 @@ let truthscore_01 = __truthscore_01_raw; // ✅ smoothing에서 참조/대입할
       let softPenaltyApplied = false;
       let softPenaltiesOverview = null;
 
-      let truthscore_01_final =
+            var truthscore_01_final =
   (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01))
     ? truthscore_01
     : (typeof __truthscore_01_raw === "number" && Number.isFinite(__truthscore_01_raw))
