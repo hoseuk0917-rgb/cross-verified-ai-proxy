@@ -8866,15 +8866,18 @@ try {
         // key canonicalize + (strict_prune일 때) "현재 살아있는 evidence"만 집계
     // - __known: 최종 blocks에서 살아있는 URL 집합
     // - __counted: 이미 penalty를 집계한 URL 집합(중복 집계 방지)
-    const __accPenalty = (p, flags, key0) => {
-      const key = key0 ? __canonUrlKey(key0) : null;
+        const __accPenalty = (p, flags, keyRaw) => {
+      // key canonicalize
+      const key = keyRaw ? __canonUrlKey(keyRaw) : null;
 
-      // STRICT prune일 때는 "살아있는 evidence"가 아닌 URL은 집계에서 제외
+      // STRICT prune가 켜져 있으면: "최종 blocks evidence에 살아있는 URL"만 집계
       if (__strictPrune && key && !__known.has(key)) return;
 
-      // URL 기준 중복 집계 방지
+      // 이미 집계한 URL은 중복 집계 금지
       if (key && __counted.has(key)) return;
       if (key) __counted.add(key);
+
+      itemsTotal += 1;
 
       const pp = __clamp01(p);
       if (pp == null) return;
@@ -8889,6 +8892,16 @@ try {
       if (flags?.year_miss) yearMiss += 1;
       if (flags?.num_miss) numMiss += 1;
     };
+
+        // 0) __known 채우기: 최종 blocks evidence에 "살아있는" URL만 모음
+    for (const b of blocksForVerify) {
+      const evs = Array.isArray(b?.evidence_items) ? b.evidence_items : (Array.isArray(b?.evidence) ? b.evidence : []);
+      for (const ev of evs) {
+        const k0 = __keyOf(ev);
+        const k = k0 ? __canonUrlKey(k0) : null;
+        if (k) __known.add(k);
+      }
+    }
 
     // 1) blocksForVerify 내부 evidence(ev) 기반
     for (const b of blocksForVerify) {
