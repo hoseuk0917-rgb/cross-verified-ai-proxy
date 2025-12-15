@@ -3624,42 +3624,42 @@ async function fetchWikidata(q, ctx = {}) {
   return data?.search?.map((i) => i.label) || [];
 }
 
-// 🔹 GDELT 뉴스 기반 시의성 엔진 (timeout/maxrecords 분리)
+// 🔹 GDELT 뉴스 기반 시의성 엔진
 async function fetchGDELT(q, ctx = {}) {
   const signal = ctx?.signal;
 
   const qq = String(q || "").trim();
   if (!qq) return [];
 
-  const GDELT_TIMEOUT_MS = (() => {
-    const n = Number(process.env.GDELT_TIMEOUT_MS);
-    return Number.isFinite(n) ? n : HTTP_TIMEOUT_MS;
+  // ✅ env overrides
+  const __timeout = (() => {
+    const v = Number(process.env.GDELT_TIMEOUT_MS ?? 6500);
+    const t = (Number.isFinite(v) && v > 0) ? Math.floor(v) : 6500;
+    // HTTP_TIMEOUT_MS보다 길게 잡지 않음(안전)
+    return (typeof HTTP_TIMEOUT_MS === "number" && Number.isFinite(HTTP_TIMEOUT_MS))
+      ? Math.min(t, Math.floor(HTTP_TIMEOUT_MS))
+      : t;
   })();
 
-  const MAXRECORDS = (() => {
-    const n = Number(process.env.GDELT_MAXRECORDS);
-    const v = Number.isFinite(n) ? n : 3;
-    return Math.max(1, Math.min(10, Math.trunc(v)));
+  const __maxrecords = (() => {
+    const v = Number(process.env.GDELT_MAXRECORDS ?? 2);
+    return (Number.isFinite(v) && v > 0) ? Math.floor(v) : 2;
   })();
 
-  const qMax = (() => {
-    const n = Number(process.env.GDELT_QUERY_MAXLEN);
-    const v = Number.isFinite(n) ? n : 120;
-    return Math.max(40, Math.min(240, Math.trunc(v)));
-  })();
-
-  const qFinal = qq.length > qMax ? qq.slice(0, qMax).trim() : qq;
+  // ✅ query length cap (GDELT API 안정)
+  const q120 = (qq.length > 120) ? qq.slice(0, 120).trim() : qq;
 
   const { data } = await axios.get(
-    `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(qFinal)}&format=json&maxrecords=${MAXRECORDS}`,
-    { timeout: GDELT_TIMEOUT_MS, signal }
+    `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q120)}&format=json&maxrecords=${__maxrecords}`,
+    { timeout: __timeout, signal }
   );
 
-  const arts = Array.isArray(data?.articles) ? data.articles : [];
-  return arts.map((i) => {
-    const d = parseGdeltSeenDate(i.seendate);
-    return { title: i.title, date: d ? d.toISOString() : null };
-  });
+  return (
+    data?.articles?.map((i) => {
+      const d = parseGdeltSeenDate(i.seendate);
+      return { title: i.title, date: d ? d.toISOString() : null };
+    }) || []
+  );
 }
 
 // 🔹 GitHub 리포 검색 엔진 (DV/CV용)
@@ -7233,6 +7233,14 @@ const gdeltGlobalQ = __gdeltSingle
   ? String(__firstEq.gdelt || academicBaseEn || "").trim()
   : "";
 
+// ✅ snippet request 여부를 먼저 확정 (GDELT 등 비용 큰 엔진 제어에 사용)
+const __isSnippetReq =
+  !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
+
+// ✅ 기본 정책: snippet 검증에서는 GDELT 호출을 끈다 (환경변수로만 허용)
+const __gdeltDisableSnippet =
+  String(process.env.GDELT_DISABLE_SNIPPET ?? "true").toLowerCase() !== "false";
+
 let crossrefGlobalPack = { result: [], ms: 0, skipped: true };
 let openalexGlobalPack = { result: [], ms: 0, skipped: true };
 let gdeltGlobalPack = { result: [], ms: 0, skipped: true };
@@ -7252,15 +7260,17 @@ if (__academicSingle) {
 }
 
 if (__gdeltSingle) {
-  const qq = limitChars(gdeltGlobalQ, 120);
-  if (String(qq || "").trim()) {
-    gdeltGlobalPack = await safeFetchTimed("gdelt", fetchGDELT, qq, engineTimes, engineMetrics);
-    engineQueriesUsed.gdelt.push(qq);
+  // ✅ snippet 기본: GDELT 호출 스킵
+  if (__isSnippetReq && __gdeltDisableSnippet) {
+    gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "snippet_disabled" };
+  } else {
+    const qq = limitChars(gdeltGlobalQ, 120);
+    if (String(qq || "").trim()) {
+      gdeltGlobalPack = await safeFetchTimed("gdelt", fetchGDELT, qq, engineTimes, engineMetrics);
+      engineQueriesUsed.gdelt.push(qq);
+    }
   }
 }
-
-const __isSnippetReq =
-  !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
 
 const __maxBlocksInput = __isSnippetReq ? __caps.blocks_snippet : __caps.blocks;
 
@@ -7331,71 +7341,48 @@ naverQueriesExpanded = naverQueriesExpanded.slice(0, Math.max(1, Math.trunc(__na
 // ─────────────────────────────
 let naverItemsAll = [];
 
-// ✅ (NEW) request-level Naver call budget stored in partial_scores (persists across blocks)
+// ✅ (FIX) request-level Naver call budget (logging) + __capConsume("naver") enforcement
+let __naverBudgetLog = null;
 try {
-  const __isSnippet =
-    !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
-
-  const __maxNormal = (() => {
-    const v = Number(process.env.NAVER_MAX_CALLS_PER_REQUEST ?? 6);
-    return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 6;
-  })();
-
-  const __maxSnippet = (() => {
-    const v = Number(process.env.NAVER_SNIPPET_MAX_CALLS_PER_REQUEST ?? 2);
-    return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 2;
-  })();
-
   if (partial_scores && typeof partial_scores === "object") {
     if (!partial_scores.__naver_call_budget || typeof partial_scores.__naver_call_budget !== "object") {
       partial_scores.__naver_call_budget = {};
     }
+
     const b = partial_scores.__naver_call_budget;
 
-    // init only once per request
-    if (b._init !== true) {
-      b._init = true;
-      b.is_snippet = __isSnippet;
-      b.max = __isSnippet ? __maxSnippet : __maxNormal;
-      b.left = b.max;
-      b.used = 0;
-      b.used_last_block = 0;
-      b.left_before_block = b.left;
-    }
+    // per-request static fields
+    b.is_snippet = __isSnippetReq;
+    b.max = (Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : 999999);
 
-    // reset per-block counters
+    // per-block snapshots (reset each block)
+    b.used_before_block = Number(__capState?.calls_naver || 0);
+    b.left_before_block = Math.max(0, Number(b.max || 0) - Number(b.used_before_block || 0));
     b.used_last_block = 0;
-    b.left_before_block = b.left;
+
+    __naverBudgetLog = b;
   }
 } catch {}
 
-for (const nq0 of naverQueries) {
+// ✅ 실제 Naver 호출에 사용할 쿼리 리스트: naverQueriesExpanded(블록당 cap 적용된 상태)
+for (const nq0 of naverQueriesExpanded) {
   const nq = String(nq0 || "").trim();
   if (!nq) continue;
 
-  // ✅ enforce request-level budget across blocks
-  let __left = null;
-  try {
-    __left =
-      (partial_scores &&
-        typeof partial_scores === "object" &&
-        partial_scores.__naver_call_budget &&
-        typeof partial_scores.__naver_call_budget === "object")
-        ? Number(partial_scores.__naver_call_budget.left)
-        : null;
-  } catch {}
+  // ✅ 요청 전체 cap / naver cap 모두 여기서 같이 enforcement
+  if (!__capConsume("naver")) break;
 
-  if (Number.isFinite(__left) && __left <= 0) break;
+  // ✅ 엔진별 쿼리 기록(호출한 것만)
+  try { engineQueriesUsed.naver.push(nq); } catch {}
 
-  // consume 1 call
+  // ✅ budget log update
   try {
-    if (partial_scores && typeof partial_scores === "object") {
-      const b = partial_scores.__naver_call_budget;
-      if (b && typeof b === "object") {
-        b.left = Math.max(0, Number(b.left || 0) - 1);
-        b.used = Number(b.used || 0) + 1;
-        b.used_last_block = Number(b.used_last_block || 0) + 1;
-      }
+    if (__naverBudgetLog && typeof __naverBudgetLog === "object") {
+      __naverBudgetLog.used_last_block = Number(__naverBudgetLog.used_last_block || 0) + 1;
+
+      const usedNow = Number(__capState?.calls_naver || 0);
+      __naverBudgetLog.used = usedNow;
+      __naverBudgetLog.left = Math.max(0, Number(__naverBudgetLog.max || 0) - usedNow);
     }
   } catch {}
 
@@ -7409,25 +7396,34 @@ for (const nq0 of naverQueries) {
   if (Array.isArray(result) && result.length) naverItemsAll.push(...result);
 }
 
-// update budget snapshot after this block
+// ✅ budget snapshot after this block
 try {
-  if (partial_scores && typeof partial_scores === "object") {
-    const b = partial_scores.__naver_call_budget;
-    if (b && typeof b === "object") {
-      b.left_after_block = b.left;
-    }
+  if (__naverBudgetLog && typeof __naverBudgetLog === "object") {
+    __naverBudgetLog.used_after_block = Number(__capState?.calls_naver || 0);
+    __naverBudgetLog.left_after_block = Math.max(0, Number(__naverBudgetLog.max || 0) - Number(__naverBudgetLog.used_after_block || 0));
   }
 } catch {}
 
 naverItemsAll = dedupeByLink(naverItemsAll).slice(0, BLOCK_NAVER_MAX_ITEMS);
 
 try {
-  partial_scores.naver_budget_remaining = __naverBudget;
-  partial_scores.naver_queries_cap = {
-    per_block_cap: Math.max(1, Math.trunc(__naverPerBlockCap)),
-    used_queries: naverQueriesExpanded.slice(0, 12),
-    used_queries_count: naverQueriesExpanded.length,
-  };
+  if (partial_scores && typeof partial_scores === "object") {
+    // ✅ __naverBudget(미정의) 제거, 대신 __capState / __naver_call_budget 스냅샷을 활용
+    partial_scores.naver_queries_cap = {
+      per_block_cap: Math.max(1, Math.trunc(__naverPerBlockCap)),
+      used_queries: naverQueriesExpanded.slice(0, 12),
+      used_queries_count: naverQueriesExpanded.length,
+    };
+
+    // (선택) cap 카운터 스냅샷을 같이 남겨두면 디버깅이 편함
+    partial_scores.naver_calls_used_total = Number(__capState?.calls_naver || 0);
+    partial_scores.engine_call_caps = {
+      total: Number(__caps?.total),
+      academic: Number(__caps?.academic),
+      gdelt: Number(__caps?.gdelt),
+      naver: Number(__caps?.naver),
+    };
+  }
 } catch {}
 
   // ✅ 확장된 쿼리를 기준으로 evidence 선택
