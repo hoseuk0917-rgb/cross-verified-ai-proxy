@@ -12190,7 +12190,7 @@ try {
     console.error("❌ /api/translate Error:", e.message);
     console.error("❌ /api/translate stack:", e?.stack || e);
 
-    // ✅ 번역 에러도 verification_logs 에 남겨두기 (mode = 'translate')
+        // ✅ 번역 에러도 verification_logs 에 남겨두기 (mode = 'translate')
     try {
       const b = getJsonBody(req);
       const textRaw =
@@ -12199,20 +12199,52 @@ try {
         b?.content ??
         null;
 
+      // ✅ user_id NOT NULL 대응: 가능하면 Bearer/Supabase auth로 해석
+      let logUserId = null;
+      try {
+        const auth_user = await getSupabaseAuthUser(req);
+        const bearer_token = getBearerToken(req);
+
+        logUserId = await resolveLogUserId({
+          user_id: b?.user_id ?? null,
+          user_email: b?.user_email ?? null,
+          user_name: b?.user_name ?? null,
+          auth_user,
+          bearer_token,
+        });
+      } catch (_) {
+        // fallback: body user_id만이라도
+        logUserId = b?.user_id ?? null;
+      }
+
+      // ✅ sources 컬럼(문자열/JSON 혼재 가능)에는 최소 진단정보를 넣어둠
+      const srcObj = {
+        mode: "translate",
+        error: {
+          code: e?.code || null,
+          message: e?.message || String(e),
+          detail: e?.detail || null,
+          fatal: !!e?._fatal,
+          httpStatus: e?.httpStatus || null,
+        },
+      };
+
       await supabase.from("verification_logs").insert([
         {
-          mode: "translate",
-          query: textRaw ? String(textRaw).slice(0, 500) : null, // 번역 원문 일부만
-          answer: null,
-          truthscore: null,
+          user_id: logUserId, // NOT NULL이면 반드시 채워야 함
+          question: textRaw ? String(textRaw).slice(0, 500) : null,
+          status: "translate_error",
+          truth_score: null,
+          cross_score: null,
+          adjusted_score: null,
           engines: null,
           keywords: null,
           elapsed: null,
           model_main: null,
           model_eval: null,
-          sources: null,
           gemini_model: null,
-          error: e.message,
+          sources: JSON.stringify(srcObj),
+          error: e?.message || String(e),
           created_at: new Date(),
         },
       ]);
