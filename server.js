@@ -7055,15 +7055,9 @@ const engineQueriesUsed = {
 const blocksForVerify = [];
 
 // ✅ Naver total call budget (요청 전체: 블록 합산)
-// - __caps.naver 는 "naver query 호출 수" 총 상한
-let __naverBudget =
-  (Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : 999999);
-
-try {
-  partial_scores.naver_budget_total_cap =
-    Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : null;
-  partial_scores.naver_budget_remaining = __naverBudget;
-} catch {}
+// - ⚠️ __caps 초기화 전에 접근하면 TDZ 에러가 나므로, 여기서는 선언만 해두고
+//   실제 초기화/로깅은 const __caps 선언 직후에 수행한다.
+let __naverBudget = null;
 
 // ✅ call caps + early-stop (QV/FV)
 const __capNum = (v, d) => {
@@ -7090,6 +7084,19 @@ const __caps = {
   early_require_strong:
     String(process.env.EARLY_STOP_REQUIRE_STRONG_OFFICIAL ?? "true").toLowerCase() !== "false",
 };
+
+// ✅ Naver total call budget (요청 전체: 블록 합산)
+// - __caps.naver 는 "naver query 호출 수" 총 상한
+__naverBudget =
+  (Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : 999999);
+
+try {
+  if (partial_scores && typeof partial_scores === "object") {
+    partial_scores.naver_budget_total_cap =
+      Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : null;
+    partial_scores.naver_budget_remaining = __naverBudget;
+  }
+} catch {}
 
 const __capState = {
   calls_total: 0,
