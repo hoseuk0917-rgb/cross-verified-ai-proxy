@@ -552,14 +552,14 @@ const pgPool = {
   },
 };
 
-const PgStore = connectPgSimple(session);
-const sessionStore = new PgStore({
-  pool: pgPool,
-  schemaName: SESSION_STORE_SCHEMA,
-  tableName: SESSION_STORE_TABLE,
-  createTableIfMissing: !isProd, // ✅ DEV에서는 자동생성 허용, PROD는 고정
-  pruneSessionInterval: 60 * 10,
-});
+// ✅ Session store schema/table (configurable)
+// - PROD에서도 코드가 죽지 않게 기본값 제공
+// - Supabase에서 스키마/테이블명을 바꿨다면 env로 오버라이드 가능
+const SESSION_STORE_SCHEMA =
+  String(process.env.SESSION_STORE_SCHEMA || "public").trim() || "public";
+
+const SESSION_STORE_TABLE =
+  String(process.env.SESSION_STORE_TABLE || "session_store").trim() || "session_store";
 
 // ✅ PROD 부팅 가드: session_store 테이블 존재 확인(없으면 즉시 종료)
 async function _ensureSessionStoreTable() {
