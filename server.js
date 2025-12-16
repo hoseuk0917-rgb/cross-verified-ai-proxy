@@ -2408,8 +2408,59 @@ const oAuth2Client = new google.auth.OAuth2(
 );
 oAuth2Client.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
 
+// ✅ mail fail(invalid_grant) 대응: 메일만 쿨다운, whitelist 업데이트 등 본업은 계속
+const ADMIN_NOTICE_MAIL_COOLDOWN_MS = Math.max(
+  60_000,
+  (parseInt(process.env.ADMIN_NOTICE_MAIL_COOLDOWN_MS || "0", 10) || 0) * 1000
+) || (12 * 60 * 60 * 1000); // 기본 12h
+
+let __adminMailDisabledUntilMs = 0;
+let __adminMailLastFail = null;
+
+function __isAdminMailConfigured() {
+  return !!(
+    process.env.GMAIL_USER &&
+    process.env.ADMIN_EMAIL &&
+    process.env.GMAIL_CLIENT_ID &&
+    process.env.GMAIL_CLIENT_SECRET &&
+    process.env.GMAIL_REDIRECT_URI &&
+    process.env.GMAIL_REFRESH_TOKEN
+  );
+}
+
+function __looksLikeInvalidGrant(err) {
+  const m1 = String(err?.message || "").toLowerCase();
+  const m2 = String(err?.response?.data?.error || "").toLowerCase();
+  const m3 = JSON.stringify(err?.response?.data || {}).toLowerCase();
+
+  // google oauth2 / nodemailer에서 흔히 보이는 케이스들
+  if (m1.includes("invalid_grant") || m2.includes("invalid_grant") || m3.includes("invalid_grant")) return true;
+  if (m1.includes("unauthorized_client") || m2.includes("unauthorized_client") || m3.includes("unauthorized_client")) return true;
+  if (m1.includes("invalid_client") || m2.includes("invalid_client") || m3.includes("invalid_client")) return true;
+  if (m1.includes("token") && m1.includes("revoked")) return true;
+
+  return false;
+}
+
 async function sendAdminNotice(subject, html) {
   try {
+    if (!__isAdminMailConfigured()) {
+      if (DEBUG) console.warn("⚠️ Admin mail skipped: Gmail env not configured");
+      return { ok: false, skipped: true, reason: "MAIL_NOT_CONFIGURED" };
+    }
+
+    const now = Date.now();
+    if (__adminMailDisabledUntilMs && now < __adminMailDisabledUntilMs) {
+      if (DEBUG) {
+        console.warn(
+          "⚠️ Admin mail skipped: cooldown active until",
+          new Date(__adminMailDisabledUntilMs).toISOString(),
+          __adminMailLastFail ? `lastFail=${__adminMailLastFail}` : ""
+        );
+      }
+      return { ok: false, skipped: true, reason: "MAIL_COOLDOWN" };
+    }
+
     const at = await oAuth2Client.getAccessToken();
     const accessToken = typeof at === "string" ? at : at?.token;
 
@@ -2425,7 +2476,7 @@ async function sendAdminNotice(subject, html) {
         clientId: process.env.GMAIL_CLIENT_ID,
         clientSecret: process.env.GMAIL_CLIENT_SECRET,
         refreshToken: process.env.GMAIL_REFRESH_TOKEN,
-        accessToken, // ✅ string 보장
+        accessToken,
       },
     });
 
@@ -2435,8 +2486,30 @@ async function sendAdminNotice(subject, html) {
       subject,
       html,
     });
+
+    // 성공 시 실패 메타 초기화
+    __adminMailLastFail = null;
+__adminMailDisabledUntilMs = 0;
+return { ok: true };
   } catch (err) {
-    console.error("❌ Mail fail:", err.message);
+    const msg = String(err?.message || "MAIL_FAIL");
+    console.error("❌ Mail fail:", msg);
+
+    // invalid_grant 류면 일정 시간 메일 시도 중단 (화이트리스트 갱신 자체는 계속)
+    if (__looksLikeInvalidGrant(err)) {
+      __adminMailLastFail = "invalid_grant";
+      __adminMailDisabledUntilMs = Date.now() + ADMIN_NOTICE_MAIL_COOLDOWN_MS;
+      console.error(
+        "❌ Mail disabled (cooldown) due to invalid_grant-like error. " +
+          "Action: re-issue Gmail refresh token (GMAIL_REFRESH_TOKEN) in Render env. " +
+          "Disabled until: " +
+          new Date(__adminMailDisabledUntilMs).toISOString()
+      );
+      return { ok: false, disabled: true, reason: "INVALID_GRANT_COOLDOWN" };
+    }
+
+    __adminMailLastFail = msg.slice(0, 120);
+    return { ok: false, reason: "MAIL_FAIL", message: msg };
   }
 }
 
@@ -2931,6 +3004,315 @@ const SMTP_PORT = parseInt(process.env.SMTP_PORT || "587", 10) || 587;
 const SMTP_USER = String(process.env.SMTP_USER || "").trim();
 const SMTP_PASS = String(process.env.SMTP_PASS || "").trim();
 const SMTP_SECURE = process.env.SMTP_SECURE === "1"; // 465면 보통 1
+
+// ✅ derived/compat
+const NAVER_WHITELIST_UPDATE_INTERVAL_MIN = NAVER_WHITELIST_UPDATE_INTERVAL_HOURS * 60;
+const NAVER_WHITELIST_REMOTE_URL = NAVER_WHITELIST_SOURCE_URL; // compat (admin status 등에서 사용)
+
+// ✅ last update meta (diag/admin)
+globalThis.__NAVER_WL_UPDATE_LAST = globalThis.__NAVER_WL_UPDATE_LAST || null;
+
+// ✅ fetch remote json with timeout
+async function __fetchJsonWithTimeout(url, timeoutMs = 20_000) {
+  if (!url) throw new Error("WL_REMOTE_URL_EMPTY");
+  if (typeof fetch !== "function") throw new Error("FETCH_NOT_AVAILABLE");
+
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  try {
+    const r = await fetch(url, {
+      method: "GET",
+      headers: { "Accept": "application/json" },
+      signal: ctrl.signal,
+    });
+    if (!r.ok) {
+      throw new Error(`WL_REMOTE_HTTP_${r.status}`);
+    }
+    const json = await r.json();
+    return json;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function __normalizeWhitelistJson(json) {
+  if (!json || typeof json !== "object") throw new Error("WL_JSON_INVALID");
+  if (!json.tiers || typeof json.tiers !== "object") throw new Error("WL_JSON_MISSING_TIERS");
+
+  // normalize domains: trim/lower/strip www, dedupe
+  const tiers = json.tiers;
+  for (const [tier, info] of Object.entries(tiers)) {
+    const arr = Array.isArray(info?.domains) ? info.domains : [];
+    const set = new Set();
+    for (const d of arr) {
+      const dom = _stripWww(String(d || "").trim().toLowerCase());
+      if (dom) set.add(dom);
+    }
+    tiers[tier] = { ...(info || {}), domains: Array.from(set) };
+  }
+
+  // display-only domains normalize (loadNaverWhitelist와 동일한 방향)
+  try {
+    const list = [];
+    if (Array.isArray(json.display_only_domains)) list.push(...json.display_only_domains);
+    if (json.display_only && Array.isArray(json.display_only.domains)) list.push(...json.display_only.domains);
+    if (json.displayOnly && Array.isArray(json.displayOnly.domains)) list.push(...json.displayOnly.domains);
+
+    const set = new Set();
+    for (const d of list) {
+      const dom = _stripWww(String(d || "").trim().toLowerCase());
+      if (dom) set.add(dom);
+    }
+    json.display_only_domains = Array.from(set);
+    json._display_only_set = new Set(json.display_only_domains);
+  } catch (_) {}
+
+  // lastUpdate 기본값 보정(없으면 "now")
+  if (!json.lastUpdate) json.lastUpdate = new Date().toISOString();
+
+  return json;
+}
+
+function __summarizeTierCounts(wl) {
+  const tiers = {};
+  let totalHosts = 0;
+  const tObj = (wl?.tiers && typeof wl.tiers === "object") ? wl.tiers : {};
+  for (const [k, v] of Object.entries(tObj)) {
+    const n = Array.isArray(v?.domains) ? v.domains.length : 0;
+    tiers[k] = n;
+    totalHosts += n;
+  }
+  return { tiers, totalHosts };
+}
+
+function __diffWhitelist(oldWl, newWl) {
+  const out = {
+    changed: false,
+    added: 0,
+    removed: 0,
+    perTier: {},
+    old: __summarizeTierCounts(oldWl),
+    next: __summarizeTierCounts(newWl),
+  };
+
+  const tiers = new Set([
+    ...Object.keys(oldWl?.tiers || {}),
+    ...Object.keys(newWl?.tiers || {}),
+  ]);
+
+  for (const t of tiers) {
+    const a0 = new Set((oldWl?.tiers?.[t]?.domains || []).map((x) => _stripWww(String(x || "").toLowerCase())));
+    const a1 = new Set((newWl?.tiers?.[t]?.domains || []).map((x) => _stripWww(String(x || "").toLowerCase())));
+
+    let add = 0, rem = 0;
+    for (const x of a1) if (x && !a0.has(x)) add++;
+    for (const x of a0) if (x && !a1.has(x)) rem++;
+
+    if (add || rem) out.changed = true;
+    out.added += add;
+    out.removed += rem;
+    out.perTier[t] = { added: add, removed: rem };
+  }
+
+  return out;
+}
+
+function __isWhitelistMailConfigured() {
+  // 1) Gmail OAuth2 mailer (sendAdminNotice) 경로: ADMIN_EMAIL or WL_NOTIFY_EMAIL_TO 필요
+  const hasTo = !!(WL_NOTIFY_EMAIL_TO || process.env.ADMIN_EMAIL);
+  const hasGmailMailer = !!(process.env.GMAIL_USER && process.env.GMAIL_CLIENT_ID && process.env.GMAIL_CLIENT_SECRET && process.env.GMAIL_REFRESH_TOKEN);
+  if (hasTo && hasGmailMailer) return true;
+
+  // 2) SMTP 직접 경로
+  const hasSmtp = !!(SMTP_HOST && SMTP_USER && SMTP_PASS && (WL_NOTIFY_EMAIL_TO || process.env.ADMIN_EMAIL));
+  return hasSmtp;
+}
+
+async function __sendWhitelistNoticeEmail(subject, html) {
+  try {
+    const to = WL_NOTIFY_EMAIL_TO || process.env.ADMIN_EMAIL;
+    if (!to) return { ok: false, skipped: true, reason: "NO_TO" };
+
+    // prefer Gmail OAuth2 mailer if available
+    if (process.env.GMAIL_USER && process.env.GMAIL_CLIENT_ID && process.env.GMAIL_CLIENT_SECRET && process.env.GMAIL_REFRESH_TOKEN) {
+      return await sendAdminNotice(subject, html);
+    }
+
+    // fallback: SMTP direct
+    if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+      return { ok: false, skipped: true, reason: "MAIL_NOT_CONFIGURED" };
+    }
+
+    const transporter = nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_SECURE,
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+    });
+
+    const from = WL_NOTIFY_EMAIL_FROM || SMTP_USER;
+    await transporter.sendMail({
+      from,
+      to,
+      subject,
+      html,
+    });
+
+    return { ok: true };
+  } catch (e) {
+    console.error("❌ WL mail fail:", e?.message || e);
+    return { ok: false, reason: "WL_MAIL_FAIL", message: String(e?.message || e) };
+  }
+}
+
+/**
+ * ✅ whitelist auto-update (remote json → disk + in-memory override)
+ * - 메일 실패해도 업데이트 자체는 성공/유지
+ * - force=1이면 강제 fetch
+ */
+async function updateNaverWhitelistIfNeeded({ force = false, reason = "auto" } = {}) {
+  const startedAt = new Date().toISOString();
+  const now = Date.now();
+
+  const result = {
+    success: true,
+    updated: false,
+    changed: false,
+    reason,
+    startedAt,
+    finishedAt: null,
+    remote_url_set: !!NAVER_WHITELIST_SOURCE_URL,
+    interval_hours: NAVER_WHITELIST_UPDATE_INTERVAL_HOURS,
+    diff: null,
+    message: null,
+  };
+
+  try {
+    if (!NAVER_WHITELIST_SOURCE_URL) {
+      result.success = false;
+      result.message = "NAVER_WHITELIST_SOURCE_URL not set";
+      return result;
+    }
+
+    // current whitelist
+    let oldWl = null;
+    try { oldWl = loadNaverWhitelist(); } catch (_) {}
+
+    // decide whether to update (based on lastUpdate or file mtime)
+    let should = !!force;
+
+    if (!should) {
+      // prefer wl.lastUpdate if parseable, else file mtime
+      let baseMs = null;
+      try {
+        const lu = oldWl?.lastUpdate ? new Date(String(oldWl.lastUpdate).trim()).getTime() : NaN;
+        if (Number.isFinite(lu)) baseMs = lu;
+      } catch (_) {}
+
+      if (!baseMs) {
+        try {
+          const st = fs.statSync(whitelistPath);
+          baseMs = st?.mtimeMs || null;
+        } catch (_) {}
+      }
+
+      if (!baseMs) {
+        should = true; // no baseline → update
+      } else {
+        const elapsedH = (now - baseMs) / (1000 * 60 * 60);
+        should = elapsedH >= NAVER_WHITELIST_UPDATE_INTERVAL_HOURS;
+      }
+    }
+
+    if (!should) {
+      result.message = "skip: not due";
+      result.finishedAt = new Date().toISOString();
+      globalThis.__NAVER_WL_UPDATE_LAST = { ...result, ts: Date.now() };
+      return result;
+    }
+
+    // fetch remote
+    const remote = await __fetchJsonWithTimeout(NAVER_WHITELIST_SOURCE_URL, 20_000);
+    const newWl0 = __normalizeWhitelistJson(remote);
+
+    // diff
+    const diff = __diffWhitelist(oldWl, newWl0);
+    result.diff = diff;
+    result.changed = !!diff.changed;
+
+    // write to disk (best-effort)
+    try {
+      fs.mkdirSync(path.dirname(whitelistPath), { recursive: true });
+      fs.writeFileSync(whitelistPath, JSON.stringify(newWl0, null, 2), "utf-8");
+    } catch (e) {
+      // disk write가 실패해도 런타임 override로는 적용 가능
+      console.error("❌ WL write file fail:", e?.message || e);
+      result.message = `write_fail:${String(e?.message || e)}`;
+    }
+
+    // in-memory override (즉시 반영)
+    globalThis.__NAVER_WL_OVERRIDE = newWl0;
+    _NAVER_WL_CACHE = { mtimeMs: 0, json: null };
+
+    result.updated = true;
+    result.finishedAt = new Date().toISOString();
+
+    // notify (changed only)
+    if (result.changed && __isWhitelistMailConfigured()) {
+      const subj = `✅ Naver whitelist updated (${newWl0?.version || "no-version"})`;
+      const html =
+        `<h3>Naver whitelist updated</h3>` +
+        `<ul>` +
+        `<li>Reason: ${String(reason)}</li>` +
+        `<li>Version: ${String(newWl0?.version || "")}</li>` +
+        `<li>LastUpdate: ${String(newWl0?.lastUpdate || "")}</li>` +
+        `<li>Added: ${diff.added}, Removed: ${diff.removed}</li>` +
+        `<li>TotalHosts: ${diff.next.totalHosts}</li>` +
+        `</ul>` +
+        `<pre style="white-space:pre-wrap">${JSON.stringify(diff.perTier, null, 2)}</pre>`;
+
+      // ✅ 메일 실패해도 업데이트는 유지
+      await __sendWhitelistNoticeEmail(subj, html);
+    }
+
+    globalThis.__NAVER_WL_UPDATE_LAST = { ...result, ts: Date.now() };
+    return result;
+  } catch (e) {
+    result.success = false;
+    result.message = String(e?.message || e);
+
+    result.finishedAt = new Date().toISOString();
+    globalThis.__NAVER_WL_UPDATE_LAST = { ...result, ts: Date.now() };
+    console.error("❌ updateNaverWhitelistIfNeeded fail:", result.message);
+
+    return result;
+  }
+}
+
+globalThis.updateNaverWhitelistIfNeeded = updateNaverWhitelistIfNeeded;
+
+// ✅ auto schedule (interval)
+if (NAVER_WHITELIST_AUTO_UPDATE && NAVER_WHITELIST_SOURCE_URL) {
+  try {
+    const ms = Math.max(60_000, NAVER_WHITELIST_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000);
+    const t = setInterval(() => {
+      updateNaverWhitelistIfNeeded({ force: false, reason: "interval" })
+        .catch((e) => console.error("❌ WL interval update error:", e?.message || e));
+    }, ms);
+
+    // don't keep process alive
+    if (typeof t?.unref === "function") t.unref();
+
+    // optional: run once shortly after boot
+    setTimeout(() => {
+      updateNaverWhitelistIfNeeded({ force: false, reason: "boot" })
+        .catch((e) => console.error("❌ WL boot update error:", e?.message || e));
+    }, 3000);
+  } catch (e) {
+    console.error("❌ WL schedule setup fail:", e?.message || e);
+  }
+}
 
 let _NAVER_WL_CACHE = { mtimeMs: 0, json: null };
 
@@ -11477,11 +11859,17 @@ app.get("/api/admin/whitelist-status", requireAdminAccess, (req, res) => {
 
   const meta = __wlMeta(wl);
 
+    const update_last =
+    globalThis.__NAVER_WL_UPDATE_LAST ||
+    (typeof _WL_LAST_UPDATE_RESULT !== "undefined" ? _WL_LAST_UPDATE_RESULT : null) ||
+    null;
+
   return res.json({
     success: true,
     now: __safeNowISO(),
     meta,
     last_check: __wl_last_result || null,
+    update_last, // ✅ 추가
     auto_update: NAVER_WHITELIST_AUTO_UPDATE,
     interval_min: NAVER_WHITELIST_UPDATE_INTERVAL_MIN,
     remote_url_set: !!NAVER_WHITELIST_REMOTE_URL,
@@ -11494,7 +11882,17 @@ app.post("/api/admin/whitelist/update", requireDiag, async (req, res) => {
     const b = getJsonBody(req) || {};
     const force = String(b.force || req.query?.force || "").trim() === "1";
     const reason = String(b.reason || "admin_trigger").trim() || "admin_trigger";
-    const r = await updateNaverWhitelistIfNeeded({ force, reason });
+
+    const fn =
+      (typeof updateNaverWhitelistIfNeeded === "function")
+        ? updateNaverWhitelistIfNeeded
+        : (typeof globalThis.updateNaverWhitelistIfNeeded === "function")
+          ? globalThis.updateNaverWhitelistIfNeeded
+          : null;
+
+    if (!fn) throw new Error("updateNaverWhitelistIfNeeded is not defined");
+
+    const r = await fn({ force, reason });
     return res.json(buildSuccess(r));
   } catch (e) {
     return res.status(500).json(buildError("INTERNAL_ERROR", String(e?.message || e)));
@@ -11503,7 +11901,15 @@ app.post("/api/admin/whitelist/update", requireDiag, async (req, res) => {
 
 // ✅ Diag: last update result (prod guarded)
 app.get("/api/admin/whitelist/update/last", requireDiag, (req, res) => {
-  return res.json(buildSuccess(_WL_LAST_UPDATE_RESULT || { updated: false, reason: "no_history" }));
+  try {
+    const last =
+      globalThis.__NAVER_WL_UPDATE_LAST ||
+      { updated: false, reason: "no_history" };
+
+    return res.json(buildSuccess(last));
+  } catch (e) {
+    return res.status(500).json(buildError("INTERNAL_ERROR", String(e?.message || e)));
+  }
 });
 
 app.post(
