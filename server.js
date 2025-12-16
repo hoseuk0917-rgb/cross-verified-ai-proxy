@@ -7576,38 +7576,29 @@ const __hasStrongOfficialEvidence = (arr) => {
   }
 };
 
-const __shouldEarlyStopApprox = ({ cr = [], oa = [], wd = [], gd = [], nv = [] }) => {
+// ✅ early-stop helper (mid-block checkpoints)
+const __sliceN = (a, n = 24) => (Array.isArray(a) ? a.slice(0, Math.max(0, Math.trunc(n))) : []);
+
+const __tryEarlyStop = (where, packs = {}) => {
   try {
-    const counts = {
-      crossref: Array.isArray(cr) ? cr.length : 0,
-      openalex: Array.isArray(oa) ? oa.length : 0,
-      wikidata: Array.isArray(wd) ? wd.length : 0,
-      gdelt: Array.isArray(gd) ? gd.length : 0,
-      naver: Array.isArray(nv) ? nv.length : 0,
-    };
+    if (__capState.early_stop) return true;
 
-    const enginesNonEmpty = Object.entries(counts).filter(([k, v]) => v > 0).map(([k]) => k);
-    const eEffApprox = enginesNonEmpty.filter((x) => x !== "klaw").length;
-    const totalEvidence = Object.values(counts).reduce((a, b) => a + (Number(b) || 0), 0);
+    const chk = __shouldEarlyStopApprox({
+      cr: __sliceN(packs?.cr, 24),
+      oa: __sliceN(packs?.oa, 24),
+      wd: __sliceN(packs?.wd, 24),
+      gd: __sliceN(packs?.gd, 24),
+      nv: __sliceN(packs?.nv, 24),
+    });
 
-    const strong =
-      __hasStrongOfficialEvidence(nv) ||
-      __hasStrongOfficialEvidence(cr) ||
-      __hasStrongOfficialEvidence(oa) ||
-      __hasStrongOfficialEvidence(wd) ||
-      __hasStrongOfficialEvidence(gd);
-
-    if (__caps.early_require_strong && !strong) {
-      return { ok: false, strong, eEffApprox, totalEvidence, enginesNonEmpty };
+    if (chk && chk.ok) {
+      __capState.early_stop = true;
+      __capState.early_stop_reason = { where, ...chk };
+      return true;
     }
-
-    if (eEffApprox >= __caps.early_min_eeff && totalEvidence >= __caps.early_min_evidence) {
-      return { ok: true, strong, eEffApprox, totalEvidence, enginesNonEmpty };
-    }
-
-    return { ok: false, strong, eEffApprox, totalEvidence, enginesNonEmpty };
-  } catch (e) {
-    return { ok: false, error: String(e?.message || e) };
+    return false;
+  } catch (_e) {
+    return false;
   }
 };
 
@@ -7777,40 +7768,103 @@ for (const b of __blocksInput) {
 }
   }
 
-  // wikidata (per-block)
-if (String(qWikidata || "").trim()) {
+    // wikidata (per-block) - ✅ early-stop checkpoint(academic 이후)
   try {
-    if (__capConsume("wikidata")) {
-      wdPack = await safeFetchTimed("wikidata", fetchWikidata, qWikidata, engineTimes, engineMetrics);
-      try { engineQueriesUsed.wikidata.push(qWikidata); } catch {}
-    } else {
-      wdPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-    }
-  } catch (e) {
-    wdPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
-  }
-}
+    __tryEarlyStop("mid_block_after_academic", {
+      cr: [
+        ...__sliceN((external && Array.isArray(external.crossref)) ? external.crossref : [], 12),
+        ...__sliceN((crPack && Array.isArray(crPack.result)) ? crPack.result : [], 12),
+      ],
+      oa: [
+        ...__sliceN((external && Array.isArray(external.openalex)) ? external.openalex : [], 12),
+        ...__sliceN((oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [], 12),
+      ],
+      wd: __sliceN((external && Array.isArray(external.wikidata)) ? external.wikidata : [], 24),
+      gd: __sliceN((external && Array.isArray(external.gdelt)) ? external.gdelt : [], 24),
+      nv: __sliceN((external && Array.isArray(external.naver)) ? external.naver : [], 24),
+    });
+  } catch {}
 
-  // gdelt
-  if (__gdeltSingle) {
+  if (__capState.early_stop) {
+    wdPack = { result: [], ms: 0, skipped: true, reason: "early_stop" };
+  } else if (String(qWikidata || "").trim()) {
+    try {
+      if (__capConsume("wikidata")) {
+        wdPack = await safeFetchTimed("wikidata", fetchWikidata, qWikidata, engineTimes, engineMetrics);
+        try { engineQueriesUsed.wikidata.push(qWikidata); } catch {}
+      } else {
+        wdPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+      }
+    } catch (e) {
+      wdPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+    }
+  }
+
+  // ✅ checkpoint: wikidata 이후(= gdelt/naver 스킵 판단)
+  try {
+    __tryEarlyStop("mid_block_after_wikidata", {
+      cr: [
+        ...__sliceN((external && Array.isArray(external.crossref)) ? external.crossref : [], 12),
+        ...__sliceN((crPack && Array.isArray(crPack.result)) ? crPack.result : [], 12),
+      ],
+      oa: [
+        ...__sliceN((external && Array.isArray(external.openalex)) ? external.openalex : [], 12),
+        ...__sliceN((oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [], 12),
+      ],
+      wd: [
+        ...__sliceN((external && Array.isArray(external.wikidata)) ? external.wikidata : [], 12),
+        ...__sliceN((wdPack && Array.isArray(wdPack.result)) ? wdPack.result : [], 12),
+      ],
+      gd: __sliceN((external && Array.isArray(external.gdelt)) ? external.gdelt : [], 24),
+      nv: __sliceN((external && Array.isArray(external.naver)) ? external.naver : [], 24),
+    });
+  } catch {}
+
+    // gdelt - ✅ early-stop이면 스킵
+  if (__capState.early_stop) {
+    gdPack = { result: [], ms: 0, skipped: true, reason: "early_stop" };
+  } else if (__gdeltSingle) {
     gdPack = gdeltGlobalPack || gdPack;
   } else {
-    // ✅ snippet 기본: GDELT 호출 스킵 (네가 위에서 global도 같은 정책 적용중)
+    // ✅ snippet 기본: GDELT 호출 스킵 (global과 동일 정책)
     if (__isSnippetReq && __gdeltDisableSnippet) {
       gdPack = { result: [], ms: 0, skipped: true, reason: "snippet_disabled" };
     } else if (String(qGdelt || "").trim()) {
-  try {
-    if (__capConsume("gdelt")) {
-      gdPack = await safeFetchTimed("gdelt", fetchGDELT, qGdelt, engineTimes, engineMetrics);
-      try { engineQueriesUsed.gdelt.push(qGdelt); } catch {}
-    } else {
-      gdPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+      try {
+        if (__capConsume("gdelt")) {
+          gdPack = await safeFetchTimed("gdelt", fetchGDELT, qGdelt, engineTimes, engineMetrics);
+          try { engineQueriesUsed.gdelt.push(qGdelt); } catch {}
+        } else {
+          gdPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+        }
+      } catch (e) {
+        gdPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+      }
     }
-  } catch (e) {
-    gdPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
   }
-}
-  }
+
+  // ✅ checkpoint: gdelt 이후(= naver 스킵 판단)
+  try {
+    __tryEarlyStop("mid_block_after_gdelt", {
+      cr: [
+        ...__sliceN((external && Array.isArray(external.crossref)) ? external.crossref : [], 12),
+        ...__sliceN((crPack && Array.isArray(crPack.result)) ? crPack.result : [], 12),
+      ],
+      oa: [
+        ...__sliceN((external && Array.isArray(external.openalex)) ? external.openalex : [], 12),
+        ...__sliceN((oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [], 12),
+      ],
+      wd: [
+        ...__sliceN((external && Array.isArray(external.wikidata)) ? external.wikidata : [], 12),
+        ...__sliceN((wdPack && Array.isArray(wdPack.result)) ? wdPack.result : [], 12),
+      ],
+      gd: [
+        ...__sliceN((external && Array.isArray(external.gdelt)) ? external.gdelt : [], 12),
+        ...__sliceN((gdPack && Array.isArray(gdPack.result)) ? gdPack.result : [], 12),
+      ],
+      nv: __sliceN((external && Array.isArray(external.naver)) ? external.naver : [], 24),
+    });
+  } catch {}
 
   let naverQueriesBase = Array.isArray(eq.naver) ? eq.naver : [];
   naverQueriesBase = naverQueriesBase
@@ -7876,36 +7930,44 @@ if (String(qWikidata || "").trim()) {
     }
   } catch {}
 
-  // ✅ 실제 Naver 호출에 사용할 쿼리 리스트: naverQueries(블록당 cap 적용된 상태)
-  for (const nq0 of naverQueries) {
-    const nq = String(nq0 || "").trim();
-    if (!nq) continue;
-
-    // ✅ 요청 전체 cap / naver cap 모두 여기서 같이 enforcement
-    if (!__capConsume("naver")) break;
-
-    // ✅ 엔진별 쿼리 기록(호출한 것만)
-    try { engineQueriesUsed.naver.push(nq); } catch {}
-
-    // ✅ budget log update
+    // ✅ 실제 Naver 호출에 사용할 쿼리 리스트: naverQueries(블록당 cap 적용된 상태)
+  if (__capState.early_stop) {
     try {
-      if (__naverBudgetLog && typeof __naverBudgetLog === "object") {
-        __naverBudgetLog.used_last_block = Number(__naverBudgetLog.used_last_block || 0) + 1;
-
-        const usedNow = Number(__capState?.calls_naver || 0);
-        __naverBudgetLog.used = usedNow;
-        __naverBudgetLog.left = Math.max(0, Number(__naverBudgetLog.max || 0) - usedNow);
+      if (partial_scores && typeof partial_scores === "object") {
+        partial_scores.naver_skipped_by_early_stop = true;
       }
     } catch {}
+  } else {
+    for (const nq0 of naverQueries) {
+      const nq = String(nq0 || "").trim();
+      if (!nq) continue;
 
-    const { result } = await safeFetchTimed(
-      "naver",
-      (qq, ctx) => callNaver(qq, naverIdFinal, naverSecretFinal, ctx),
-      nq,
-      engineTimes,
-      engineMetrics
-    );
-    if (Array.isArray(result) && result.length) naverItemsAll.push(...result);
+      // ✅ 요청 전체 cap / naver cap 모두 여기서 같이 enforcement
+      if (!__capConsume("naver")) break;
+
+      // ✅ 엔진별 쿼리 기록(호출한 것만)
+      try { engineQueriesUsed.naver.push(nq); } catch {}
+
+      // ✅ budget log update
+      try {
+        if (__naverBudgetLog && typeof __naverBudgetLog === "object") {
+          __naverBudgetLog.used_last_block = Number(__naverBudgetLog.used_last_block || 0) + 1;
+
+          const usedNow = Number(__capState?.calls_naver || 0);
+          __naverBudgetLog.used = usedNow;
+          __naverBudgetLog.left = Math.max(0, Number(__naverBudgetLog.max || 0) - usedNow);
+        }
+      } catch {}
+
+      const { result } = await safeFetchTimed(
+        "naver",
+        (qq, ctx) => callNaver(qq, naverIdFinal, naverSecretFinal, ctx),
+        nq,
+        engineTimes,
+        engineMetrics
+      );
+      if (Array.isArray(result) && result.length) naverItemsAll.push(...result);
+    }
   }
 
   // ✅ budget snapshot after this block
