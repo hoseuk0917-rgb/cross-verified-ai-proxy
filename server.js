@@ -5781,7 +5781,7 @@ function __buildRouterPlanPublicFinal({ safeMode, rawMode, routerPlan, runLvExtr
       confidence:
         (routerPlan && typeof routerPlan.confidence === "number") ? routerPlan.confidence : null,
 
-      reason: routerPlan?.reason ?? null,
+      reason: routerPlan?.reason ?? (__plan?.[0]?.reason ?? "router_missing_or_failed"),
       run_lv_extra: !!runLvExtra,
 
       // ✅ /api/verify-snippet 또는 snippet_meta.is_snippet 기반으로 판단
@@ -5895,14 +5895,17 @@ try {
   const __cacheMode =
   (_rawMode === "overlay" || _rawMode === "route") ? "auto" : _rawMode;
 
+  const __isSn =
+    (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : false;
+
   const _shouldRoute =
     GROQ_ROUTER_ENABLE &&
-    !__isVerifySnippetPath &&
+    !__isSn &&
     (!safeMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
 
   if (_shouldRoute) {
-    // auth user (best-effort)
-    let __au = authUser || null;
+    // auth user (best-effort) — avoid ReferenceError when authUser is not in scope
+    let __au = (typeof authUser !== "undefined" ? authUser : null) || null;
     if (!__au) {
       try { __au = await getSupabaseAuthUser(req); } catch (_) { __au = null; }
     }
@@ -5911,7 +5914,7 @@ try {
     const __rPath0 = String(req.path || "");
 
     // user hash (do not leak raw id)
-    const __rUidRaw = String(__au?.id || logUserId || "anon");
+    const __rUidRaw = String(__au?.id || (typeof logUserId !== "undefined" ? logUserId : null) || "anon");
     const __rUHash =
       (typeof hash16 === "function")
         ? hash16(__rUidRaw)
