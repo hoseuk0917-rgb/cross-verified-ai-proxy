@@ -12102,11 +12102,11 @@ async function requireAdminAccess(req, res, next) {
   try {
     const t = String(req.headers["x-admin-token"] || "").trim();
 
-    const adminTok = String(ADMIN_TOKEN || "").trim();
+    const adminTok = String(process.env.ADMIN_TOKEN || "").trim();
     const diagTok = String(process.env.DIAG_ADMIN_TOKEN || process.env.DIAG_TOKEN || "").trim();
     const devTok = String(process.env.DEV_ADMIN_TOKEN || "").trim();
 
-    // 1) header token 우선(ADMIN/DIAG/DEV 모두 허용)
+    // 1) header token 우선(ADMIN/DIAG/DEV)
     if (
       t &&
       ((adminTok && t === adminTok) || (diagTok && t === diagTok) || (devTok && t === devTok))
@@ -12114,25 +12114,29 @@ async function requireAdminAccess(req, res, next) {
       return next();
     }
 
-    // 2) ✅ Bearer JWT(Supabase)로 들어온 경우: email allowlist 검사
-    // - ADMIN_EMAILS가 설정되어 있을 때만 허용 (안전)
-    if (ADMIN_EMAILS.length > 0) {
-      const au = await getSupabaseAuthUser(req); // uses Authorization: Bearer ...
-      const aemail = String(au?.email || "").trim().toLowerCase();
-      if (aemail && ADMIN_EMAILS.map((x) => String(x).trim().toLowerCase()).includes(aemail)) {
-        return next();
-      }
+    // 2) ADMIN_EMAILS allowlist (req.user/session OR Authorization: Bearer <jwt>)
+    const emails = (ADMIN_EMAILS || [])
+      .map((x) => String(x).trim().toLowerCase())
+      .filter(Boolean);
+
+    if (emails.length > 0) {
+      // (A) req.user/session 기반
+      const e0 = String(__extractReqEmail(req) || "").trim().toLowerCase();
+      if (e0 && emails.includes(e0)) return next();
+
+      // (B) Authorization: Bearer <jwt> 기반 (curl도 여기서 통과)
+      try {
+        const au = await getSupabaseAuthUser(req); // Bearer 토큰으로 supabase.auth.getUser()
+        const aemail = String(au?.email || "").trim().toLowerCase();
+        if (aemail && emails.includes(aemail)) return next();
+      } catch (_) {}
     }
 
-    // 3) 세션/req.user 기반(레거시/브라우저 로그인 케이스)
-    const email = String(__extractReqEmail(req) || "").trim().toLowerCase();
-    if (ADMIN_EMAILS.length > 0 && email && ADMIN_EMAILS.map((x) => String(x).trim().toLowerCase()).includes(email)) {
+    // 3) 로컬/개발 편의: 운영이 아니면 설정 없을 때 통과
+    if (!isProd && !adminTok && !diagTok && !devTok && (ADMIN_EMAILS || []).length === 0) {
       return next();
     }
-
-    // 4) 로컬/개발 편의: 운영이 아니면 설정 없을 때 통과
-    if (!isProd && !adminTok && !diagTok && !devTok && ADMIN_EMAILS.length === 0) return next();
-  } catch {}
+  } catch (_) {}
 
   return res.status(403).json({
     success: false,
