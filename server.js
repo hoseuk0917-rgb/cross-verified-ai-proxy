@@ -5719,12 +5719,12 @@ const verifyCoreHandler = async (req, res) => {
   let safeMode = String(req.body?.mode ?? mode ?? "").trim().toLowerCase();
   const rawMode = safeMode; // ✅ 요청된 원래 mode를 보존(뒤에서 fallback plan에서 사용)
 
-// ✅ /api/verify-snippet(또는 snippet_meta.is_snippet)는 "항상 FV 고정" + 라우터 개입 금지
-const __isSnippetEndpoint =
-  String(req.path || "") === "/api/verify-snippet" ||
-  (snippet_meta && snippet_meta.is_snippet === true);
+// ✅ /api/verify-snippet은 "FV 고정" + 라우터 개입 금지 (endpoint 기준)
+// ✅ snippet_meta.is_snippet은 "입력 타입 메타"일 뿐, mode 강제에 쓰지 않는다.
+const __isVerifySnippetPath = String(req.path || "") === "/api/verify-snippet";
+const __isSnippetPayload = !!(snippet_meta && snippet_meta.is_snippet === true);
 
-if (__isSnippetEndpoint) {
+if (__isVerifySnippetPath) {
   safeMode = "fv";
 }
 
@@ -5751,10 +5751,15 @@ function __buildRouterPlanPublicFinal({ safeMode, rawMode, routerPlan, runLvExtr
         ? routerPlan.runs.map((x) => String(x).toLowerCase()).filter(Boolean)
         : __plan.map((x) => String(x?.mode ?? x).toLowerCase()).filter(Boolean);
 
-    return {
+        return {
       enabled: !!GROQ_ROUTER_ENABLE,
-      used: !!routerPlan,
+
+      // ✅ "plan 객체 존재"가 아니라, 실제 라우터 실행/캐시히트 여부로 used 판단
+      used: (typeof __routerUsed !== "undefined") ? !!__routerUsed : !!routerPlan,
       cached: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
+
+      // ✅ 요청된 raw mode도 같이 남김 (디버깅)
+      raw_mode: String(rawMode ?? "").toLowerCase(),
 
       // ✅ always final safeMode (stale 방지)
       safe_mode_final: String(__sf).toLowerCase(),
@@ -5778,7 +5783,10 @@ function __buildRouterPlanPublicFinal({ safeMode, rawMode, routerPlan, runLvExtr
 
       reason: routerPlan?.reason ?? null,
       run_lv_extra: !!runLvExtra,
+
+      // ✅ /api/verify-snippet 또는 snippet_meta.is_snippet 기반으로 판단
       is_snippet: (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : null,
+
       cache_hit: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
 
       model:
@@ -5786,9 +5794,16 @@ function __buildRouterPlanPublicFinal({ safeMode, rawMode, routerPlan, runLvExtr
         (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
 
       lv_extra: !!(routerPlan?.lv_extra || runLvExtra),
-      status: routerPlan ? (__plan.length > 0 ? "ok" : "ok_no_plan") : "missing_plan",
 
-      cache_key: null,
+      status: !GROQ_ROUTER_ENABLE
+        ? "disabled"
+        : (routerPlan ? (__plan.length > 0 ? "ok" : "ok_no_plan") : "missing_plan"),
+
+      // ✅ router cache key(해시) 노출: 캐시 추적용 (민감정보 없음: 이미 sha16 기반)
+      cache_key:
+        (routerPlan && (routerPlan._cache_key || routerPlan.cache_key))
+          ? String(routerPlan._cache_key || routerPlan.cache_key)
+          : null,
     };
   } catch (_) {
     return null;
@@ -5882,7 +5897,7 @@ try {
 
   const _shouldRoute =
     GROQ_ROUTER_ENABLE &&
-    !__isSnippetEndpoint &&
+    !__isVerifySnippetPath &&
     (!safeMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
 
   if (_shouldRoute) {
@@ -5926,8 +5941,8 @@ try {
     const __cachedPlan = __routerCacheGet(__routerCacheKey);
     if (__cachedPlan) {
   __routerPlan = __cachedPlan;
+    try { if (__routerPlan && typeof __routerPlan === "object") __routerPlan._cache_key = __routerCacheKey; } catch (_) {}
   __routerCached = true;
-
   __routerUsed = true; // ✅ cache hit도 "used"
   try { if (__routerPlan && typeof __routerPlan === "object") __routerPlan.cached = true; } catch (_) {}
 } else {
@@ -5963,6 +5978,7 @@ if (!__groqKey) {
     question: String(req.body?.question ?? "").slice(0, 800),
     hintMode: (_rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route") ? null : _rawMode,
   });
+  try { if (__routerPlan && typeof __routerPlan === "object") __routerPlan._cache_key = __routerCacheKey; } catch (_) {}
 }
       __routerCached = false;
 try {
@@ -6631,7 +6647,7 @@ try {
 // ✅ FV는 “검증할 스니펫/클레임”이 있을 때만 허용 (없으면 QV로 강제)
 // - /api/verify-snippet은 이미 위에서 FV 고정이라 여기서 건드리지 않음
 try {
-  if (!__isSnippetEndpoint && String(safeMode || "").toLowerCase() === "fv") {
+  if (!__isVerifySnippetPath && String(safeMode || "").toLowerCase() === "fv") {
     const __snClaim = String(
       req.body?.snippet ??
       req.body?.core_text ??
