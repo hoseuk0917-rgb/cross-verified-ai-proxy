@@ -3190,10 +3190,13 @@ async function updateNaverWhitelistIfNeeded({ force = false, reason = "auto" } =
 
   try {
     if (!NAVER_WHITELIST_SOURCE_URL) {
-      result.success = false;
-      result.message = "NAVER_WHITELIST_SOURCE_URL not set";
-      return result;
-    }
+  result.success = false;
+  result.message = "NAVER_WHITELIST_SOURCE_URL not set";
+  result.finishedAt = new Date().toISOString();
+
+  globalThis.__NAVER_WL_UPDATE_LAST = { ...result, ts: Date.now() };
+  return result;
+}
 
     // current whitelist
     let oldWl = null;
