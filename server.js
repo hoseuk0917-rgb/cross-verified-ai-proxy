@@ -2754,22 +2754,26 @@ function requireDiag(req, res, next) {
   // dev/local에서는 그대로 허용
   if (process.env.NODE_ENV !== "production") return next();
 
-  // ✅ PROD에서도 x-admin-token으로 진단 엔드포인트 허용
-  // - 우선순위: DIAG_ADMIN_TOKEN(전용) → ADMIN_TOKEN(공용) → DEV_ADMIN_TOKEN(기존)
+  // ✅ PROD: 진단/트리거 엔드포인트는 "DIAG 전용 토큰" 또는 "ADMIN 토큰"만 허용
+  // - DEV_ADMIN_TOKEN은 PROD에서 절대 허용하지 않음
   try {
-    const adminHdr = String(req.headers["x-admin-token"] || "");
-    const diagAdmin =
-      String(process.env.DIAG_ADMIN_TOKEN || "").trim() ||
-      String(process.env.ADMIN_TOKEN || "").trim() ||
-      String(typeof DEV_ADMIN_TOKEN !== "undefined" ? DEV_ADMIN_TOKEN : "").trim();
+    const adminHdr = String(req.headers["x-admin-token"] || "").trim();
 
-    if (diagAdmin && adminHdr && adminHdr === diagAdmin) return next();
+    const diagTok = String(
+      process.env.DIAG_ADMIN_TOKEN || process.env.DIAG_TOKEN || ""
+    ).trim();
+
+    const adminTok = String(process.env.ADMIN_TOKEN || "").trim();
+
+    if (
+      adminHdr &&
+      ((diagTok && adminHdr === diagTok) || (adminTok && adminHdr === adminTok))
+    ) {
+      return next();
+    }
   } catch (_) {}
 
-  // 기존 방식도 유지
-  if (isDiagAuthorized(req)) return next();
-
-  // prod에서는 존재 자체를 숨김
+  // ✅ PROD에서는 존재 자체를 숨김
   return res.status(404).json(buildError("NOT_FOUND", "Not available"));
 }
 
