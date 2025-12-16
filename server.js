@@ -561,6 +561,16 @@ const SESSION_STORE_SCHEMA =
 const SESSION_STORE_TABLE =
   String(process.env.SESSION_STORE_TABLE || "session_store").trim() || "session_store";
 
+// ✅ connect-pg-simple session store 생성 (session() mount 전에 반드시 정의되어야 함)
+const PgStore = connectPgSimple(session);
+const sessionStore = new PgStore({
+  pool: pgPool,
+  schemaName: SESSION_STORE_SCHEMA,
+  tableName: SESSION_STORE_TABLE,
+  createTableIfMissing: !isProd, // ✅ DEV에서는 자동생성 허용, PROD는 고정
+  pruneSessionInterval: 60 * 10,
+});
+
 // ✅ PROD 부팅 가드: session_store 테이블 존재 확인(없으면 즉시 종료)
 async function _ensureSessionStoreTable() {
   const q = `
