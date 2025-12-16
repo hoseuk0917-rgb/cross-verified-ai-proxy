@@ -12098,7 +12098,7 @@ function __extractReqEmail(req) {
   }
 }
 
-function requireAdminAccess(req, res, next) {
+async function requireAdminAccess(req, res, next) {
   try {
     const t = String(req.headers["x-admin-token"] || "").trim();
 
@@ -12114,11 +12114,23 @@ function requireAdminAccess(req, res, next) {
       return next();
     }
 
-    // 2) 이메일 allowlist
-    const email = __extractReqEmail(req);
-    if (ADMIN_EMAILS.length > 0 && email && ADMIN_EMAILS.includes(email)) return next();
+    // 2) ✅ Bearer JWT(Supabase)로 들어온 경우: email allowlist 검사
+    // - ADMIN_EMAILS가 설정되어 있을 때만 허용 (안전)
+    if (ADMIN_EMAILS.length > 0) {
+      const au = await getSupabaseAuthUser(req); // uses Authorization: Bearer ...
+      const aemail = String(au?.email || "").trim().toLowerCase();
+      if (aemail && ADMIN_EMAILS.map((x) => String(x).trim().toLowerCase()).includes(aemail)) {
+        return next();
+      }
+    }
 
-    // 3) 로컬/개발 편의: 운영이 아니면 설정 없을 때 통과
+    // 3) 세션/req.user 기반(레거시/브라우저 로그인 케이스)
+    const email = String(__extractReqEmail(req) || "").trim().toLowerCase();
+    if (ADMIN_EMAILS.length > 0 && email && ADMIN_EMAILS.map((x) => String(x).trim().toLowerCase()).includes(email)) {
+      return next();
+    }
+
+    // 4) 로컬/개발 편의: 운영이 아니면 설정 없을 때 통과
     if (!isProd && !adminTok && !diagTok && !devTok && ADMIN_EMAILS.length === 0) return next();
   } catch {}
 
