@@ -3462,25 +3462,26 @@ async function updateNaverWhitelistIfNeeded({ force = false, reason = "auto" } =
 
 globalThis.updateNaverWhitelistIfNeeded = updateNaverWhitelistIfNeeded;
 
-// ✅ auto schedule (interval) — overflow-safe
+// ✅ auto schedule (interval)
+// - Node timer limit: max 2^31-1 ms (~24.8 days)
+// - 그래서 "주기적 체크"만 돌리고, 실제 업데이트 주기는 updateNaverWhitelistIfNeeded 내부의
+//   NAVER_WHITELIST_UPDATE_INTERVAL_HOURS 로 결정한다.
 if (NAVER_WHITELIST_AUTO_UPDATE && NAVER_WHITELIST_SOURCE_URL) {
   try {
-    const MAX_TIMER_MS = 0x7fffffff;
-
-    // "원하는 업데이트 주기"(예: 720h=30일)는 updateNaverWhitelistIfNeeded 내부에서 판단하므로,
-    // 여기 setInterval은 안전한 tick(최대 6시간)로만 돈다.
-    const desiredMs = Math.max(60_000, NAVER_WHITELIST_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000);
-    const tickMsRaw = Math.min(desiredMs, 6 * 60 * 60 * 1000); // <= 6h
-    const tickMs = Math.min(Math.max(60_000, tickMsRaw), MAX_TIMER_MS);
+    const _MAX_TIMER_MS = 0x7fffffff; // 2147483647
+    const CHECK_HOURS = Math.max(
+      1,
+      parseInt(process.env.NAVER_WHITELIST_SCHEDULE_CHECK_HOURS || "6", 10) || 6
+    );
+    const ms = Math.min(_MAX_TIMER_MS, Math.max(60_000, CHECK_HOURS * 60 * 60 * 1000));
 
     const t = setInterval(() => {
       updateNaverWhitelistIfNeeded({ force: false, reason: "interval" })
         .catch((e) => console.error("❌ WL interval update error:", e?.message || e));
-    }, tickMs);
+    }, ms);
 
-    if (typeof t?.unref === "function") t.unref();
+    if (t && typeof t.unref === "function") t.unref();
 
-    // optional: run once shortly after boot
     setTimeout(() => {
       updateNaverWhitelistIfNeeded({ force: false, reason: "boot" })
         .catch((e) => console.error("❌ WL boot update error:", e?.message || e));
@@ -12099,51 +12100,69 @@ function __extractReqEmail(req) {
 
 function requireAdminAccess(req, res, next) {
   try {
-    // 1) header token 우선
-    const t = String(req.headers["x-admin-token"] || "");
-    if (ADMIN_TOKEN && t && t === ADMIN_TOKEN) return next();
+    const t = String(req.headers["x-admin-token"] || "").trim();
+
+    const adminTok = String(ADMIN_TOKEN || "").trim();
+    const diagTok = String(process.env.DIAG_ADMIN_TOKEN || process.env.DIAG_TOKEN || "").trim();
+    const devTok = String(process.env.DEV_ADMIN_TOKEN || "").trim();
+
+    // 1) header token 우선(ADMIN/DIAG/DEV 모두 허용)
+    if (
+      t &&
+      ((adminTok && t === adminTok) || (diagTok && t === diagTok) || (devTok && t === devTok))
+    ) {
+      return next();
+    }
 
     // 2) 이메일 allowlist
     const email = __extractReqEmail(req);
     if (ADMIN_EMAILS.length > 0 && email && ADMIN_EMAILS.includes(email)) return next();
 
-    // 3) 설정이 아무것도 없으면(개발/초기) 일단 통과시키되, 운영에서는 env 설정 권장
-    if (!ADMIN_TOKEN && ADMIN_EMAILS.length === 0) return next();
+    // 3) 로컬/개발 편의: 운영이 아니면 설정 없을 때 통과
+    if (!isProd && !adminTok && !diagTok && !devTok && ADMIN_EMAILS.length === 0) return next();
   } catch {}
 
   return res.status(403).json({
     success: false,
     code: "ADMIN_ONLY",
-    message: "Admin access required. Set ADMIN_TOKEN (x-admin-token) or ADMIN_EMAILS.",
+    message:
+      "Admin access required. Set ADMIN_TOKEN/DEV_ADMIN_TOKEN/DIAG_ADMIN_TOKEN (x-admin-token) or ADMIN_EMAILS.",
   });
 }
 
 // GET /api/admin/whitelist-status
 app.get("/api/admin/whitelist-status", requireAdminAccess, (req, res) => {
-  let wl = null;
   try {
-    wl = loadNaverWhitelist();
-  } catch {
-    wl = null;
-  }
-
-  const meta = __wlMeta(wl);
+    const meta =
+      (typeof getNaverWhitelistMeta === "function")
+        ? getNaverWhitelistMeta()
+        : null;
 
     const update_last =
-    globalThis.__NAVER_WL_UPDATE_LAST ||
-    (typeof _WL_LAST_UPDATE_RESULT !== "undefined" ? _WL_LAST_UPDATE_RESULT : null) ||
-    null;
+      globalThis.__NAVER_WL_UPDATE_LAST ||
+      (typeof globalThis._WL_LAST_UPDATE_RESULT !== "undefined" ? globalThis._WL_LAST_UPDATE_RESULT : null) ||
+      null;
 
-  return res.json({
-    success: true,
-    now: __safeNowISO(),
-    meta,
-    last_check: __wl_last_result || null,
-    update_last, // ✅ 추가
-    auto_update: NAVER_WHITELIST_AUTO_UPDATE,
-    interval_min: NAVER_WHITELIST_UPDATE_INTERVAL_MIN,
-    remote_url_set: !!NAVER_WHITELIST_REMOTE_URL,
-  });
+    const last_check =
+      (typeof globalThis.__wl_last_result !== "undefined")
+        ? globalThis.__wl_last_result
+        : null;
+
+    return res.json({
+      success: true,
+      now: new Date().toISOString(),
+      meta,
+      last_check,
+      update_last,
+      auto_update: NAVER_WHITELIST_AUTO_UPDATE,
+      interval_min: NAVER_WHITELIST_UPDATE_INTERVAL_MIN,
+      remote_url_set: !!NAVER_WHITELIST_REMOTE_URL,
+    });
+  } catch (e) {
+    return res
+      .status(500)
+      .json(buildError("INTERNAL_SERVER_ERROR", "서버 내부 오류가 발생했습니다.", String(e?.message || e)));
+  }
 });
 
 // ✅ Diag: force/trigger whitelist update (prod guarded)
