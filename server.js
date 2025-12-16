@@ -939,7 +939,10 @@ function verifyCacheGet(key) {
   const ent = __verifyCache.get(key);
   if (!ent) return null;
 
-  const ttl = Math.max(0, VERIFY_CACHE_TTL_MS | 0);
+  const ttl = (() => {
+  const n = Number(VERIFY_CACHE_TTL_MS);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+})();
   if (ttl > 0 && (Date.now() - ent.t) > ttl) {
     __verifyCache.delete(key);
     return null;
@@ -964,7 +967,14 @@ function verifyCacheSet(key, payload) {
 
 function makeFixedWindowLimiter({ windowMs, max, keyFn, name }) {
   const hits = new Map();
-  const cleanupMs = Math.max(windowMs, 60_000);
+
+  // Node timer upper bound: 2^31-1 (≈ 24.85 days)
+  const MAX_TIMER_MS = 0x7fffffff;
+
+  // cleanup은 "정확한 스케줄"이 아니라 메모리 정리용이므로,
+  // windowMs가 아무리 커도 6시간마다만 돌게(= overflow 방지 + 충분)
+  const cleanupMsRaw = Math.max(60_000, Math.min(Number(windowMs) || 0, 6 * 60 * 60 * 1000));
+  const cleanupMs = Math.min(cleanupMsRaw, MAX_TIMER_MS);
 
   const t = setInterval(() => {
     const now = Date.now();
@@ -3452,16 +3462,22 @@ async function updateNaverWhitelistIfNeeded({ force = false, reason = "auto" } =
 
 globalThis.updateNaverWhitelistIfNeeded = updateNaverWhitelistIfNeeded;
 
-// ✅ auto schedule (interval)
+// ✅ auto schedule (interval) — overflow-safe
 if (NAVER_WHITELIST_AUTO_UPDATE && NAVER_WHITELIST_SOURCE_URL) {
   try {
-    const ms = Math.max(60_000, NAVER_WHITELIST_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000);
+    const MAX_TIMER_MS = 0x7fffffff;
+
+    // "원하는 업데이트 주기"(예: 720h=30일)는 updateNaverWhitelistIfNeeded 내부에서 판단하므로,
+    // 여기 setInterval은 안전한 tick(최대 6시간)로만 돈다.
+    const desiredMs = Math.max(60_000, NAVER_WHITELIST_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000);
+    const tickMsRaw = Math.min(desiredMs, 6 * 60 * 60 * 1000); // <= 6h
+    const tickMs = Math.min(Math.max(60_000, tickMsRaw), MAX_TIMER_MS);
+
     const t = setInterval(() => {
       updateNaverWhitelistIfNeeded({ force: false, reason: "interval" })
         .catch((e) => console.error("❌ WL interval update error:", e?.message || e));
-    }, ms);
+    }, tickMs);
 
-    // don't keep process alive
     if (typeof t?.unref === "function") t.unref();
 
     // optional: run once shortly after boot
