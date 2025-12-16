@@ -421,29 +421,176 @@ const useSsl =
     ? false
     : { rejectUnauthorized: false }; // Supabase/Pooler면 로컬도 SSL 필요한 경우 많음
 
-const pgPool = new pg.Pool({
-  connectionString: DB_URL,
-  ssl: useSsl,
-  max: parseInt(process.env.PGPOOL_MAX || "5", 10),
-  idleTimeoutMillis: parseInt(process.env.PGPOOL_IDLE_MS || "10000", 10),
-  connectionTimeoutMillis: parseInt(process.env.PGPOOL_CONN_MS || "10000", 10),
-  keepAlive: true,
-});
+// ─────────────────────────────
+// ✅ PG Pool (db_termination 복구용 Proxy Pool)
+//  - db_termination/연결종료 류 에러 발생 시: 풀을 새로 만들고 1회 재시도
+//  - connect-pg-simple(session store)에도 같은 proxy를 전달 → 세션도 자동 복구 기대
+// ─────────────────────────────
 
+function _isPgTerminationError(err) {
+  const code = String(err?.code || "");
+  const msg = String(err?.message || "");
+  if (code === "XX000" && /db_termination/i.test(msg)) return true;
+  if (/terminating connection|server closed the connection|connection terminated|db_termination/i.test(msg)) return true;
+  return false;
+}
 
-// ✅ 중요: Pool 'error' 이벤트 핸들러 없으면 프로세스가 죽을 수 있음
-pgPool.on("error", (err) => {
-  console.error("⚠️ PG POOL ERROR (idle client):", err.code || "", err.message);
-});
+function _createPgPool() {
+  const pool = new pg.Pool({
+    connectionString: DB_URL,
+    ssl: useSsl,
+    max: parseInt(process.env.PGPOOL_MAX || "5", 10),
+    idleTimeoutMillis: parseInt(process.env.PGPOOL_IDLE_MS || "10000", 10),
+    connectionTimeoutMillis: parseInt(process.env.PGPOOL_CONN_MS || "10000", 10),
+    keepAlive: true,
+  });
+
+  // ✅ 중요: Pool 'error' 이벤트 핸들러 없으면 프로세스가 죽을 수 있음
+  pool.on("error", (err) => {
+    console.error("⚠️ PG POOL ERROR (idle client):", err.code || "", err.message);
+
+    // db_termination류면 풀을 리셋(비동기 fire-and-forget)
+    if (_isPgTerminationError(err)) {
+      console.warn("⚠️ PG POOL: db_termination detected → resetting pool");
+      void _resetPgPool(err);
+    }
+  });
+
+  return pool;
+}
+
+let _pgPool = _createPgPool();
+let _pgPoolResetting = false;
+
+// ✅ 외부(예: connect-pg-simple)가 pool.on(...)을 호출할 수 있으니,
+//    리스너를 기억해두고 pool 교체 시에도 재부착
+const _pgPoolListeners = [];
+
+function _attachRememberedListeners(pool) {
+  if (!pool) return;
+  for (const [ev, fn] of _pgPoolListeners) {
+    try {
+      pool.on(ev, fn);
+    } catch (_) {}
+  }
+}
+
+_attachRememberedListeners(_pgPool);
+
+async function _resetPgPool(reasonErr) {
+  if (_pgPoolResetting) return;
+  _pgPoolResetting = true;
+  try {
+    const old = _pgPool;
+    _pgPool = _createPgPool();
+
+    // 새 풀로 교체되면, 기억된 리스너 재부착
+    _attachRememberedListeners(_pgPool);
+
+    try {
+      if (old) await old.end().catch(() => {});
+    } catch (_) {}
+  } finally {
+    _pgPoolResetting = false;
+  }
+}
+
+// ✅ 코드 전체에서 pgPool.query / pgPool.connect / pgPool.on / pgPool.end 를 그대로 쓰되,
+//    내부에서 복구/재시도/리스너 유지
+const pgPool = {
+  async query(text, params) {
+    try {
+      return await _pgPool.query(text, params);
+    } catch (e) {
+      if (_isPgTerminationError(e)) {
+        console.warn("⚠️ PG POOL: query failed by db_termination → reset + retry once");
+        await _resetPgPool(e);
+        return await _pgPool.query(text, params);
+      }
+      throw e;
+    }
+  },
+
+  async connect() {
+    try {
+      return await _pgPool.connect();
+    } catch (e) {
+      if (_isPgTerminationError(e)) {
+        console.warn("⚠️ PG POOL: connect failed by db_termination → reset + retry once");
+        await _resetPgPool(e);
+        return await _pgPool.connect();
+      }
+      throw e;
+    }
+  },
+
+  on(ev, fn) {
+    if (!ev || typeof fn !== "function") return this;
+    _pgPoolListeners.push([ev, fn]);
+    try {
+      _pgPool.on(ev, fn);
+    } catch (_) {}
+    return this;
+  },
+
+  end(cb) {
+    if (cb) {
+      try {
+        return _pgPool.end(cb);
+      } catch (e) {
+        return cb(e);
+      }
+    }
+
+    return (async () => {
+      try {
+        return await _pgPool.end();
+      } catch (_) {
+        return undefined;
+      }
+    })();
+  },
+};
 
 const PgStore = connectPgSimple(session);
 const sessionStore = new PgStore({
   pool: pgPool,
-  schemaName: "public",
-  tableName: "session_store",
-  createTableIfMissing: !isProd,     // ✅ DEV에서는 자동생성 허용, PROD는 고정
+  schemaName: SESSION_STORE_SCHEMA,
+  tableName: SESSION_STORE_TABLE,
+  createTableIfMissing: !isProd, // ✅ DEV에서는 자동생성 허용, PROD는 고정
   pruneSessionInterval: 60 * 10,
 });
+
+// ✅ PROD 부팅 가드: session_store 테이블 존재 확인(없으면 즉시 종료)
+async function _ensureSessionStoreTable() {
+  const q = `
+    select 1 as ok
+    from information_schema.tables
+    where table_schema = $1 and table_name = $2
+    limit 1
+  `;
+  const r = await pgPool.query(q, [SESSION_STORE_SCHEMA, SESSION_STORE_TABLE]);
+  const ok = Array.isArray(r?.rows) && r.rows.length > 0;
+  if (!ok) {
+    const err = new Error(
+      `Missing ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}. Create it in Supabase before running in production.`
+    );
+    err.code = "SESSION_STORE_MISSING";
+    throw err;
+  }
+}
+
+void (async () => {
+  try {
+    await _ensureSessionStoreTable();
+    if (!isProd) {
+      console.log(`✅ session store table ok: ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}`);
+    }
+  } catch (e) {
+    console.error("❌ session store table check failed:", e?.code || "", e?.message || e);
+    if (isProd) process.exit(1);
+  }
+})();
 
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "cva.sid";
 const SESSION_SAMESITE_RAW = (process.env.SESSION_SAMESITE || "lax").toLowerCase();
@@ -4421,6 +4568,12 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
     );
   };
 
+  const _isOverloaded = (e) => {
+    const st = getStatus(e);
+    const msg = _mergedErrMsg(e);
+    return st === 503 || /model is overloaded|overloaded/i.test(msg);
+  };
+
   const _parseRetryAfterMs = (e) => {
     const msg = _mergedErrMsg(e);
 
@@ -4440,11 +4593,78 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
       }
     }
 
-    if (raMs == null) raMs = 60000; // fallback 60s
+    if (raMs == null) raMs = 15000; // fallback 15s (Gemini overload는 너무 길게 잡지 않음)
     return raMs;
   };
 
+  const _throwOverloaded200 = (e, modelUsed) => {
+    const st = getStatus(e);
+    const raMs = _parseRetryAfterMs(e);
+
+    const err = new Error("GEMINI_OVERLOADED");
+    err.code = "GEMINI_OVERLOADED";
+    err.httpStatus = 200;
+    err.publicMessage =
+      "Gemini 모델이 과부하(503) 상태라 검증을 수행할 수 없습니다. 잠시 후 다시 시도해 주세요.";
+    err.detail = {
+      status: st,
+      model: modelUsed || model,
+      retry_after_ms: raMs,
+      last_error: _mergedErrMsg(e),
+    };
+    throw err;
+  };
+
+  const _maybeLiteModel = (m) => {
+    const s = String(m || "").trim();
+    if (!s) return "gemini-2.5-flash-lite";
+    if (/flash-lite/i.test(s)) return s;
+    if (/flash/i.test(s)) return "gemini-2.5-flash-lite";
+    // flash 계열이 아니면 모델은 유지(다만 overload면 어차피 동일하게 터질 확률 큼)
+    return s;
+  };
+
+  const _overloadRetries = Math.max(0, parseInt(process.env.GEMINI_OVERLOAD_RETRIES || "1", 10));
+  const _overloadBaseSleepMs = Math.max(300, parseInt(process.env.GEMINI_OVERLOAD_SLEEP_MS || "900", 10));
+
+  async function _tryOverloadRecover({ modelTry, gemini_key, labelSuffix }) {
+    // 1) 같은 모델로 짧게 재시도
+    for (let a = 0; a < _overloadRetries; a++) {
+      await sleep(_overloadBaseSleepMs * (a + 1));
+      try {
+        return await fetchGeminiRaw({
+          model: modelTry,
+          gemini_key,
+          payload,
+          opts: { ...opts, label: `${label0}${labelSuffix}#retry${a + 1}` },
+        });
+      } catch (e2) {
+        if (!_isOverloaded(e2)) throw e2; // overload가 아니면 그대로 위로
+      }
+    }
+
+    // 2) flash → flash-lite 1회 폴백
+    const lite = _maybeLiteModel(modelTry);
+    if (lite && lite !== modelTry) {
+      try {
+        return await fetchGeminiRaw({
+          model: lite,
+          gemini_key,
+          payload,
+          opts: { ...opts, label: `${label0}${labelSuffix}#lite` },
+        });
+      } catch (e3) {
+        if (_isOverloaded(e3)) _throwOverloaded200(e3, lite);
+        throw e3;
+      }
+    }
+
+    // 3) 그래도 overload면 200 코드로 종료
+    _throwOverloaded200(new Error("GEMINI_OVERLOADED"), modelTry);
+  }
+
   // 0) hint(body에서 온 keyHint) 1회 시도 -> 401/403/429면 keyring으로 fallback
+  //    overload(503)면: 짧게 재시도 + flash-lite 폴백 후에도 실패하면 200코드 종료
   if (hint) {
     try {
       return await fetchGeminiRaw({
@@ -4456,6 +4676,11 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
     } catch (e) {
       const st = getStatus(e);
       console.error("Gemini call failed:", `${label0}#hint`, `status=${st}`, geminiErrMessage(e));
+
+      if (_isOverloaded(e)) {
+        return await _tryOverloadRecover({ modelTry: model, gemini_key: hint, labelSuffix: "#hint" });
+      }
+
       if (st !== 401 && st !== 403 && st !== 429) throw e;
       // fallthrough -> keyring
     }
@@ -4506,8 +4731,17 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
       lastErr = e;
       const st = getStatus(e);
 
-      // 핵심: 401/403은 “소진”이 아니라 “키/제한 문제”일 가능성이 큼 → 다음 키로 넘김
       console.error("Gemini call failed:", `${label0}#${keyId}`, `status=${st}`, geminiErrMessage(e));
+
+      // ✅ overload면: 키 소진/회전하지 말고 짧게 재시도 + lite 폴백
+      if (_isOverloaded(e)) {
+        try {
+          return await _tryOverloadRecover({ modelTry: model, gemini_key: key, labelSuffix: `#${keyId}` });
+        } catch (eOv) {
+          // _tryOverloadRecover가 200 에러를 throw할 수 있음 → 그대로 전파
+          throw eOv;
+        }
+      }
 
       if (st === 429) {
         const raMs = _parseRetryAfterMs(e);
@@ -4542,23 +4776,18 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
     Number.isFinite(lastErr?.httpStatus) ? lastErr.httpStatus :
     null;
 
+  // ✅ 최종 에러가 overload면: 200코드 에러로 통일
+  if (lastErr && _isOverloaded(lastErr)) {
+    _throwOverloaded200(lastErr, model);
+  }
+
   const _is429 =
     _lastStatus === 429 ||
     (_lastMsg && /status\s*=?\s*429|quota exceeded|rate limit|generate_content_free_tier_requests/i.test(_lastMsg));
 
   let _retryAfterMs = null;
-  if (_lastMsg) {
-    const mMs = _lastMsg.match(/retry in\s+([0-9.]+)\s*ms/i);
-    const mS  = _lastMsg.match(/retry in\s+([0-9.]+)\s*s/i);
-    if (mMs) _retryAfterMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
-    else if (mS) _retryAfterMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
-  }
-  if (_retryAfterMs == null) {
-    const ra = lastErr?.response?.headers?.["retry-after"] ?? lastErr?.response?.headers?.["Retry-After"];
-    if (ra != null) {
-      const sec = parseFloat(String(ra).trim());
-      if (Number.isFinite(sec)) _retryAfterMs = Math.max(0, Math.ceil(sec * 1000));
-    }
+  if (lastErr) {
+    try { _retryAfterMs = _parseRetryAfterMs(lastErr); } catch {}
   }
 
   err.code = _is429 ? "GEMINI_RATE_LIMIT" : "GEMINI_KEY_EXHAUSTED";
@@ -4620,7 +4849,8 @@ async function fetchGeminiSmart({ userId, gemini_key, keyHint, model, payload, o
   const getStatus = (e) =>
     e?.response?.status ?? e?.status ?? e?.statusCode ?? null;
 
-  // 1) directKey(클라이언트에서 gemini_key)가 있으면 1회만 시도
+    // 1) directKey(클라이언트에서 gemini_key)가 있으면 1회만 시도
+  //    - 401/403/429 뿐 아니라 5xx(특히 503 overload)도 rotating으로 fallthrough 허용
   if (directKey) {
     try {
       return await fetchGeminiRaw({
@@ -4637,16 +4867,23 @@ async function fetchGeminiSmart({ userId, gemini_key, keyHint, model, payload, o
         `status=${st}`,
         geminiErrMessage(e)
       );
-      // 401/403/429만 fallback (그 외는 그대로 throw)
-      if (st !== 401 && st !== 403 && st !== 429) throw e;
+
+      const is5xx = typeof st === "number" && st >= 500;
+
+      // 401/403/429/5xx만 fallback (그 외는 그대로 throw)
+      if (st !== 401 && st !== 403 && st !== 429 && !is5xx) throw e;
+
       // fallthrough → rotating
+      // (rotating의 hint overload-recover를 태우기 위해, keyHint가 비어있으면 directKey를 hint로 사용)
     }
   }
 
   // 2) 나머지는 keyHint(있으면 1순위) + keyring fallback 으로 rotating
+  const hintForRotating = hintKey || directKey || null;
+
   return await fetchGeminiRotating({
     userId,
-    keyHint: hintKey || null,
+    keyHint: hintForRotating,
     model: modelFinal,
     payload,
     opts: { ...opts, label: label0 },
@@ -13137,13 +13374,23 @@ app.get("/api/check-whitelist", requireDiag, (req, res) => {
   }
 });
 
-app.get("/api/admin/errors/recent", (req, res) => {
-  return res.json(
-    buildSuccess({
-      total: adminRecentErrors.length,
-      items: adminRecentErrors.slice().reverse(),
-    })
-  );
+app.get("/api/admin/errors/recent", requireDiag, (req, res) => {
+  try {
+    const limitRaw = parseInt(String(req.query?.limit ?? "50"), 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
+
+    const items = adminRecentErrors.slice().reverse().slice(0, limit);
+
+    return res.json(
+      buildSuccess({
+        total: adminRecentErrors.length,
+        limit,
+        items,
+      })
+    );
+  } catch (e) {
+    return res.status(500).json(buildError("INTERNAL_ERROR", String(e?.message || e)));
+  }
 });
 
 // ✅ Health check (Render / uptime / external monitor)
