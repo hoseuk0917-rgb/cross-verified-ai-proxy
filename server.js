@@ -9946,10 +9946,13 @@ try {
       }
     }
 
-    // 1) blocksForVerify 내부 evidence(ev) 기반
+        // 1) blocksForVerify 내부 evidence(ev) 기반 (URL canonical + 중복 집계 방지)
     for (const b of blocksForVerify) {
-      const evs = Array.isArray(b?.evidence_items) ? b.evidence_items : (Array.isArray(b?.evidence) ? b.evidence : []);
-            for (const ev of evs) {
+      const evs = Array.isArray(b?.evidence_items)
+        ? b.evidence_items
+        : (Array.isArray(b?.evidence) ? b.evidence : []);
+
+      for (const ev of evs) {
         const key0 = __keyOf(ev);
         const key = key0 ? __canonUrlKey(key0) : null;
 
@@ -9971,14 +9974,12 @@ try {
           try { ev._soft_penalty_product = Number(prod.toFixed(6)); } catch {}
         }
 
-        if (_y) yearMiss += 1;
-        if (_n) numMiss += 1;
-
-        if (prod > 0 && prod < 1) {
-          sumLog += Math.log(prod);
-          cnt += 1;
-          if (minP == null || prod < minP) minP = prod;
-        }
+        __accPenalty(
+          prod,
+          { year_miss: _y, num_miss: _n },
+          key0,
+          { force: false }
+        );
       }
     }
 
@@ -11284,66 +11285,7 @@ var truthscore_01 = __truthscore_01_raw; // ✅ smoothing에서 참조/대입할
             ps.soft_penalty_applied = false;
           }
 
-          // 2) ✅ safe smoothing (과도한 점프 억제)
-          //    - coverage_factor(낮을수록 중립(0.5)으로 당김)
-          //    - conflict_index(높을수록 중립으로 당김)
-          //    - soft_penalty_factor(낮을수록 더 당김)
-          //    수식: t' = 0.5 + (t-0.5) * strength^gamma
-          //    strength = clamp01(coverage) * clamp01(1-conflict) * clamp01(spf)
-          const _cl01 = (x) =>
-            (typeof x === "number" && Number.isFinite(x))
-              ? Math.max(0.0, Math.min(1.0, x))
-              : 0.0;
-
-          const cov =
-            (ps && typeof ps.coverage_factor === "number" && Number.isFinite(ps.coverage_factor))
-              ? _cl01(ps.coverage_factor)
-              : 1.0;
-
-          const cMeta =
-            (ps && ps.conflict_meta && typeof ps.conflict_meta === "object") ? ps.conflict_meta : null;
-
-          const cIndex =
-            (cMeta && typeof cMeta.conflict_index === "number" && Number.isFinite(cMeta.conflict_index))
-              ? _cl01(cMeta.conflict_index)
-              : 0.0;
-
-          // env tunables (기본은 보수적으로)
-          let gamma = Number(process.env.TRUTHSCORE_SMOOTH_GAMMA || 1.25);
-          if (!Number.isFinite(gamma)) gamma = 1.25;
-          gamma = Math.max(0.1, Math.min(4.0, gamma));
-
-          let minStrength = Number(process.env.TRUTHSCORE_SMOOTH_MIN_STRENGTH || 0.15);
-          if (!Number.isFinite(minStrength)) minStrength = 0.15;
-          minStrength = Math.max(0.0, Math.min(1.0, minStrength));
-
-          const strengthRaw = _cl01(cov) * _cl01(1.0 - cIndex) * _cl01(spf);
-          const strength = Math.max(minStrength, Math.min(1.0, strengthRaw));
-
-          if (
-            strength < 0.999999 &&
-            typeof truthscore_01_final === "number" &&
-            Number.isFinite(truthscore_01_final)
-          ) {
-            const beforeSmooth01 = truthscore_01_final;
-            const smoothed01 =
-              0.5 + (beforeSmooth01 - 0.5) * Math.pow(strength, gamma);
-
-            truthscore_01_final = Number(Math.max(0.0, Math.min(1.0, smoothed01)).toFixed(4));
-
-            ps.truthscore_01_pre_smooth = Number(beforeSmooth01.toFixed(4));
-            ps.truthscore_01_post_smooth = truthscore_01_final;
-            ps.truthscore_smoothing = {
-              strength: Number(strength.toFixed(4)),
-              strength_raw: Number(strengthRaw.toFixed(4)),
-              gamma: Number(gamma.toFixed(4)),
-              coverage: Number(cov.toFixed(4)),
-              conflict_index: Number(cIndex.toFixed(4)),
-              spf: Number(_cl01(spf).toFixed(4)),
-            };
-          } else {
-            ps.truthscore_smoothing = false;
-          }
+                    // 2) NOTE: additional smoothing removed (handled in (A) only)
         } else {
           try { partial_scores.soft_penalty_applied = false; } catch {}
           try { partial_scores.truthscore_smoothing = false; } catch {}
