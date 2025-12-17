@@ -708,6 +708,25 @@ async function _sleepMs(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// ✅ session_store 존재 확인(없으면 SESSION_STORE_MISSING 던짐)
+async function _ensureSessionStoreTable() {
+  const q = `
+    select 1 as ok
+    from information_schema.tables
+    where table_schema = $1 and table_name = $2
+    limit 1
+  `;
+  const r = await pgPool.query(q, [SESSION_STORE_SCHEMA, SESSION_STORE_TABLE]);
+  const ok = Array.isArray(r?.rows) && r.rows.length > 0;
+  if (!ok) {
+    const err = new Error(
+      `Missing ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}. Create it in Supabase before running in production.`
+    );
+    err.code = "SESSION_STORE_MISSING";
+    throw err;
+  }
+}
+
 void (async () => {
   const maxTry = parseInt(process.env.SESSION_STORE_BOOTSTRAP_TRIES || "6", 10);
   const baseDelay = parseInt(process.env.SESSION_STORE_BOOTSTRAP_DELAY_MS || "500", 10);
@@ -2950,6 +2969,16 @@ const ADMIN_NOTICE_MAIL_COOLDOWN_MS = Math.max(
 
 let __adminMailDisabledUntilMs = 0;
 let __adminMailLastFail = null;
+
+// ✅ Gmail env 최소 구성 확인(없으면 sendAdminNotice가 조용히 skip)
+function __isAdminMailConfigured() {
+  const id = String(process.env.GMAIL_CLIENT_ID || "").trim();
+  const secret = String(process.env.GMAIL_CLIENT_SECRET || "").trim();
+  const refresh = String(process.env.GMAIL_REFRESH_TOKEN || "").trim();
+  // redirect uri / ADMIN_EMAIL 은 sendAdminNotice에서 별도 체크(또는 optional)
+  if (!id || !secret || !refresh) return false;
+  return true;
+}
 
 async function sendAdminNotice(subject, html, toOverride = null) {
   try {
