@@ -2675,76 +2675,8 @@ function __looksLikeInvalidGrant(err) {
   return false;
 }
 
-async function sendAdminNotice(subject, html) {
-  try {
-    if (!__isAdminMailConfigured()) {
-      if (DEBUG) console.warn("⚠️ Admin mail skipped: Gmail env not configured");
-      return { ok: false, skipped: true, reason: "MAIL_NOT_CONFIGURED" };
-    }
-
-    const now = Date.now();
-    if (__adminMailDisabledUntilMs && now < __adminMailDisabledUntilMs) {
-      if (DEBUG) {
-        console.warn(
-          "⚠️ Admin mail skipped: cooldown active until",
-          new Date(__adminMailDisabledUntilMs).toISOString(),
-          __adminMailLastFail ? `lastFail=${__adminMailLastFail}` : ""
-        );
-      }
-      return { ok: false, skipped: true, reason: "MAIL_COOLDOWN" };
-    }
-
-    const at = await oAuth2Client.getAccessToken();
-    const accessToken = typeof at === "string" ? at : at?.token;
-
-    if (!accessToken) {
-      throw new Error("GMAIL_ACCESS_TOKEN_EMPTY");
-    }
-
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        type: "OAuth2",
-        user: process.env.GMAIL_USER,
-        clientId: process.env.GMAIL_CLIENT_ID,
-        clientSecret: process.env.GMAIL_CLIENT_SECRET,
-        refreshToken: process.env.GMAIL_REFRESH_TOKEN,
-        accessToken,
-      },
-    });
-
-    await transporter.sendMail({
-      from: `"Cross-Verified Notifier" <${process.env.GMAIL_USER}>`,
-      to: process.env.ADMIN_EMAIL,
-      subject,
-      html,
-    });
-
-    // 성공 시 실패 메타 초기화
-    __adminMailLastFail = null;
-__adminMailDisabledUntilMs = 0;
-return { ok: true };
-  } catch (err) {
-    const msg = String(err?.message || "MAIL_FAIL");
-    console.error("❌ Mail fail:", msg);
-
-    // invalid_grant 류면 일정 시간 메일 시도 중단 (화이트리스트 갱신 자체는 계속)
-    if (__looksLikeInvalidGrant(err)) {
-      __adminMailLastFail = "invalid_grant";
-      __adminMailDisabledUntilMs = Date.now() + ADMIN_NOTICE_MAIL_COOLDOWN_MS;
-      console.error(
-        "❌ Mail disabled (cooldown) due to invalid_grant-like error. " +
-          "Action: re-issue Gmail refresh token (GMAIL_REFRESH_TOKEN) in Render env. " +
-          "Disabled until: " +
-          new Date(__adminMailDisabledUntilMs).toISOString()
-      );
-      return { ok: false, disabled: true, reason: "INVALID_GRANT_COOLDOWN" };
-    }
-
-    __adminMailLastFail = msg.slice(0, 120);
-    return { ok: false, reason: "MAIL_FAIL", message: msg };
-  }
-}
+// ✅ removed duplicate sendAdminNotice(subject, html)
+// canonical sendAdminNotice(subject, html, toOverride = null) is defined above
 
 let failCount = 0;
 async function handleEngineFail(engine, query, error) {
