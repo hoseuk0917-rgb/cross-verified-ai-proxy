@@ -2584,15 +2584,81 @@ const ADMIN_NOTICE_MAIL_COOLDOWN_MS = Math.max(
 let __adminMailDisabledUntilMs = 0;
 let __adminMailLastFail = null;
 
-function __isAdminMailConfigured() {
-  return !!(
-    process.env.GMAIL_USER &&
-    process.env.ADMIN_EMAIL &&
-    process.env.GMAIL_CLIENT_ID &&
-    process.env.GMAIL_CLIENT_SECRET &&
-    process.env.GMAIL_REDIRECT_URI &&
-    process.env.GMAIL_REFRESH_TOKEN
-  );
+async function sendAdminNotice(subject, html, toOverride = null) {
+  try {
+    if (!__isAdminMailConfigured()) {
+      if (DEBUG) console.warn("⚠️ Admin mail skipped: Gmail env not configured");
+      return { ok: false, skipped: true, reason: "MAIL_NOT_CONFIGURED" };
+    }
+
+    const to = String(toOverride || process.env.ADMIN_EMAIL || "").trim();
+    if (!to) {
+      if (DEBUG) console.warn("⚠️ Admin mail skipped: NO_TO");
+      return { ok: false, skipped: true, reason: "NO_TO" };
+    }
+
+    const now = Date.now();
+    if (__adminMailDisabledUntilMs && now < __adminMailDisabledUntilMs) {
+      if (DEBUG) {
+        console.warn(
+          "⚠️ Admin mail skipped: cooldown active until",
+          new Date(__adminMailDisabledUntilMs).toISOString(),
+          __adminMailLastFail ? `lastFail=${__adminMailLastFail}` : ""
+        );
+      }
+      return { ok: false, skipped: true, reason: "MAIL_COOLDOWN" };
+    }
+
+    const at = await oAuth2Client.getAccessToken();
+    const accessToken = typeof at === "string" ? at : at?.token;
+
+    if (!accessToken) {
+      throw new Error("GMAIL_ACCESS_TOKEN_EMPTY");
+    }
+
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        type: "OAuth2",
+        user: process.env.GMAIL_USER,
+        clientId: process.env.GMAIL_CLIENT_ID,
+        clientSecret: process.env.GMAIL_CLIENT_SECRET,
+        refreshToken: process.env.GMAIL_REFRESH_TOKEN,
+        accessToken,
+      },
+    });
+
+    await transporter.sendMail({
+      from: `"Cross-Verified Notifier" <${process.env.GMAIL_USER}>`,
+      to,
+      subject,
+      html,
+    });
+
+    // 성공 시 실패 메타 초기화
+    __adminMailLastFail = null;
+    __adminMailDisabledUntilMs = 0;
+    return { ok: true };
+  } catch (err) {
+    const msg = String(err?.message || "MAIL_FAIL");
+    console.error("❌ Mail fail:", msg);
+
+    // invalid_grant 류면 일정 시간 메일 시도 중단 (화이트리스트 갱신 자체는 계속)
+    if (__looksLikeInvalidGrant(err)) {
+      __adminMailLastFail = "invalid_grant";
+      __adminMailDisabledUntilMs = Date.now() + ADMIN_NOTICE_MAIL_COOLDOWN_MS;
+      console.error(
+        "❌ Mail disabled (cooldown) due to invalid_grant-like error. " +
+          "Action: re-issue Gmail refresh token (GMAIL_REFRESH_TOKEN) in Render env. " +
+          "Disabled until: " +
+          new Date(__adminMailDisabledUntilMs).toISOString()
+      );
+      return { ok: false, disabled: true, reason: "INVALID_GRANT_COOLDOWN" };
+    }
+
+    __adminMailLastFail = msg.slice(0, 120);
+    return { ok: false, reason: "MAIL_FAIL", message: msg };
+  }
 }
 
 function __looksLikeInvalidGrant(err) {
@@ -3305,13 +3371,39 @@ async function __sendWhitelistNoticeEmail(subject, html) {
     const to = WL_NOTIFY_EMAIL_TO || process.env.ADMIN_EMAIL;
     if (!to) return { ok: false, skipped: true, reason: "NO_TO" };
 
-    // prefer Gmail OAuth2 mailer if available
-    if (process.env.GMAIL_USER && process.env.GMAIL_CLIENT_ID && process.env.GMAIL_CLIENT_SECRET && process.env.GMAIL_REFRESH_TOKEN) {
-      return await sendAdminNotice(subject, html);
+    const hasGmailCreds = !!(
+      process.env.GMAIL_USER &&
+      process.env.GMAIL_CLIENT_ID &&
+      process.env.GMAIL_CLIENT_SECRET &&
+      process.env.GMAIL_REFRESH_TOKEN
+    );
+    const hasSmtp = !!(SMTP_HOST && SMTP_USER && SMTP_PASS);
+
+    // 1) prefer Gmail OAuth2 mailer if available
+    if (hasGmailCreds) {
+      const r = await sendAdminNotice(subject, html, to);
+
+      // Gmail 성공이면 종료
+      if (r?.ok) return r;
+
+      // Gmail이 쿨다운/invalid_grant/실패면 SMTP가 있으면 즉시 폴백
+      const needFallback =
+        hasSmtp &&
+        (
+          r?.disabled === true ||
+          r?.reason === "INVALID_GRANT_COOLDOWN" ||
+          r?.reason === "MAIL_COOLDOWN" ||
+          r?.reason === "MAIL_FAIL" ||
+          r?.reason === "MAIL_NOT_CONFIGURED" ||
+          r?.reason === "NO_TO"
+        );
+
+      if (!needFallback) return r;
+      // else: continue to SMTP below
     }
 
-    // fallback: SMTP direct
-    if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    // 2) fallback: SMTP direct
+    if (!hasSmtp) {
       return { ok: false, skipped: true, reason: "MAIL_NOT_CONFIGURED" };
     }
 
@@ -3330,7 +3422,7 @@ async function __sendWhitelistNoticeEmail(subject, html) {
       html,
     });
 
-    return { ok: true };
+    return { ok: true, via: "smtp_fallback" };
   } catch (e) {
     console.error("❌ WL mail fail:", e?.message || e);
     return { ok: false, reason: "WL_MAIL_FAIL", message: String(e?.message || e) };
@@ -4067,22 +4159,21 @@ return {
   source_url,
   origin: "naver",
   naver_type: ep.type,
+
+  // ✅ whitelist/tier meta
   tier,
   tier_weight,
+  type_weight: typeWeight,
   whitelisted,
   inferred,
   display_only,
 
-  // ✅news만 pubDate가 있음
+  // ✅ news만 pubDate가 있음
   pubDate: ep.type === "news" ? (i.pubDate || null) : null,
 
-  // ✅domain 판정은 source_url(=originallink) 기준
+  // ✅ domain 판정은 source_url(=originallink) 기준
   source_host: tierInfo.host || null,
   match_domain: tierInfo.match_domain || null,
-
-  tier,
-  tier_weight,
-  type_weight: typeWeight,
 
   ...(inferred ? { _whitelist_inferred: true } : {}),
   ...(display_only ? { _whitelist_display_only: true } : {}),
@@ -4191,13 +4282,21 @@ async function fetchWikidata(q, ctx = {}) {
 async function fetchGDELT(q, ctx = {}) {
   const signal = ctx?.signal;
 
-  const qq = String(q || "").trim();
-  if (!qq) return [];
+  const qq0 = String(q || "").replace(/\s+/g, " ").trim();
+  if (!qq0) return [];
 
-  // ✅ env overrides
+  // ✅ 너무 짧은 쿼리는 노이즈/느림 대비 효용이 낮아서 기본 스킵 (env로 제어)
+  const __minChars = (() => {
+    const v = Number(process.env.GDELT_QUERY_MIN_CHARS ?? 18);
+    const n = (Number.isFinite(v) && v >= 0) ? Math.floor(v) : 18;
+    return n;
+  })();
+  if (__minChars > 0 && qq0.length < __minChars) return [];
+
+  // ✅ env overrides (기본을 더 공격적으로)
   const __timeout = (() => {
-    const v = Number(process.env.GDELT_TIMEOUT_MS ?? 6500);
-    const t = (Number.isFinite(v) && v > 0) ? Math.floor(v) : 6500;
+    const v = Number(process.env.GDELT_TIMEOUT_MS ?? 4500);
+    const t = (Number.isFinite(v) && v > 0) ? Math.floor(v) : 4500;
     // HTTP_TIMEOUT_MS보다 길게 잡지 않음(안전)
     return (typeof HTTP_TIMEOUT_MS === "number" && Number.isFinite(HTTP_TIMEOUT_MS))
       ? Math.min(t, Math.floor(HTTP_TIMEOUT_MS))
@@ -4205,12 +4304,14 @@ async function fetchGDELT(q, ctx = {}) {
   })();
 
   const __maxrecords = (() => {
-    const v = Number(process.env.GDELT_MAXRECORDS ?? 2);
-    return (Number.isFinite(v) && v > 0) ? Math.floor(v) : 2;
+    const v = Number(process.env.GDELT_MAXRECORDS ?? 1);
+    let n = (Number.isFinite(v) && v > 0) ? Math.floor(v) : 1;
+    if (n > 3) n = 3; // 과도 호출 방지
+    return n;
   })();
 
   // ✅ query length cap (GDELT API 안정)
-  const q120 = (qq.length > 120) ? qq.slice(0, 120).trim() : qq;
+  const q120 = (qq0.length > 120) ? qq0.slice(0, 120).trim() : qq0;
 
   const { data } = await axios.get(
     `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q120)}&format=json&maxrecords=${__maxrecords}`,
@@ -7946,24 +8047,64 @@ if (__academicSingle) {
   }
 }
 
-if (__gdeltSingle) {
+let __gdeltGlobalFetched = false;
+
+// ✅ strong official 충분하면 GDELT까지 갈 이유가 적음 (기본 ON, env로 OFF 가능)
+const __gdeltDisableOnStrongOfficial =
+  String(process.env.GDELT_DISABLE_ON_STRONG_OFFICIAL ?? "true").toLowerCase() !== "false";
+
+const __ensureGdeltGlobal = async (why = "single") => {
+  if (!__gdeltSingle) return gdeltGlobalPack;
+  if (__gdeltGlobalFetched) return gdeltGlobalPack;
+  __gdeltGlobalFetched = true;
+
   // ✅ snippet 기본: GDELT 호출 스킵
   if (__isSnippetReq && __gdeltDisableSnippet) {
     gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "snippet_disabled" };
-  } else {
-    const qq = limitChars(gdeltGlobalQ, 120);
-    if (String(qq || "").trim()) {
-      try {
-        if (__capConsume("gdelt")) {
-          gdeltGlobalPack = await safeFetchTimed("gdelt", fetchGDELT, qq, engineTimes, engineMetrics);
-          try { engineQueriesUsed.gdelt.push(qq); } catch {}
-        } else {
-          gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-        }
-      } catch (e) {
-        gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+    return gdeltGlobalPack;
+  }
+
+  // ✅ strong official evidence가 이미 있으면 스킵(선택)
+  if (__gdeltDisableOnStrongOfficial) {
+    try {
+      const hasStrong =
+        __hasStrongOfficialEvidence(external?.naver) ||
+        __hasStrongOfficialEvidence(external?.wikidata) ||
+        __hasStrongOfficialEvidence(external?.crossref) ||
+        __hasStrongOfficialEvidence(external?.openalex);
+      if (hasStrong) {
+        gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "strong_official_skip" };
+        return gdeltGlobalPack;
       }
+    } catch {}
+  }
+
+  const qq = limitChars(gdeltGlobalQ, 120);
+  if (!String(qq || "").trim()) {
+    gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "empty" };
+    return gdeltGlobalPack;
+  }
+
+  try {
+    if (__capConsume("gdelt")) {
+      gdeltGlobalPack = await safeFetchTimed("gdelt", fetchGDELT, qq, engineTimes, engineMetrics);
+      try { engineQueriesUsed.gdelt.push(qq); } catch {}
+    } else {
+      gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "cap" };
     }
+  } catch (e) {
+    gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+  }
+
+  return gdeltGlobalPack;
+};
+
+// ✅ single 모드여도 여기서 선호출하지 않음 (블록 진행 + early-stop 이후 필요할 때만 1회 호출)
+if (__gdeltSingle) {
+  // (옵션) 강제로 선호출하고 싶으면 env로만 켜기
+  const __prefetch = String(process.env.GDELT_PREFETCH_SINGLE ?? "false").toLowerCase() === "true";
+  if (__prefetch) {
+    try { await __ensureGdeltGlobal("prefetch"); } catch {}
   }
 }
 
@@ -8092,8 +8233,8 @@ for (const b of __blocksInput) {
   if (__capState.early_stop) {
     gdPack = { result: [], ms: 0, skipped: true, reason: "early_stop" };
   } else if (__gdeltSingle) {
-    gdPack = gdeltGlobalPack || gdPack;
-  } else {
+  gdPack = (await __ensureGdeltGlobal("single")) || gdPack;
+} else {
     // ✅ snippet 기본: GDELT 호출 스킵 (global과 동일 정책)
     if (__isSnippetReq && __gdeltDisableSnippet) {
       gdPack = { result: [], ms: 0, skipped: true, reason: "snippet_disabled" };
@@ -8176,7 +8317,7 @@ for (const b of __blocksInput) {
 
   // ✅ (FIX) request-level Naver call budget (logging) + __capConsume("naver") enforcement
   // - source of truth: __capState.calls_naver / __caps.naver
-  let __naverBudgetLog = null;
+    let __naverBudgetLog = null;
   try {
     if (partial_scores && typeof partial_scores === "object") {
       if (!partial_scores.__naver_call_budget || typeof partial_scores.__naver_call_budget !== "object") {
@@ -8189,10 +8330,18 @@ for (const b of __blocksInput) {
       b.is_snippet = __isSnippetReq;
       b.max = (Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : 999999);
 
+      const usedNow = Number(__capState?.calls_naver || 0);
+      const maxNow = Number(b.max || 0);
+
       // per-block snapshots (reset each block)
-      b.used_before_block = Number(__capState?.calls_naver || 0);
-      b.left_before_block = Math.max(0, Number(b.max || 0) - Number(b.used_before_block || 0));
+      b.used_before_block = usedNow;
+      b.left_before_block = Math.max(0, maxNow - usedNow);
       b.used_last_block = 0;
+
+      // ✅ 항상 "현재 used/left"를 채워둔다 (이 블록에서 0회 호출/early-stop이어도 undefined 방지)
+      b.used = usedNow;
+      b.left = Math.max(0, maxNow - usedNow);
+      b.applied = true;
 
       __naverBudgetLog = b;
     }
@@ -8238,12 +8387,18 @@ for (const b of __blocksInput) {
     }
   }
 
-  // ✅ budget snapshot after this block
+    // ✅ budget snapshot after this block
   try {
     if (__naverBudgetLog && typeof __naverBudgetLog === "object") {
-      __naverBudgetLog.used_after_block = Number(__capState?.calls_naver || 0);
-      __naverBudgetLog.left_after_block =
-        Math.max(0, Number(__naverBudgetLog.max || 0) - Number(__naverBudgetLog.used_after_block || 0));
+      const usedNow = Number(__capState?.calls_naver || 0);
+      const maxNow = Number(__naverBudgetLog.max || 0);
+
+      __naverBudgetLog.used_after_block = usedNow;
+      __naverBudgetLog.left_after_block = Math.max(0, maxNow - usedNow);
+
+      // ✅ current 값도 after snapshot으로 동기화 (최종 표시/호환 필드 안정화)
+      __naverBudgetLog.used = usedNow;
+      __naverBudgetLog.left = Math.max(0, maxNow - usedNow);
     }
   } catch {}
 
