@@ -2406,6 +2406,30 @@ async function markGeminiKeyRateLimitedById(userId, keyId, retryAfterMs) {
   await upsertUserSecretsRow(userId, secrets);
 }
 
+// ✅ NEW: 전역 쿨다운만 갱신 (keyHint 등 "키ID가 없는 429"도 전역 차단하기 위함)
+async function markGeminiKeyRateLimitedGlobal(userId, retryAfterMs) {
+  if (!userId) return;
+
+  const row = await loadUserSecretsRow(userId);
+  let secrets = _ensureGeminiSecretsShape(row.secrets);
+
+  const kr = secrets.gemini.keyring;
+  const state = kr.state || {};
+  if (!state.rate_limited_until || typeof state.rate_limited_until !== "object") state.rate_limited_until = {};
+
+  const ms = Number.isFinite(retryAfterMs) ? retryAfterMs : 60000;
+  const until = Date.now() + Math.max(0, ms);
+
+  const curG = state.rate_limited_until.__global__;
+  const curGnum = Number.isFinite(curG) ? curG : 0;
+  state.rate_limited_until.__global__ = Math.max(curGnum, until);
+
+  kr.state = state;
+  secrets.gemini.keyring = kr;
+
+  await upsertUserSecretsRow(userId, secrets);
+}
+
 async function getGeminiKeyFromDB(userId) {
   const row = await loadUserSecretsRow(userId);
   let secrets = _ensureGeminiSecretsShape(row.secrets);
@@ -5385,19 +5409,25 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
       }
 
             // ✅ 429는 keyring으로 fallthrough 하면 “키 회전으로 증폭”됨 → 즉시 중단
-      if (st === 429) {
-        const raMs = _parseRetryAfterMs(e);
-        const err = new Error("GEMINI_RATE_LIMIT");
-        err.code = "GEMINI_RATE_LIMIT";
-        err.httpStatus = 429;
-        err.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
-        err.detail = {
-          last_status: 429,
-          retry_after_ms: raMs,
-          last_error: _mergedErrMsg(e),
-        };
-        throw err;
-      }
+if (st === 429) {
+  const raMs = _parseRetryAfterMs(e);
+
+  // ✅ NEW: hint 키로 429가 떠도 "전역 쿨다운"을 DB keyring에 박아둠 (즉시 재시도 루프 방지)
+  try {
+    await markGeminiKeyRateLimitedGlobal(userId, raMs);
+  } catch (_) {}
+
+  const err = new Error("GEMINI_RATE_LIMIT");
+  err.code = "GEMINI_RATE_LIMIT";
+  err.httpStatus = 429;
+  err.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
+  err.detail = {
+    last_status: 429,
+    retry_after_ms: raMs,
+    last_error: _mergedErrMsg(e),
+  };
+  throw err;
+}
 
       if (st !== 401 && st !== 403) throw e;
       // fallthrough -> keyring
@@ -5407,6 +5437,20 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
   // 1) keyring rotating
   const row0 = await loadUserSecretsRow(userId);
   let secrets0 = _ensureGeminiSecretsShape(row0.secrets);
+
+  // ✅ 글로벌 쿨다운이 남아있으면 Gemini 호출 자체를 막고 즉시 429로 종료
+const _cooldownMs0 = getGeminiGlobalCooldownMs(secrets0);
+if (_cooldownMs0 > 0) {
+  const err = new Error("GEMINI_KEYRING_GLOBAL_COOLDOWN");
+  err.code = "GEMINI_RATE_LIMIT";
+  err.httpStatus = 429;
+  err.detail = {
+    retry_after_ms: _cooldownMs0,
+    last_error: "GLOBAL_COOLDOWN_ACTIVE",
+    last_status: 429,
+  };
+  throw err;
+}
 
   const pac = await ensureGeminiResetIfNeeded(userId, secrets0);
   const pt_date_now = pac.pt_date;
