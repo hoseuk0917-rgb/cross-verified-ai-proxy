@@ -2402,17 +2402,17 @@ async function getGeminiKeyFromDB(userId) {
     }
 
     // ✅ 케이스 A: “키는 있는데 전부 쿨다운 중”
-    if (nonExhausted > 0 && nonExhaustedButRateLimited === nonExhausted && minUntil != null) {
-      const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
-      err.code = "GEMINI_RATE_LIMIT";
-      err.httpStatus = 200;
+if (nonExhausted > 0 && nonExhaustedButRateLimited === nonExhausted && minUntil != null) {
+  const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
+  err.code = "GEMINI_RATE_LIMIT";
+  err.httpStatus = 429;
 
-      const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
-      err.detail = {
-        keysCount,
-        keysTriedCount: tried.size,
-        pt_date: pt_date_now,
-        next_reset_utc: pac.next_reset_utc,
+  const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
+  err.detail = {
+    keysCount,
+    keysTriedCount: tried.size,
+    pt_date: pt_date_now,
+    next_reset_utc: pac.next_reset_utc,
         retry_after_ms: retryAfterMs,
       };
       throw err;
@@ -2511,21 +2511,21 @@ async function getGeminiKeyFromDB(userId) {
     }
 
     // ✅ 케이스 B: “쓸 수 있는 키는 있는데 전부 쿨다운 중”
-    if (
-      nonExhaustedNonInvalid > 0 &&
-      nonExhaustedNonInvalidButRateLimited === nonExhaustedNonInvalid &&
-      minUntil != null
-    ) {
-      const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
-      err.code = "GEMINI_RATE_LIMIT";
-      err.httpStatus = 200;
+if (
+  nonExhaustedNonInvalid > 0 &&
+  nonExhaustedNonInvalidButRateLimited === nonExhaustedNonInvalid &&
+  minUntil != null
+) {
+  const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
+  err.code = "GEMINI_RATE_LIMIT";
+  err.httpStatus = 429;
 
-      const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
-      err.detail = {
-        keysCount,
-        keysTriedCount: tried.size,
-        pt_date: pt_date_now,
-        next_reset_utc: pac.next_reset_utc,
+  const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
+  err.detail = {
+    keysCount,
+    keysTriedCount: tried.size,
+    pt_date: pt_date_now,
+    next_reset_utc: pac.next_reset_utc,
         retry_after_ms: retryAfterMs,
       };
       throw err;
@@ -12623,18 +12623,22 @@ try {
 
 // ✅ Gemini rate limit (429) — 기존 정책 유지(200 + success:false)
 if (e?.code === "GEMINI_RATE_LIMIT") {
+  // Retry-After는 "초" 단위가 표준
+  let sec = 15; // fallback
   try {
     const ms = Number(e?.detail?.retry_after_ms);
     if (Number.isFinite(ms) && ms > 0) {
-      // HTTP Retry-After는 초 단위가 일반적
-      const sec = Math.max(1, Math.ceil(ms / 1000));
-      res.set("Retry-After", String(sec));
+      sec = Math.max(1, Math.ceil(ms / 1000));
       // 디버그/클라 편의용(선택)
       res.set("X-Retry-After-Ms", String(Math.ceil(ms)));
     }
   } catch (_) {}
 
-  return res.status(200).json({
+  try {
+    res.set("Retry-After", String(sec));
+  } catch (_) {}
+
+  return res.status(429).json({
     success: false,
     code: "GEMINI_RATE_LIMIT",
     message: "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.",
