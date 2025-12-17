@@ -8388,8 +8388,11 @@ const gdeltGlobalQ = __gdeltSingle
   : "";
 
 // ✅ snippet request 여부를 먼저 확정 (GDELT 등 비용 큰 엔진 제어에 사용)
+// - 기존 코드에 __isSnippetVerify가 있으면 그 값을 우선 사용(중복 플래그 방지)
 const __isSnippetReq =
-  !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
+  (typeof __isSnippetVerify === "boolean")
+    ? __isSnippetVerify
+    : !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
 
 // ✅ 기본 정책: snippet 검증에서는 GDELT 호출을 끈다 (환경변수로만 허용)
 const __gdeltDisableSnippet =
@@ -8436,7 +8439,7 @@ let __gdeltGlobalFetched = false;
 const __gdeltDisableOnStrongOfficial =
   String(process.env.GDELT_DISABLE_ON_STRONG_OFFICIAL ?? "true").toLowerCase() !== "false";
 
-const __ensureGdeltGlobal = async (why = "single") => {
+const __ensureGdeltGlobal = async (why = "single", ctx = {}) => {
   if (!__gdeltSingle) return gdeltGlobalPack;
   if (__gdeltGlobalFetched) return gdeltGlobalPack;
   __gdeltGlobalFetched = true;
@@ -8450,13 +8453,30 @@ const __ensureGdeltGlobal = async (why = "single") => {
   // ✅ strong official evidence가 이미 있으면 스킵(선택)
   if (__gdeltDisableOnStrongOfficial) {
     try {
-      const hasStrong =
-        __hasStrongOfficialEvidence(external?.naver) ||
-        __hasStrongOfficialEvidence(external?.wikidata) ||
-        __hasStrongOfficialEvidence(external?.crossref) ||
-        __hasStrongOfficialEvidence(external?.openalex);
+      const _candidates = [
+        external?.naver,
+        external?.wikidata,
+        external?.crossref,
+        external?.openalex,
+
+        // ✅ "현재 블록에서 막 얻은 pack"도 같이 본다 (external에 merge되기 전이라도 감지)
+        ctx?.nv,
+        ctx?.wd,
+        ctx?.cr,
+        ctx?.oa,
+
+        // ✅ academicSingle이면 globalPack.result도 참고(혹시 external merge 전이면)
+        crossrefGlobalPack?.result,
+        openalexGlobalPack?.result,
+      ];
+
+      let hasStrong = false;
+      for (const arr of _candidates) {
+        if (__hasStrongOfficialEvidence(arr)) { hasStrong = true; break; }
+      }
+
       if (hasStrong) {
-        gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "strong_official_skip" };
+        gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "strong_official_skip", why };
         return gdeltGlobalPack;
       }
     } catch {}
@@ -8616,7 +8636,12 @@ for (const b of __blocksInput) {
   if (__capState.early_stop) {
     gdPack = { result: [], ms: 0, skipped: true, reason: "early_stop" };
   } else if (__gdeltSingle) {
-  gdPack = (await __ensureGdeltGlobal("single")) || gdPack;
+  gdPack = (await __ensureGdeltGlobal("single", {
+  cr: (crPack && Array.isArray(crPack.result)) ? crPack.result : [],
+  oa: (oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [],
+  wd: (wdPack && Array.isArray(wdPack.result)) ? wdPack.result : [],
+  nv: (external && Array.isArray(external.naver)) ? external.naver : [],
+})) || gdPack;
 } else {
     // ✅ snippet 기본: GDELT 호출 스킵 (global과 동일 정책)
     if (__isSnippetReq && __gdeltDisableSnippet) {
