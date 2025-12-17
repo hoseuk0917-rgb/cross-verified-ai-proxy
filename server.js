@@ -10009,8 +10009,38 @@ if (!isWhitelisted) continue;
       }
       if (!pageText) continue;
 
-      const excerpt = extractExcerptContainingNumbers(pageText, needle, EVIDENCE_EXCERPT_CHARS);
-      if (!excerpt) continue;
+      let excerpt = extractExcerptContainingNumbers(pageText, needle, EVIDENCE_EXCERPT_CHARS);
+
+if (!excerpt) {
+  // ✅ 하드 드랍(continue) 금지: needle(숫자/연도)을 못 찾아도 evidence는 유지
+  // - 대신 소프트 플래그 + 패널티 메타만 남김
+  const _fallback = String(pageText || "").trim();
+  excerpt = _fallback ? _fallback.slice(0, Math.max(200, EVIDENCE_EXCERPT_CHARS)) : null;
+
+  // excerpt가 정말 없으면(페이지 텍스트 자체가 이상한 케이스)만 조용히 드랍
+  if (!excerpt) continue;
+
+  // ✅ 숫자(needle) 매칭 실패 소프트 플래그
+  ev._soft_num_miss = true;
+  ev._soft_num_miss_needles = [needle].filter(Boolean).slice(0, 6);
+  ev._soft_num_miss_penalty = (typeof NUMERIC_SOFT_WARNING_PENALTY !== "undefined" ? NUMERIC_SOFT_WARNING_PENALTY : undefined);
+
+  // ✅ numeric soft warning 누적(있으면 기록, 없으면 조용히 무시)
+  try {
+    if (Array.isArray(numeric_soft_warnings)) {
+      const _u = String(ev?.source_url || ev?.link || "").trim();
+      const _host = String(ev?.host || ev?.source_host || "").toLowerCase();
+      numeric_soft_warnings.push({
+        block_id: Number.isFinite(Number(b?.id)) ? Number(b.id) : null,
+        url: _u || null,
+        host: _host || null,
+        needles: [needle].filter(Boolean).slice(0, 6),
+        reason: "numeric_excerpt_not_found",
+        action: "soft_keep",
+      });
+    }
+  } catch (_) {}
+}
 
       if (NAVER_STRICT_YEAR_MATCH && years.length) {
   const _hasYearInExcerpt = years.some((y) => excerpt.includes(String(y)));
@@ -10025,11 +10055,15 @@ if (!isWhitelisted) continue;
 
     // NOTE: year miss는 여기서 weight/score를 깎지 않고, S-13(soft_penalties)에서 일괄 패널티로만 반영
 
-    // ✅ year soft warning 누적(있으면 기록, 없으면 조용히 무시)
+        // ✅ year soft warning 누적(있으면 기록, 없으면 조용히 무시)
     try {
       if (Array.isArray(year_soft_warnings)) {
+        const _u = String(ev?.source_url || ev?.link || "").trim();
+        const _host = String(ev?.host || ev?.source_host || "").toLowerCase();
         year_soft_warnings.push({
-          url: ev?.url || ev?.link || null,
+          block_id: Number.isFinite(Number(b?.id)) ? Number(b.id) : null,
+          url: _u || null,
+          host: _host || null,
           years: Array.isArray(ev._soft_year_miss_years) ? ev._soft_year_miss_years : [],
           penalty: ev._soft_year_miss_penalty,
         });
