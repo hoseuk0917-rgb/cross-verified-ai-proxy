@@ -2376,6 +2376,27 @@ async function markGeminiKeyInvalid(userId, secrets, keyId, pt_date_now, meta = 
   await upsertUserSecretsRow(userId, secrets);
 }
 
+// ✅ 글로벌 쿨다운(ms) 계산: __global__ until(Unix ms) - now
+function getGeminiGlobalCooldownMs(secrets) {
+  try {
+    const kr = secrets?.gemini?.keyring;
+    const state = kr?.state || {};
+    const rlu = state?.rate_limited_until;
+
+    if (!rlu || typeof rlu !== "object") return 0;
+
+    const until = rlu.__global__;
+    const untilMs = Number.isFinite(until) ? until : 0;
+
+    const now = Date.now();
+    if (untilMs > now) return Math.max(0, untilMs - now);
+
+    return 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
 async function markGeminiKeyRateLimitedById(userId, keyId, retryAfterMs) {
   if (!userId || !keyId) return;
 
@@ -5251,28 +5272,28 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
       if (e?._gemini_empty) throw e;
 
             const isTimeout =
-        code === "TIMEBOX_TIMEOUT" || code === "ECONNABORTED" || code === "ERR_CANCELED";
+  code === "TIMEBOX_TIMEOUT" || code === "ECONNABORTED" || code === "ERR_CANCELED";
 
-      // ✅ 429는 여기서 재시도 금지(증폭 방지) — rotating wrapper가 cooldown/Retry-After 처리
-      if (status === 429) throw e;
+// ✅ 429는 여기서 재시도 금지(증폭 방지) — rotating wrapper가 cooldown/Retry-After 처리
+if (status === 429) throw e;
 
-      const isRetryableStatus =
-        status === 408 || (typeof status === "number" && status >= 500);
+const isRetryableStatus =
+  status === 408 || (typeof status === "number" && status >= 500);
 
-      const shouldRetry = attempt < maxRetries && (isTimeout || isRetryableStatus || !status);
+const shouldRetry = attempt < maxRetries && (isTimeout || isRetryableStatus || !status);
 
-      if (shouldRetry) {
-        if (DEBUG) {
-          console.warn(
-            `⚠️ retryable error in ${label} (attempt=${attempt + 1}/${maxRetries + 1}):`,
-            msg
-          );
-        }
-        await sleep(baseMs * Math.pow(2, attempt));
-        continue;
-      }
+if (shouldRetry) {
+  if (DEBUG) {
+    console.warn(
+      `⚠️ retryable error in ${label} (attempt=${attempt + 1}/${maxRetries + 1}):`,
+      msg
+    );
+  }
+  await sleep(baseMs * Math.pow(2, attempt));
+  continue;
+}
 
-      throw e;
+throw e;
     }
   }
 }
