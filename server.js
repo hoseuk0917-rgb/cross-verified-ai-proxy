@@ -2197,17 +2197,12 @@ async function getGeminiKeyFromDB(userId) {
   const keys = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
   const keysCount = keys.length;
 
-    // 키가 아예 없으면 즉시 종료
+  // 키가 아예 없으면 즉시 종료
   if (!keysCount) {
-    const err = new Error("GEMINI_KEYRING_EMPTY");
+    const err = new Error("GEMINI_KEYRING_EMPTY_OR_EXHAUSTED");
     err.code = "GEMINI_KEY_EXHAUSTED";
     err.httpStatus = 200;
-    err.detail = {
-      keysCount: 0,
-      keysTriedCount: 0,
-      pt_date: pt_date_now,
-      next_reset_utc: pac.next_reset_utc,
-    };
+    err.detail = { keysCount: 0, keysTriedCount: 0, pt_date: pt_date_now, next_reset_utc: pac.next_reset_utc };
     throw err;
   }
 
@@ -2216,11 +2211,12 @@ async function getGeminiKeyFromDB(userId) {
 
   for (let i = 0; i < keysCount; i++) {
     const cand = pickGeminiKeyCandidate(secrets);
+
+    // 후보가 더 이상 없으면 break 후 아래에서 "rate-limit vs exhausted" 판별
     if (!cand.keyId || !cand.enc) break;
 
-        // 무한루프 방지: 같은 키가 다시 나오면 active_id를 "다음 키"로 넘기고 계속
-        if (tried.has(cand.keyId)) {
-      // ✅ 같은 keyId가 반복되면: active_id를 "다음 key"로 넘기고 계속 (무한루프 방지)
+    // 무한루프 방지: 같은 키가 다시 나오면 active_id를 "다음 키"로 넘기고 계속
+    if (tried.has(cand.keyId)) {
       const keysAll = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
       const nextId = _rotateKeyId(keysAll, cand.keyId);
       await setGeminiActiveId(userId, secrets, nextId);
@@ -2229,7 +2225,7 @@ async function getGeminiKeyFromDB(userId) {
 
     tried.add(cand.keyId);
 
-        let keyPlain = null;
+    let keyPlain = null;
     try {
       keyPlain = decryptSecret(cand.enc);
     } catch (err) {
@@ -2251,23 +2247,68 @@ async function getGeminiKeyFromDB(userId) {
     if (keyPlain && keyPlain.trim()) {
       await setGeminiActiveId(userId, secrets, cand.keyId);
       return {
-  gemini_key: keyPlain.trim(),
-  key_id: cand.keyId,
-  keys_count: keysCount,          // ✅ 저장된 키 총 개수
-  pt_date: pt_date_now,
-  next_reset_utc: pac.next_reset_utc,
-};
+        gemini_key: keyPlain.trim(),
+        key_id: cand.keyId,
+        keys_count: keysCount, // ✅ 저장된 키 총 개수
+        pt_date: pt_date_now,
+        next_reset_utc: pac.next_reset_utc,
+      };
     }
 
-        // 복호화 결과가 빈 문자열이면: quota 소진이 아니라 저장값 이상/키 이상 → invalid 처리 후 다음 키로 진행
-    await markGeminiKeyInvalid(userId, secrets, cand.keyId, pt_date_now, { reason: "EMPTY_KEY_AFTER_DECRYPT", status: null });
+    // 빈키/이상키 → 해당 키만 exhausted 처리 후 다음 키로 진행
+    await markGeminiKeyExhausted(userId, secrets, cand.keyId, pt_date_now);
   }
 
-  // 여기까지 왔으면 “진짜로” 쓸 키가 없음
+  // ✅ 여기부터가 핵심 수정:
+  // "후보 없음" = (A) 전부 쿨다운 중(rate-limited) 이거나 (B) 전부 exhausted/invalid 이거나
+  const state2 = secrets?.gemini?.keyring?.state || {};
+  const exhausted2 = state2.exhausted_ids || {};
+  const invalid2 = state2.invalid_ids || {};
+  const rl2 = state2.rate_limited_until || {};
+  const nowMs2 = Date.now();
+
+  let nonExhausted = 0;
+  let nonExhaustedButRateLimited = 0;
+  let minUntil = null;
+
+  for (const k of keys) {
+    const id = k?.id;
+    if (!id) continue;
+
+    if (exhausted2[id]) continue;
+    if (invalid2[id]) continue;
+
+    nonExhausted++;
+
+    const until = rl2[id];
+    if (Number.isFinite(until) && until > nowMs2) {
+      nonExhaustedButRateLimited++;
+      if (minUntil == null || until < minUntil) minUntil = until;
+    }
+  }
+
+  // ✅ 케이스 A: “키는 있는데 전부 쿨다운 중”
+  if (nonExhausted > 0 && nonExhaustedButRateLimited === nonExhausted && minUntil != null) {
+    const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
+    err.code = "GEMINI_RATE_LIMIT";
+    err.httpStatus = 200;
+
+    const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
+    err.detail = {
+      keysCount,
+      keysTriedCount: tried.size,
+      pt_date: pt_date_now,
+      next_reset_utc: pac.next_reset_utc,
+      retry_after_ms: retryAfterMs,
+    };
+    throw err;
+  }
+
+  // ✅ 케이스 B: 진짜 exhausted/invalid/없음
   const err = new Error("GEMINI_KEYRING_EMPTY_OR_EXHAUSTED");
   err.code = "GEMINI_KEY_EXHAUSTED";
   err.httpStatus = 200;
-  err.detail = { keysCount, pt_date: pt_date_now, next_reset_utc: pac.next_reset_utc };
+  err.detail = { keysCount, keysTriedCount: tried.size, pt_date: pt_date_now, next_reset_utc: pac.next_reset_utc };
   throw err;
 }
 
@@ -5035,15 +5076,23 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
   }
 
   const _is429 =
-    _lastStatus === 429 ||
-    (_lastMsg && /status\s*=?\s*429|quota exceeded|rate limit|generate_content_free_tier_requests/i.test(_lastMsg));
+  _lastStatus === 429 ||
+  (_lastMsg && /status\s*=?\s*429|quota exceeded|rate limit|generate_content_free_tier_requests/i.test(_lastMsg));
 
-  let _retryAfterMs = null;
-  if (lastErr) {
-    try { _retryAfterMs = _parseRetryAfterMs(lastErr); } catch {}
-  }
+const _isRateLimit =
+  _is429 ||
+  (lastErr && (lastErr.code === "GEMINI_RATE_LIMIT" || lastErr.message === "GEMINI_KEYRING_RATE_LIMITED"));
 
-  err.code = _is429 ? "GEMINI_RATE_LIMIT" : "GEMINI_KEY_EXHAUSTED";
+let _retryAfterMs = null;
+if (lastErr) {
+  try {
+    _retryAfterMs =
+      Number.isFinite(lastErr?.detail?.retry_after_ms) ? lastErr.detail.retry_after_ms : _parseRetryAfterMs(lastErr);
+  } catch {}
+}
+
+err.code = _isRateLimit ? "GEMINI_RATE_LIMIT" : "GEMINI_KEY_EXHAUSTED";
+
     // (옵션) keyring 상태를 detail에 포함(디버깅/운영 가시성)
   let _kr_state = null;
   try {
