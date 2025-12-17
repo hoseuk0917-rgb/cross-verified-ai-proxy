@@ -1690,9 +1690,24 @@ function safeVerifyInputForGemini(input, maxLen) {
 // ─────────────────────────────
 // ✅ Supabase + PostgreSQL 세션
 // ─────────────────────────────
+const SUPABASE_FETCH_TIMEOUT_MS = Math.max(
+  1000,
+  parseInt(process.env.SUPABASE_FETCH_TIMEOUT_MS || "12000", 10) || 12000
+);
+
+// supabase-js는 global fetch를 쓰므로, timeout 걸린 fetch를 주입
+function _fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), SUPABASE_FETCH_TIMEOUT_MS);
+  const opt = { ...(options || {}), signal: controller.signal };
+  const f = (globalThis.fetch || fetch);
+  return f(url, opt).finally(() => clearTimeout(t));
+}
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
+  process.env.SUPABASE_SERVICE_KEY,
+  { global: { fetch: _fetchWithTimeout } }
 );
 
 // ✅ ADD: Pacific(PT) 날짜/다음 자정(리셋) UTC 시각 — DB로 정확 계산 + 캐시
@@ -2031,18 +2046,35 @@ function getEncKeyDiagInfo() {
 const USER_SECRETS_PROVIDER = process.env.USER_SECRETS_PROVIDER || "supabase";
 
 async function loadUserSecretsRow(userId) {
-  const { data, error } = await supabase
-    .from("user_secrets")
-    .select("user_id, secrets")
-    .eq("user_id", userId)
-    .single();
+  let lastErr = null;
 
-  if (error) {
-    // row 없음(PGRST116)이면 빈 객체로 처리
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { data, error } = await supabase
+      .from("user_secrets")
+      .select("user_id, secrets")
+      .eq("user_id", userId)
+      .single();
+
+    if (!error) {
+      return { user_id: data.user_id, secrets: data.secrets || {} };
+    }
+
+    // row 없음(PGRST116)
     if (error.code === "PGRST116") return { user_id: userId, secrets: {} };
+
+    lastErr = error;
+    const msg = String(error?.message || error || "");
+
+    // timeout류면 1회만 짧게 쉬고 재시도
+    if (attempt === 0 && /timeout exceeded|AbortError|ETIMEDOUT|fetch failed/i.test(msg)) {
+      await new Promise((r) => setTimeout(r, 250));
+      continue;
+    }
+
     throw error;
   }
-  return { user_id: data.user_id, secrets: data.secrets || {} };
+
+  throw lastErr || new Error("loadUserSecretsRow failed");
 }
 
 async function upsertUserSecretsRow(userId, secrets) {
@@ -3363,14 +3395,12 @@ app.post("/api/dev/seed-secrets", async (req, res) => {
 
       const pac = await getPacificResetInfoCached();
       secrets.gemini.keyring.keys = keys;
-
-      // ✅ replace/seed는 상태를 "완전 초기화" (쿨다운/invalid/소진 흔적 제거)
-      secrets.gemini.keyring.state = secrets.gemini.keyring.state || {};
-      secrets.gemini.keyring.state.active_id = keys[0]?.id || null;
-      secrets.gemini.keyring.state.exhausted_ids = {};
-      secrets.gemini.keyring.state.invalid_ids = {};
-      secrets.gemini.keyring.state.rate_limited_until = {};
-      secrets.gemini.keyring.state.last_reset_pt_date = pac.pt_date;
+secrets.gemini.keyring.state = secrets.gemini.keyring.state || {};
+secrets.gemini.keyring.state.active_id = keys[0]?.id || null;
+secrets.gemini.keyring.state.exhausted_ids = {};
+secrets.gemini.keyring.state.invalid_ids = {};
+secrets.gemini.keyring.state.rate_limited_until = {};
+secrets.gemini.keyring.state.last_reset_pt_date = pac.pt_date;
     }
 
     await upsertUserSecretsRow(uid, secrets);
