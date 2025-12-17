@@ -436,12 +436,25 @@ function _isPgTerminationError(err) {
 }
 
 function _createPgPool() {
+  const _isFinitePosInt = (x) => Number.isFinite(Number(x)) && Number(x) > 0;
+
+  // ✅ PROD 기본값을 더 여유롭게 (env가 있으면 env가 우선)
+  const _idleMs =
+    _isFinitePosInt(process.env.PGPOOL_IDLE_MS)
+      ? parseInt(process.env.PGPOOL_IDLE_MS, 10)
+      : (isProd ? 30000 : 10000);
+
+  const _connMs =
+    _isFinitePosInt(process.env.PGPOOL_CONN_MS)
+      ? parseInt(process.env.PGPOOL_CONN_MS, 10)
+      : (isProd ? 20000 : 10000);
+
   const pool = new pg.Pool({
     connectionString: DB_URL,
     ssl: useSsl,
     max: parseInt(process.env.PGPOOL_MAX || "5", 10),
-    idleTimeoutMillis: parseInt(process.env.PGPOOL_IDLE_MS || "10000", 10),
-    connectionTimeoutMillis: parseInt(process.env.PGPOOL_CONN_MS || "10000", 10),
+    idleTimeoutMillis: _idleMs,
+    connectionTimeoutMillis: _connMs,
     keepAlive: true,
   });
 
@@ -590,15 +603,84 @@ async function _ensureSessionStoreTable() {
   }
 }
 
+function _isPgTransientBootstrapError(err) {
+  const code = String(err?.code || "");
+  const msg = String(err?.message || "");
+
+  // 네가 본 케이스(“timeout4” 류 포함) + 일반 네트워크/타임아웃
+  if (/timeout4/i.test(msg)) return true;
+  if (/connection terminated due to connection timeout/i.test(msg)) return true;
+  if (/connection terminated|server closed the connection|terminating connection/i.test(msg)) return true;
+  if (/connect timed out|ETIMEDOUT|ECONNRESET|EPIPE|ENETUNREACH|EHOSTUNREACH/i.test(msg)) return true;
+
+  // PG 에러코드 중 “일시 장애”에 가까운 것들(너무 보수적으로만)
+  if (code === "57P03") return true; // cannot_connect_now
+  if (code === "53300") return true; // too_many_connections
+
+  return false;
+}
+
+function _isPgFatalBootstrapError(err) {
+  const code = String(err?.code || "");
+  // ✅ 확정적 설정/권한 오류는 PROD에서 바로 죽이는 게 맞음
+  if (code === "SESSION_STORE_MISSING") return true;
+  if (code === "28P01") return true; // invalid_password
+  if (code === "28000") return true; // invalid_authorization_specification
+  if (code === "3D000") return true; // invalid_catalog_name (db does not exist)
+  if (code === "3F000") return true; // invalid_schema_name
+  return false;
+}
+
+async function _sleepMs(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 void (async () => {
-  try {
-    await _ensureSessionStoreTable();
-    if (!isProd) {
-      console.log(`✅ session store table ok: ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}`);
+  const maxTry = parseInt(process.env.SESSION_STORE_BOOTSTRAP_TRIES || "6", 10);
+  const baseDelay = parseInt(process.env.SESSION_STORE_BOOTSTRAP_DELAY_MS || "500", 10);
+
+  for (let i = 1; i <= Math.max(1, maxTry); i++) {
+    try {
+      await _ensureSessionStoreTable();
+      if (!isProd) {
+        console.log(`✅ session store table ok: ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}`);
+      } else {
+        console.log(`✅ session store table ok: ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}`);
+      }
+      return;
+    } catch (e) {
+      const code = e?.code || "";
+      const msg = e?.message || e;
+
+      console.error("❌ session store table check failed:", code, msg);
+
+      if (isProd && _isPgFatalBootstrapError(e)) {
+        process.exit(1);
+      }
+
+      // PROD에서는 “일시 장애”면 재시도 후에도 죽이지 않고 서비스 계속(부팅루프 방지)
+      const transient = _isPgTransientBootstrapError(e);
+      if (!transient) {
+        if (isProd) {
+          // 비일시적이지만 fatal로 분류되지 않은 케이스는 안전하게 계속(필요시 로그 보고 env로 조정)
+          console.error("⚠️ session store bootstrap: non-transient but non-fatal → continue without exit");
+          return;
+        }
+        return;
+      }
+
+      if (i < maxTry) {
+        const delay = Math.min(8000, baseDelay * Math.pow(2, i - 1));
+        console.warn(`⚠️ session store bootstrap retry ${i}/${maxTry} after ${delay}ms`);
+        await _sleepMs(delay);
+        continue;
+      }
+
+      if (isProd) {
+        console.error("⚠️ session store bootstrap exhausted retries → continue without exit (avoid boot loop)");
+      }
+      return;
     }
-  } catch (e) {
-    console.error("❌ session store table check failed:", e?.code || "", e?.message || e);
-    if (isProd) process.exit(1);
   }
 })();
 
