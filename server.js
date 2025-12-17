@@ -5199,6 +5199,65 @@ function getGeminiTimeoutMs(model, opts = {}) {
   return GEMINI_TIMEOUT_FLASH_MS;
 }
 
+// ✅ ADD: Gemini in-process throttle (429 burst 방지 + 동시성 제한)
+// - DB keyring의 __global__ 쿨다운과 별개로, "프로세스 레벨"에서도 즉시 차단
+// - free tier/프로젝트 단위 429에서 특히 효과적
+const GEMINI_MAX_CONCURRENCY = Math.max(1, parseInt(process.env.GEMINI_MAX_CONCURRENCY || "1", 10) || 1);
+const GEMINI_MIN_INTERVAL_MS = Math.max(0, parseInt(process.env.GEMINI_MIN_INTERVAL_MS || "0", 10) || 0);
+
+globalThis.__GEMINI_COOLDOWN_UNTIL_MS = globalThis.__GEMINI_COOLDOWN_UNTIL_MS || 0;
+globalThis.__GEMINI_LAST_CALL_AT_MS = globalThis.__GEMINI_LAST_CALL_AT_MS || 0;
+globalThis.__GEMINI_INFLIGHT = globalThis.__GEMINI_INFLIGHT || 0;
+globalThis.__GEMINI_QUEUE = globalThis.__GEMINI_QUEUE || [];
+
+function getGeminiMemoryCooldownMs() {
+  const until = globalThis.__GEMINI_COOLDOWN_UNTIL_MS;
+  const now = Date.now();
+  return Number.isFinite(until) && until > now ? (until - now) : 0;
+}
+
+function bumpGeminiMemoryCooldown(raMs) {
+  const ms = Number.isFinite(raMs) ? Math.max(0, raMs) : 60000;
+  const until = Date.now() + ms;
+  globalThis.__GEMINI_COOLDOWN_UNTIL_MS = Math.max(globalThis.__GEMINI_COOLDOWN_UNTIL_MS || 0, until);
+}
+
+async function withGeminiPermit(fn) {
+  // 0) in-memory cooldown 선차단
+  const cd = getGeminiMemoryCooldownMs();
+  if (cd > 0) {
+    const err = new Error("GEMINI_RATE_LIMIT");
+    err.code = "GEMINI_RATE_LIMIT";
+    err.httpStatus = 429;
+    err.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
+    err.detail = { last_status: 429, retry_after_ms: cd, last_error: "MEMORY_COOLDOWN_ACTIVE" };
+    throw err;
+  }
+
+  // 1) 동시성 제한
+  if (globalThis.__GEMINI_INFLIGHT >= GEMINI_MAX_CONCURRENCY) {
+    await new Promise((resolve) => globalThis.__GEMINI_QUEUE.push(resolve));
+  }
+  globalThis.__GEMINI_INFLIGHT += 1;
+
+  // 2) 최소 호출 간격(버스트 완화)
+  try {
+    if (GEMINI_MIN_INTERVAL_MS > 0) {
+      const now = Date.now();
+      const last = globalThis.__GEMINI_LAST_CALL_AT_MS || 0;
+      const wait = (last + GEMINI_MIN_INTERVAL_MS) - now;
+      if (wait > 0) await sleep(wait);
+      globalThis.__GEMINI_LAST_CALL_AT_MS = Date.now();
+    }
+
+    return await fn();
+  } finally {
+    globalThis.__GEMINI_INFLIGHT = Math.max(0, (globalThis.__GEMINI_INFLIGHT || 1) - 1);
+    const next = globalThis.__GEMINI_QUEUE.shift();
+    if (typeof next === "function") next();
+  }
+}
+
 // ✅ ADD: "model + key"로 직접 호출하는 raw
 async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
   const label = opts.label || `gemini:${model}`;
@@ -5223,20 +5282,22 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const { data } = await withTimebox(
-        ({ signal }) =>
-          axios.post(url, payload, {
-            timeout: timeoutMs,
-            signal,
-            headers: {
-              "Content-Type": "application/json",
-              ...(opts.headers || {}),
-              "x-goog-api-key": apiKey,
-            },
-          }),
-        timeoutMs,
-        label
-      );
+      const { data } = await withGeminiPermit(() =>
+  withTimebox(
+    ({ signal }) =>
+      axios.post(url, payload, {
+        timeout: timeoutMs,
+        signal,
+        headers: {
+          "Content-Type": "application/json",
+          ...(opts.headers || {}),
+          "x-goog-api-key": apiKey,
+        },
+      }),
+    timeoutMs,
+    label
+  )
+);
 
       const text = extractGeminiText(data);
       if ((text || "").trim().length < minChars) {
@@ -5282,7 +5343,7 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
 // ✅ 429는 여기서 재시도 금지(증폭 방지)
 // + 상위(/api/verify)에서 Retry-After를 안정적으로 내려줄 수 있게 "정규화"해서 throw
 if (status === 429) {
-  // Retry-After(ms) 최대한 파싱, 실패하면 15s
+  // Retry-After(ms) 최대한 파싱, 실패하면 60s
   let raMs = null;
 
   // (1) header: Retry-After (초)
@@ -5301,7 +5362,10 @@ if (status === 429) {
     else if (mS) raMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
   }
 
-  if (raMs == null) raMs = 60000; // fallback 60s (Retry-After 없을 때 과도 재요청 방지)
+  if (raMs == null) raMs = 60000; // fallback 60s
+
+  // ✅ 프로세스 레벨 즉시 쿨다운(같은 요청/다른 요청의 연쇄 호출 차단)
+  try { bumpGeminiMemoryCooldown(raMs); } catch (_) {}
 
   const err429 = new Error("GEMINI_RATE_LIMIT");
   err429.code = "GEMINI_RATE_LIMIT";
