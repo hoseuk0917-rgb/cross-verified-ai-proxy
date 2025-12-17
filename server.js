@@ -908,7 +908,7 @@ const corsOptions = {
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Token"],
-  exposedHeaders: ["Retry-After", "X-Retry-After-Ms", "x-retry-after-ms"],
+  exposedHeaders: ["Retry-After", "X-Retry-After-Ms"],
   maxAge: 86400,
 };
 
@@ -1177,7 +1177,7 @@ function makeFixedWindowLimiter({ windowMs, max, keyFn, name }) {
       const retryAfterSec = Math.max(1, Math.ceil(retryAfterMs / 1000));
 
       res.setHeader("Retry-After", String(retryAfterSec));
-      res.setHeader("x-retry-after-ms", String(retryAfterMs));
+      res.setHeader("X-Retry-After-Ms", String(retryAfterMs));
 
       return res.status(429).json(
         buildError("RATE_LIMITED", "요청이 너무 많습니다. 잠시 후 다시 시도하세요.", {
@@ -14560,7 +14560,6 @@ app.use((err, req, res, next) => {
       const sec = Math.max(1, Math.ceil(ms / 1000));
       try { res.set("Retry-After", String(sec)); } catch {}
       try { res.set("X-Retry-After-Ms", String(Math.ceil(ms))); } catch {}
-      try { res.set("x-retry-after-ms", String(Math.ceil(ms))); } catch {}
     }
   }
 
