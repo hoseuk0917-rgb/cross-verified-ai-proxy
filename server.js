@@ -5274,8 +5274,44 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
             const isTimeout =
   code === "TIMEBOX_TIMEOUT" || code === "ECONNABORTED" || code === "ERR_CANCELED";
 
-// ✅ 429는 여기서 재시도 금지(증폭 방지) — rotating wrapper가 cooldown/Retry-After 처리
-if (status === 429) throw e;
+// ✅ 429는 여기서 재시도 금지(증폭 방지)
+// + 상위(/api/verify)에서 Retry-After를 안정적으로 내려줄 수 있게 "정규화"해서 throw
+if (status === 429) {
+  // Retry-After(ms) 최대한 파싱, 실패하면 15s
+  let raMs = null;
+
+  // (1) header: Retry-After (초)
+  const ra = e?.response?.headers?.["retry-after"] ?? e?.response?.headers?.["Retry-After"];
+  if (ra != null) {
+    const sec = parseFloat(String(ra).trim());
+    if (Number.isFinite(sec)) raMs = Math.max(0, Math.ceil(sec * 1000));
+  }
+
+  // (2) message: "retry in ... ms/s"
+  if (raMs == null) {
+    const s = String(msg || "");
+    const mMs = s.match(/retry in\s+([0-9.]+)\s*ms/i);
+    const mS = s.match(/retry in\s+([0-9.]+)\s*s/i);
+    if (mMs) raMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
+    else if (mS) raMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
+  }
+
+  if (raMs == null) raMs = 15000;
+
+  const err429 = new Error("GEMINI_RATE_LIMIT");
+  err429.code = "GEMINI_RATE_LIMIT";
+  err429.httpStatus = 429;
+  err429.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
+  err429.detail = {
+    stage: "raw",
+    model,
+    label,
+    last_status: 429,
+    last_error: String(msg || ""),
+    retry_after_ms: raMs,
+  };
+  throw err429;
+}
 
 const isRetryableStatus =
   status === 408 || (typeof status === "number" && status >= 500);
@@ -5531,25 +5567,30 @@ if (_cooldownMs0 > 0) {
       }
 
             if (st === 429) {
-        const raMs = _parseRetryAfterMs(e);
-        await markGeminiKeyRateLimitedById(userId, keyId, raMs);
+  const raMs = _parseRetryAfterMs(e);
 
-        // ✅ 429면 “이번 요청”은 즉시 종료 (키 회전 증폭 방지)
-        const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
-        err.code = "GEMINI_RATE_LIMIT";
-        err.httpStatus = 429;
-        err.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
-        err.detail = {
-          keysCount: keysCount0,
-          keysTriedCount: tried.size,
-          pt_date: pt_date_now,
-          next_reset_utc: pac.next_reset_utc,
-          last_error: _mergedErrMsg(e),
-          last_status: 429,
-          retry_after_ms: raMs,
-        };
-        throw err;
-      }
+  // key별 + 전역 쿨다운 모두 갱신 (프로젝트/모델 레벨 429에도 대응)
+  await markGeminiKeyRateLimitedById(userId, keyId, raMs);
+  try {
+    await markGeminiKeyRateLimitedGlobal(userId, raMs);
+  } catch (_) {}
+
+  // ✅ 429면 “이번 요청”은 즉시 종료 (키 회전 증폭 방지)
+  const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
+  err.code = "GEMINI_RATE_LIMIT";
+  err.httpStatus = 429;
+  err.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
+  err.detail = {
+    keysCount: keysCount0,
+    keysTriedCount: tried.size,
+    pt_date: pt_date_now,
+    next_reset_utc: pac.next_reset_utc,
+    last_error: _mergedErrMsg(e),
+    last_status: 429,
+    retry_after_ms: raMs,
+  };
+  throw err;
+}
 
             // ✅ 400 invalid key / 401 / 403 => exhausted(쿼터 소진) 금지. invalid_ids로 마킹 후 회전
       if (st === 401 || st === 403 || (st === 400 && _isInvalidKey(e)) || _isInvalidKey(e)) {
