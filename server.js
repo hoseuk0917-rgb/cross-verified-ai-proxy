@@ -584,8 +584,24 @@ const sessionStore = new PgStore({
   pruneSessionInterval: 60 * 10,
 });
 
-// ✅ PROD 부팅 가드: session_store 테이블 존재 확인(없으면 즉시 종료)
-async function _ensureSessionStoreTable() {
+// ✅ PROD 부팅 가드: session_store 테이블 존재 확인
+// - "테이블이 진짜 없음"이면 종료
+// - 그 외(일시 타임아웃/네트워크 흔들림)는 경고만 찍고 부팅 계속(Render cold start 보호)
+const SESSION_STORE_BOOTSTRAP_TRIES = parseInt(
+  process.env.SESSION_STORE_BOOTSTRAP_TRIES || (isProd ? "8" : "2"),
+  10
+);
+
+const SESSION_STORE_BOOTSTRAP_DELAY_MS = parseInt(
+  process.env.SESSION_STORE_BOOTSTRAP_DELAY_MS || (isProd ? "600" : "200"),
+  10
+);
+
+function _sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function _ensureSessionStoreTableOnce() {
   const q = `
     select 1 as ok
     from information_schema.tables
@@ -602,6 +618,63 @@ async function _ensureSessionStoreTable() {
     throw err;
   }
 }
+
+async function _bootstrapSessionStoreTable() {
+  let lastErr = null;
+
+  for (let i = 1; i <= SESSION_STORE_BOOTSTRAP_TRIES; i++) {
+    try {
+      await _ensureSessionStoreTableOnce();
+      return true;
+    } catch (e) {
+      lastErr = e;
+
+      // 테이블이 진짜 없으면 재시도 의미 없음 → 즉시 throw
+      if (String(e?.code || "") === "SESSION_STORE_MISSING") throw e;
+
+      const code = String(e?.code || "");
+      const msg = String(e?.message || e);
+
+      console.error(
+        `❌ session store bootstrap failed (${i}/${SESSION_STORE_BOOTSTRAP_TRIES}):`,
+        code,
+        msg
+      );
+
+      if (i < SESSION_STORE_BOOTSTRAP_TRIES) {
+        await _sleep(SESSION_STORE_BOOTSTRAP_DELAY_MS);
+        continue;
+      }
+    }
+  }
+
+  // 여기까지 오면 "테이블은 있을 가능성이 높지만" 연결/타임아웃 류로 실패
+  // → PROD라도 Render cold start 보호 위해 부팅은 계속
+  console.warn(
+    "⚠️ session store bootstrap gave up; continuing without hard-fail (cold start / transient DB issue)."
+  );
+  return false;
+}
+
+void (async () => {
+  try {
+    await _bootstrapSessionStoreTable();
+    if (!isProd) {
+      console.log(
+        `✅ session store table ok: ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}`
+      );
+    }
+  } catch (e) {
+    console.error("❌ session store table check failed:", e?.code || "", e?.message || e);
+
+    // "테이블이 없음"은 PROD에서 정상 운영 불가 → 종료 유지
+    if (isProd && String(e?.code || "") === "SESSION_STORE_MISSING") {
+      process.exit(1);
+    }
+
+    // 그 외(타임아웃/일시 장애)는 종료하지 않음
+  }
+})();
 
 function _isPgTransientBootstrapError(err) {
   const code = String(err?.code || "");
