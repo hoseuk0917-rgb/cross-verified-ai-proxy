@@ -3562,100 +3562,104 @@ const hasOtherPayload =
     const row = await loadUserSecretsRow(userId);
     let secrets = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
 
-    // ✅ NEW: 기타 키 저장(암호화). 빈 문자열이면 삭제
+        // ✅ NEW: 기타 키 저장(암호화). 빈 문자열이면 삭제
     secrets = applyIntegrationsSecretPatch(secrets, {
-  naver_id,
-  naver_secret,
-  klaw_key,
-  github_token,
-  deepl_key,
-  groq_key, // ✅ ADD: store groq key to secrets.integrations.groq.api_key_enc
-});
+      naver_id,
+      naver_secret,
+      klaw_key,
+      github_token,
+      deepl_key,
+      groq_key, // ✅ ADD: store groq key to secrets.integrations.groq.api_key_enc
+    });
 
-          if (hasGeminiPayload) {
-        const mode = String(action || "replace").toLowerCase(); // replace | append
-        const MAX_KEYS = 4;
+    // ✅ IMPORTANT: keys/pac는 Gemini payload가 없어도 scope에 존재해야 함
+    let keys = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
+    let pac = null;
 
-        // ✅ dedupe incoming by plaintext
-        const _seenIn = new Set();
-        const normalizedUnique = (normalized || [])
-          .map((x) => ({ key: String(x?.key || "").trim(), label: x?.label ?? null }))
-          .filter((x) => x.key)
-          .filter((x) => {
-            if (_seenIn.has(x.key)) return false;
-            _seenIn.add(x.key);
-            return true;
-          });
+    if (hasGeminiPayload) {
+      const mode = String(action || "replace").toLowerCase(); // replace | append
+      const MAX_KEYS = 4;
 
-        // ✅ helper: dedupe key-objects by decrypted plaintext (best-effort)
-        const _dedupeKeysByPlain = (arr) => {
-          const out = [];
-          const seen = new Set();
-          for (const k of arr || []) {
-            let plain = null;
-            try {
-              plain = String(decryptSecret(k?.enc) ?? "").trim();
-            } catch (_) {}
-            if (!plain) {
-              out.push(k);
-              continue;
-            }
-            if (seen.has(plain)) continue;
-            seen.add(plain);
+      // ✅ dedupe incoming by plaintext
+      const _seenIn = new Set();
+      const normalizedUnique = (normalized || [])
+        .map((x) => ({ key: String(x?.key || "").trim(), label: x?.label ?? null }))
+        .filter((x) => x.key)
+        .filter((x) => {
+          if (_seenIn.has(x.key)) return false;
+          _seenIn.add(x.key);
+          return true;
+        });
+
+      // ✅ helper: dedupe key-objects by decrypted plaintext (best-effort)
+      const _dedupeKeysByPlain = (arr) => {
+        const out = [];
+        const seen = new Set();
+        for (const k of arr || []) {
+          let plain = null;
+          try {
+            plain = String(decryptSecret(k?.enc) ?? "").trim();
+          } catch (_) {}
+          if (!plain) {
             out.push(k);
+            continue;
           }
-          return out;
-        };
+          if (seen.has(plain)) continue;
+          seen.add(plain);
+          out.push(k);
+        }
+        return out;
+      };
 
-        if (mode === "append") {
-          const existingPlain = new Set();
-          for (const k of keys) {
-            try {
-              const t = String(decryptSecret(k?.enc) ?? "").trim();
-              if (t) existingPlain.add(t);
-            } catch (_) {}
-          }
+      if (mode === "append") {
+        const existingPlain = new Set();
+        for (const k of keys) {
+          try {
+            const t = String(decryptSecret(k?.enc) ?? "").trim();
+            if (t) existingPlain.add(t);
+          } catch (_) {}
+        }
 
-          const newOnes = normalizedUnique
-            .filter((x) => !existingPlain.has(x.key))
-            .map((x) => ({
-              id: crypto.randomUUID(),
-              label: x.label,
-              enc: encryptSecret(x.key),
-              created_at: new Date().toISOString(),
-            }));
-
-          keys = _dedupeKeysByPlain([...keys, ...newOnes]).slice(0, MAX_KEYS);
-        } else {
-          keys = normalizedUnique.map((x) => ({
+        const newOnes = normalizedUnique
+          .filter((x) => !existingPlain.has(x.key))
+          .map((x) => ({
             id: crypto.randomUUID(),
             label: x.label,
             enc: encryptSecret(x.key),
             created_at: new Date().toISOString(),
           }));
-          keys = keys.slice(0, MAX_KEYS);
-        }
 
-        pac = await getPacificResetInfoCached();
-        secrets.gemini.keyring.keys = keys;
+        keys = _dedupeKeysByPlain([...keys, ...newOnes]).slice(0, MAX_KEYS);
+      } else {
+        keys = normalizedUnique.map((x) => ({
+          id: crypto.randomUUID(),
+          label: x.label,
+          enc: encryptSecret(x.key),
+          created_at: new Date().toISOString(),
+        }));
+        keys = keys.slice(0, MAX_KEYS);
+      }
 
-        // ✅ replace면 상태 완전 초기화(특히 rate_limited_until 제거)
-        secrets.gemini.keyring.state = secrets.gemini.keyring.state || {};
-        secrets.gemini.keyring.state.active_id = keys[0]?.id || null;
+      pac = await getPacificResetInfoCached();
+      secrets.gemini.keyring.keys = keys;
 
-        if (mode !== "append") {
-          secrets.gemini.keyring.state.exhausted_ids = {};
-          secrets.gemini.keyring.state.invalid_ids = {};
-          secrets.gemini.keyring.state.rate_limited_until = {};
-          secrets.gemini.keyring.state.last_reset_pt_date = pac.pt_date;
-        } else {
-          // append라도 active_id가 keys에 없으면 첫 키로 교정
-          const cur = secrets.gemini.keyring.state.active_id;
-          if (cur && !keys.some((k) => k?.id === cur)) {
-            secrets.gemini.keyring.state.active_id = keys[0]?.id || null;
-          }
+      // ✅ replace면 상태 완전 초기화(특히 rate_limited_until 제거)
+      secrets.gemini.keyring.state = secrets.gemini.keyring.state || {};
+      secrets.gemini.keyring.state.active_id = keys[0]?.id || null;
+
+      if (mode !== "append") {
+        secrets.gemini.keyring.state.exhausted_ids = {};
+        secrets.gemini.keyring.state.invalid_ids = {};
+        secrets.gemini.keyring.state.rate_limited_until = {};
+        secrets.gemini.keyring.state.last_reset_pt_date = pac.pt_date;
+      } else {
+        // append라도 active_id가 keys에 없으면 첫 키로 교정
+        const cur = secrets.gemini.keyring.state.active_id;
+        if (cur && !keys.some((k) => k?.id === cur)) {
+          secrets.gemini.keyring.state.active_id = keys[0]?.id || null;
         }
       }
+    }
 
     await upsertUserSecretsRow(userId, secrets);
 
