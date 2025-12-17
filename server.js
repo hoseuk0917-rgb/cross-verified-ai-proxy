@@ -5737,44 +5737,8 @@ async function fetchGeminiSmart({ userId, gemini_key, keyHint, model, payload, o
   const getStatus = (e) =>
     e?.response?.status ?? e?.status ?? e?.statusCode ?? null;
 
-    // 1) directKey(클라이언트에서 gemini_key)가 있으면 1회만 시도
-  //    - 401/403/429 뿐 아니라 5xx(특히 503 overload)도 rotating으로 fallthrough 허용
-  if (directKey) {
-    try {
-      return await fetchGeminiRaw({
-        model: modelFinal,
-        gemini_key: directKey,
-        payload,
-        opts: { ...opts, label: `${label0}#direct` },
-      });
-    } catch (e) {
-      const st = getStatus(e);
-      console.error(
-        "Gemini call failed:",
-        `${label0}#direct`,
-        `status=${st}`,
-        geminiErrMessage(e)
-      );
-
-      const is5xx = typeof st === "number" && st >= 500;
-
-      // ✅ 429는 keyring 회전으로 증폭되므로 즉시 중단
-      if (st === 429) {
-        const err = new Error("GEMINI_RATE_LIMIT");
-        err.code = "GEMINI_RATE_LIMIT";
-        err.httpStatus = 429;
-        err.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
-        err.detail = { last_status: 429, last_error: String(e?.message || e) };
-        throw err;
-      }
-
-      // 401/403/5xx만 fallback (그 외는 그대로 throw)
-      if (st !== 401 && st !== 403 && !is5xx) throw e;
-
-      // fallthrough → rotating
-      // (rotating의 hint overload-recover를 태우기 위해, keyHint가 비어있으면 directKey를 hint로 사용)
-    }
-  }
+      // 1) directKey/hintKey는 "rotating의 hint 1회 시도"로만 사용한다.
+  //    (#direct로 raw를 직접 치면 429/쿨다운/회전 정책을 우회할 수 있음)
 
   // 2) 나머지는 keyHint(있으면 1순위) + keyring fallback 으로 rotating
   const hintForRotating = hintKey || directKey || null;
