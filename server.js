@@ -2197,26 +2197,74 @@ async function getGeminiKeyFromDB(userId) {
   const keys = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
   const keysCount = keys.length;
 
+  // ✅ tried는 "키 0개" 케이스에서도 detail 생성 중 참조될 수 있으므로 먼저 선언
+  const tried = new Set();
+
   // 키가 아예 없으면 즉시 종료
   if (!keysCount) {
+    // 여기까지 오면: 후보 키를 끝까지 못 구함
+    //  - 전부 exhausted 인지
+    //  - 아니면 전부 rate-limited(쿨다운) 인지 구분해서 에러코드 분기
+    const state2 = secrets?.gemini?.keyring?.state || {};
+    const exhausted2 = state2.exhausted_ids || {};
+    const rl2 = state2.rate_limited_until || {};
+    const nowMs2 = Date.now();
+
+    let nonExhausted = 0;
+    let nonExhaustedButRateLimited = 0;
+    let minUntil = null;
+
+    for (const k of keys) {
+      const id = k?.id;
+      if (!id) continue;
+      if (exhausted2[id]) continue;
+      nonExhausted++;
+
+      const until = rl2[id];
+      if (Number.isFinite(until) && until > nowMs2) {
+        nonExhaustedButRateLimited++;
+        if (minUntil == null || until < minUntil) minUntil = until;
+      }
+    }
+
+    // ✅ 케이스 A: “키는 있는데 전부 쿨다운 중”
+    if (nonExhausted > 0 && nonExhaustedButRateLimited === nonExhausted && minUntil != null) {
+      const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
+      err.code = "GEMINI_RATE_LIMIT";
+      err.httpStatus = 200;
+
+      const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
+      err.detail = {
+        keysCount,
+        keysTriedCount: tried.size,
+        pt_date: pt_date_now,
+        next_reset_utc: pac.next_reset_utc,
+        retry_after_ms: retryAfterMs,
+      };
+      throw err;
+    }
+
+    // ✅ 케이스 B: 진짜 exhausted/없음
     const err = new Error("GEMINI_KEYRING_EMPTY_OR_EXHAUSTED");
     err.code = "GEMINI_KEY_EXHAUSTED";
     err.httpStatus = 200;
-    err.detail = { keysCount: 0, keysTriedCount: 0, pt_date: pt_date_now, next_reset_utc: pac.next_reset_utc };
+    err.detail = {
+      keysCount,
+      keysTriedCount: tried.size,
+      pt_date: pt_date_now,
+      next_reset_utc: pac.next_reset_utc,
+    };
     throw err;
   }
 
   // ✅ 핵심: “현재 후보 키 복호화 실패”는 ‘전체 소진’이 아니라 ‘해당 키만 탈락’ → 다음 키로 계속
-  const tried = new Set();
-
   for (let i = 0; i < keysCount; i++) {
     const cand = pickGeminiKeyCandidate(secrets);
-
-    // 후보가 더 이상 없으면 break 후 아래에서 "rate-limit vs exhausted" 판별
     if (!cand.keyId || !cand.enc) break;
 
     // 무한루프 방지: 같은 키가 다시 나오면 active_id를 "다음 키"로 넘기고 계속
     if (tried.has(cand.keyId)) {
+      // ✅ 같은 keyId가 반복되면: active_id를 "다음 key"로 넘기고 계속 (무한루프 방지)
       const keysAll = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
       const nextId = _rotateKeyId(keysAll, cand.keyId);
       await setGeminiActiveId(userId, secrets, nextId);
@@ -2249,62 +2297,17 @@ async function getGeminiKeyFromDB(userId) {
       return {
         gemini_key: keyPlain.trim(),
         key_id: cand.keyId,
-        keys_count: keysCount, // ✅ 저장된 키 총 개수
+        keys_count: keysCount,          // ✅ 저장된 키 총 개수
         pt_date: pt_date_now,
         next_reset_utc: pac.next_reset_utc,
       };
     }
 
-    // 빈키/이상키 → 해당 키만 exhausted 처리 후 다음 키로 진행
+    // 복호화 실패/빈키 → 해당 키만 exhausted 처리 후 다음 키로 진행
     await markGeminiKeyExhausted(userId, secrets, cand.keyId, pt_date_now);
   }
 
-  // ✅ 여기부터가 핵심 수정:
-  // "후보 없음" = (A) 전부 쿨다운 중(rate-limited) 이거나 (B) 전부 exhausted/invalid 이거나
-  const state2 = secrets?.gemini?.keyring?.state || {};
-  const exhausted2 = state2.exhausted_ids || {};
-  const invalid2 = state2.invalid_ids || {};
-  const rl2 = state2.rate_limited_until || {};
-  const nowMs2 = Date.now();
-
-  let nonExhausted = 0;
-  let nonExhaustedButRateLimited = 0;
-  let minUntil = null;
-
-  for (const k of keys) {
-    const id = k?.id;
-    if (!id) continue;
-
-    if (exhausted2[id]) continue;
-    if (invalid2[id]) continue;
-
-    nonExhausted++;
-
-    const until = rl2[id];
-    if (Number.isFinite(until) && until > nowMs2) {
-      nonExhaustedButRateLimited++;
-      if (minUntil == null || until < minUntil) minUntil = until;
-    }
-  }
-
-  // ✅ 케이스 A: “키는 있는데 전부 쿨다운 중”
-  if (nonExhausted > 0 && nonExhaustedButRateLimited === nonExhausted && minUntil != null) {
-    const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
-    err.code = "GEMINI_RATE_LIMIT";
-    err.httpStatus = 200;
-
-    const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
-    err.detail = {
-      keysCount,
-      keysTriedCount: tried.size,
-      pt_date: pt_date_now,
-      next_reset_utc: pac.next_reset_utc,
-      retry_after_ms: retryAfterMs,
-    };
-    throw err;
-  }
-
-  // ✅ 케이스 B: 진짜 exhausted/invalid/없음
+  // 여기까지 왔으면 “진짜로” 쓸 키가 없음
   const err = new Error("GEMINI_KEYRING_EMPTY_OR_EXHAUSTED");
   err.code = "GEMINI_KEY_EXHAUSTED";
   err.httpStatus = 200;
