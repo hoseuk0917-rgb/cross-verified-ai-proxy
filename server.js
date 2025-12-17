@@ -1238,91 +1238,277 @@ function safeVerifyInputForGemini(input, maxLen) {
     }
   };
 
+  const cutStr = (v, n) => {
+    const s = (v == null) ? "" : String(v);
+    return s.length > n ? s.slice(0, n) : s;
+  };
+
+  const cutArr = (v, n) => (Array.isArray(v) ? v.slice(0, n) : []);
+
+  const pickUrl = (x) => {
+    if (!x || typeof x !== "object") return null;
+    return String(
+      x.source_url ||
+      x.url ||
+      x.link ||
+      x.href ||
+      x.naver_url ||
+      x.permalink ||
+      ""
+    ).trim() || null;
+  };
+
+  const hostFromUrl = (u) => {
+    try { return u ? (new URL(u)).hostname : null; } catch { return null; }
+  };
+
+  const tierScore = (t) => {
+    // 낮을수록 우선 (1이 최고)
+    const n = Number(t);
+    if (Number.isFinite(n)) return n;
+    return 99;
+  };
+
   // 0) 원본 그대로 시도
-  let s0 = tryStr(input);
+  const s0 = tryStr(input);
   if (s0) return s0;
 
-  // 1) blocks evidence를 가볍게 (naver는 title/link만)
+  // ─────────────────────────────
+  // 1) blocks + external을 "안전 축약" (JSON 깨짐 없이)
+  // ─────────────────────────────
+
+  // (A) blocks: 기존 방식 유지하되 조금 더 방어적으로 축약
   const slimBlocks = Array.isArray(input?.blocks)
     ? input.blocks.map((b) => {
         const ev = b?.evidence || {};
-        const cutArr = (v, n) => (Array.isArray(v) ? v.slice(0, n) : []);
-        const slimNaver = cutArr(
-  ev.naver,
-  Math.min(3, (Number.isFinite(BLOCK_NAVER_EVIDENCE_TOPK) ? BLOCK_NAVER_EVIDENCE_TOPK : 3))
-).map((x) => ({
+
+        const topk = Math.min(
+          3,
+          (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3)
+        );
+
+        const nTopk = Math.min(
+          3,
+          (Number.isFinite(BLOCK_NAVER_EVIDENCE_TOPK) ? BLOCK_NAVER_EVIDENCE_TOPK : 3)
+        );
+
+        const slimNaver = cutArr(ev.naver, nTopk).map((x) => ({
           title: x?.title || null,
           link: x?.link || null,
           naver_type: x?.naver_type || null,
           tier: x?.tier || null,
         }));
 
+        // queries가 너무 커지는 케이스 방지(값만 짧게)
+        const q0 = b?.queries && typeof b.queries === "object" ? b.queries : null;
+        const slimQueries = q0
+          ? Object.fromEntries(
+              Object.entries(q0).slice(0, 8).map(([k, v]) => {
+                if (Array.isArray(v)) return [k, v.slice(0, 4).map((s) => cutStr(s, 120))];
+                return [k, cutStr(v, 160)];
+              })
+            )
+          : null;
+
         return {
           id: b?.id ?? null,
-          text: (String(b?.text || "")).slice(0, 320),
-          queries: b?.queries || null,
+          text: cutStr(String(b?.text || ""), 320),
+          queries: slimQueries,
           evidence: {
-          crossref: cutArr(ev.crossref, Math.min(3, (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3))),
-          openalex: cutArr(ev.openalex, Math.min(3, (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3))),
-           wikidata: cutArr(ev.wikidata, 5),
-           gdelt: cutArr(ev.gdelt, Math.min(3, (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3))),
+            crossref: cutArr(ev.crossref, topk).map((s) => cutStr(s, 220)),
+            openalex: cutArr(ev.openalex, topk).map((s) => cutStr(s, 220)),
+            wikidata: cutArr(ev.wikidata, 5).map((s) => cutStr(s, 220)),
+            gdelt: cutArr(ev.gdelt, topk).map((s) => cutStr(s, 220)),
             naver: slimNaver,
           },
         };
       })
     : [];
 
+  // (B) external: "근거 풀"을 최소 형태로 남김
+  const buildSlimExternal = (ext) => {
+    if (!ext || typeof ext !== "object") return { truncated: true, reason: "no_external" };
+
+    // 가능한 한 “사용한 엔진” 위주로만 남김
+    const used0 = input?.partial_scores?.engines_used;
+    const used = Array.isArray(used0) ? used0.map(String) : null;
+
+    const engineKeys = Object.keys(ext).filter((k) => Array.isArray(ext[k]));
+    const ordered = (() => {
+      const base = used && used.length ? used.filter((k) => engineKeys.includes(k)) : [];
+      const rest = engineKeys.filter((k) => !base.includes(k));
+      return [...base, ...rest];
+    })();
+
+    const PER_ENGINE_CAP = 3;
+    const TOTAL_CAP = 10;
+
+    // evidence_text는 verifyInput에서 너무 비싸니까 “tier 1/2만 아주 짧게” 허용
+    const baseExcerpt = (typeof EVIDENCE_EXCERPT_CHARS === "number" && Number.isFinite(EVIDENCE_EXCERPT_CHARS))
+      ? EVIDENCE_EXCERPT_CHARS
+      : 700;
+    const EXCERPT_CAP = Math.max(120, Math.min(260, Math.floor(baseExcerpt * 0.35))); // ~245 chars
+
+    // evidence_text 전체 예산(너무 커지면 바로 제거)
+    let textBudget = Math.max(300, Math.min(2400, Math.floor(limit * 0.18)));
+
+    const slimItem = (engine, x) => {
+      if (x == null) return null;
+
+      // 문자열 evidence(예: crossref/openalex가 string)도 처리
+      if (typeof x === "string") {
+        return cutStr(x, 260);
+      }
+
+      if (typeof x !== "object") return null;
+
+      const url = pickUrl(x);
+      const host = x.host || x.hostname || hostFromUrl(url);
+      const title = x.title || x.name || x.headline || x.display_name || null;
+
+      const tier = (x.tier != null) ? x.tier : null;
+
+      // tier 기반 excerpt 포함(오직 naver tier 1/2)
+      let evidence_text = null;
+      if (
+        engine === "naver" &&
+        typeof x.evidence_text === "string" &&
+        x.evidence_text.trim().length > 0
+      ) {
+        const ts = tierScore(tier);
+        const allow = (ts === 1 || ts === 2);
+        if (allow && textBudget > 0) {
+          const t = cutStr(x.evidence_text.trim(), Math.min(EXCERPT_CAP, textBudget));
+          if (t) {
+            evidence_text = t;
+            textBudget -= t.length;
+          }
+        }
+      }
+
+      // naver_type 같은 최소 메타만 유지
+      const out = {
+        host: host || null,
+        title: title ? cutStr(title, 180) : null,
+        url: url || null,
+      };
+
+      if (engine === "naver") {
+        out.tier = tier;
+        out.naver_type = x.naver_type || null;
+      }
+
+      if (evidence_text) out.evidence_text = evidence_text;
+
+      // null 제거로 크기 절감
+      for (const k of Object.keys(out)) {
+        if (out[k] == null || out[k] === "") delete out[k];
+      }
+      return Object.keys(out).length ? out : null;
+    };
+
+    const out = {};
+    let total = 0;
+
+    for (const k of ordered) {
+      if (total >= TOTAL_CAP) break;
+
+      let arr = ext[k];
+      if (!Array.isArray(arr) || !arr.length) continue;
+
+      // naver는 tier 낮은 것 우선
+      if (k === "naver") {
+        arr = [...arr].sort((a, b) => tierScore(a?.tier) - tierScore(b?.tier));
+      }
+
+      const kept = [];
+      for (const x of arr) {
+        if (kept.length >= PER_ENGINE_CAP) break;
+        if (total >= TOTAL_CAP) break;
+
+        const si = slimItem(k, x);
+        if (si == null) continue;
+
+        kept.push(si);
+        total += 1;
+      }
+
+      if (kept.length) out[k] = kept;
+    }
+
+    // 정말 아무것도 못 남기면 truncated 처리
+    if (!Object.keys(out).length) {
+      return { truncated: true, reason: "external_empty_after_slim" };
+    }
+
+    out._meta = {
+      slim: true,
+      truncated: true,
+      caps: { per_engine: PER_ENGINE_CAP, total: TOTAL_CAP, excerpt_cap: EXCERPT_CAP },
+    };
+
+    return out;
+  };
+
+  const slimExternal = buildSlimExternal(input?.external);
+
   const slim1 = {
     mode: input?.mode,
     query: input?.query,
-    core_text: input?.core_text ? String(input.core_text).slice(0, 2000) : "",
+    core_text: input?.core_text ? cutStr(String(input.core_text), 2000) : "",
     blocks: slimBlocks,
-    external: { truncated: true },
+    // ✅ 핵심: external을 완전 삭제하지 말고, "top-tier 중심 축약본"을 넣는다
+    external: slimExternal,
     partial_scores: input?.partial_scores
-  ? {
-      recency: input.partial_scores.recency ?? null,
-      validity: input.partial_scores.validity ?? null,
-      consistency: input.partial_scores.consistency ?? null,
-      engine_factor: input.partial_scores.engine_factor ?? null,
-      naver_tier_factor: input.partial_scores.naver_tier_factor ?? null,
+      ? {
+          recency: input.partial_scores.recency ?? null,
+          validity: input.partial_scores.validity ?? null,
+          consistency: input.partial_scores.consistency ?? null,
+          engine_factor: input.partial_scores.engine_factor ?? null,
+          naver_tier_factor: input.partial_scores.naver_tier_factor ?? null,
 
-      engines_requested: input.partial_scores.engines_requested ?? null,
-      engines_used: input.partial_scores.engines_used ?? null,
-      engines_excluded: input.partial_scores.engines_excluded ?? null,
+          engines_requested: input.partial_scores.engines_requested ?? null,
+          engines_used: input.partial_scores.engines_used ?? null,
+          engines_excluded: input.partial_scores.engines_excluded ?? null,
 
-      engine_exclusion_reasons: input.partial_scores.engine_exclusion_reasons ?? null,
-      engine_explain: input.partial_scores.engine_explain ?? null,
+          engine_exclusion_reasons: input.partial_scores.engine_exclusion_reasons ?? null,
+          engine_explain: input.partial_scores.engine_explain ?? null,
 
-      engines_used_pre: input.partial_scores.engines_used_pre ?? null,
-engines_excluded_pre: input.partial_scores.engines_excluded_pre ?? null,
-engine_exclusion_reasons_pre: input.partial_scores.engine_exclusion_reasons_pre ?? null,
+          engines_used_pre: input.partial_scores.engines_used_pre ?? null,
+          engines_excluded_pre: input.partial_scores.engines_excluded_pre ?? null,
+          engine_exclusion_reasons_pre: input.partial_scores.engine_exclusion_reasons_pre ?? null,
 
-      engine_results: input.partial_scores.engine_results ?? null,
-    }
-  : {},
+          engine_results: input.partial_scores.engine_results ?? null,
+        }
+      : {},
   };
 
-  let s1 = tryStr(slim1);
+  const s1 = tryStr(slim1);
   if (s1) return s1;
 
-  // 2) 마지막 안전망
+  // 2) 더 작게(queries 제거 + external 완전 truncate)
   const slimmer = {
     mode: slim1.mode,
     query: slim1.query,
     core_text: slim1.core_text,
-    blocks: slimBlocks.slice(0, 3),
-    partial_scores: slim1.partial_scores,
+    blocks: slimBlocks.slice(0, 3).map((b) => ({ id: b.id, text: b.text, evidence: b.evidence })),
+    partial_scores: {
+      recency: slim1.partial_scores?.recency ?? null,
+      engines_used: slim1.partial_scores?.engines_used ?? null,
+      engines_requested: slim1.partial_scores?.engines_requested ?? null,
+      engine_results: slim1.partial_scores?.engine_results ?? null,
+    },
     external: { truncated: true, reason: "too_large" },
   };
 
-  let s2 = tryStr(slimmer);
+  const s2 = tryStr(slimmer);
   if (s2) return s2;
 
   // 3) 진짜 최종: 최소 JSON
   return JSON.stringify({
     mode: input?.mode || null,
     query: input?.query || null,
-    core_text: input?.core_text ? String(input.core_text).slice(0, 1500) : "",
+    core_text: input?.core_text ? cutStr(String(input.core_text), 1500) : "",
     truncated: true,
   });
 }
