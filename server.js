@@ -5296,7 +5296,7 @@ if (status === 429) {
     else if (mS) raMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
   }
 
-  if (raMs == null) raMs = 15000;
+  if (raMs == null) raMs = 60000; // fallback 60s (Retry-After 없을 때 과도 재요청 방지)
 
   const err429 = new Error("GEMINI_RATE_LIMIT");
   err429.code = "GEMINI_RATE_LIMIT";
