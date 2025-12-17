@@ -4596,7 +4596,7 @@ async function safeFetch(name, fn, q) {
       const isTimeout =
         code === "TIMEBOX_TIMEOUT" || code === "ECONNABORTED" || code === "ERR_CANCELED";
       const isRetryableStatus =
-        status === 408 || status === 429 || (typeof status === "number" && status >= 500);
+  status === 408 || (typeof status === "number" && status >= 500);
 
       const shouldRetry = i < attempts - 1 && (isTimeout || isRetryableStatus || !status);
 
