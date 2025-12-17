@@ -5250,10 +5250,14 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
       if (status === 400 || status === 401 || status === 403 || status === 404) throw e;
       if (e?._gemini_empty) throw e;
 
-      const isTimeout =
+            const isTimeout =
         code === "TIMEBOX_TIMEOUT" || code === "ECONNABORTED" || code === "ERR_CANCELED";
+
+      // ✅ 429는 여기서 재시도 금지(증폭 방지) — rotating wrapper가 cooldown/Retry-After 처리
+      if (status === 429) throw e;
+
       const isRetryableStatus =
-        status === 408 || status === 429 || (typeof status === "number" && status >= 500);
+        status === 408 || (typeof status === "number" && status >= 500);
 
       const shouldRetry = attempt < maxRetries && (isTimeout || isRetryableStatus || !status);
 
@@ -5320,7 +5324,7 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
       }
     }
 
-    if (raMs == null) raMs = 15000; // fallback 15s (Gemini overload는 너무 길게 잡지 않음)
+    if (raMs == null) raMs = (getStatus(e) === 429 ? 60000 : 15000); // 429는 기본 60s
     return raMs;
   };
 
