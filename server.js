@@ -2308,10 +2308,16 @@ function pickGeminiKeyCandidate(secrets) {
   const invalid = state.invalid_ids || {};
 
   // ✅ 429 쿨다운 키는 일정 시간 후보에서 제외
-  const rateLimitedUntil = state.rate_limited_until || {};
+    const rateLimitedUntil = state.rate_limited_until || {};
   const nowMs = Date.now();
 
   if (!keys.length) return { keyId: null, enc: null, keysCount: 0 };
+
+  // ✅ NEW: 전역 429 쿨다운이 살아있으면 “어떤 키도” 시도하지 않음
+  const gUntil = rateLimitedUntil.__global__;
+  if (Number.isFinite(gUntil) && gUntil > nowMs) {
+    return { keyId: null, enc: null, keysCount: keys.length };
+  }
 
   const activeId = state.active_id || keys[0]?.id || null;
   const idxRaw = keys.findIndex((k) => k.id === activeId);
@@ -2380,9 +2386,16 @@ async function markGeminiKeyRateLimitedById(userId, keyId, retryAfterMs) {
   const state = kr.state || {};
   if (!state.rate_limited_until || typeof state.rate_limited_until !== "object") state.rate_limited_until = {};
 
-  const ms = Number.isFinite(retryAfterMs) ? retryAfterMs : 60000;
+    const ms = Number.isFinite(retryAfterMs) ? retryAfterMs : 60000;
   const until = Date.now() + Math.max(0, ms);
+
+  // per-key 쿨다운
   state.rate_limited_until[keyId] = until;
+
+  // ✅ NEW: 전역 쿨다운도 같이 갱신(더 큰 until 우선)
+  const curG = state.rate_limited_until.__global__;
+  const curGnum = Number.isFinite(curG) ? curG : 0;
+  state.rate_limited_until.__global__ = Math.max(curGnum, until);
 
   const keys = Array.isArray(kr.keys) ? kr.keys : [];
   state.active_id = _rotateKeyId(keys, keyId);
@@ -2400,8 +2413,30 @@ async function getGeminiKeyFromDB(userId) {
   const pac = await ensureGeminiResetIfNeeded(userId, secrets);
   const pt_date_now = pac.pt_date;
 
-  const keys = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
+    const keys = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
   const keysCount = keys.length;
+
+  // ✅ NEW: 전역 429 쿨다운이면 “이번 요청에서 추가 시도 금지”
+  {
+    const state0 = secrets?.gemini?.keyring?.state || {};
+    const rl0 = state0.rate_limited_until || {};
+    const gUntil0 = rl0.__global__;
+    const nowMs0 = Date.now();
+
+    if (Number.isFinite(gUntil0) && gUntil0 > nowMs0) {
+      const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
+      err.code = "GEMINI_RATE_LIMIT";
+      err.httpStatus = 429;
+      err.detail = {
+        keysCount,
+        keysTriedCount: 0,
+        pt_date: pt_date_now,
+        next_reset_utc: pac.next_reset_utc,
+        retry_after_ms: Math.max(0, Math.ceil(gUntil0 - nowMs0)),
+      };
+      throw err;
+    }
+  }
 
   // ✅ tried는 "키 0개" 케이스에서도 detail 생성 중 참조될 수 있으므로 먼저 선언
   const tried = new Set();
