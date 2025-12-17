@@ -5384,7 +5384,22 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         return await _tryOverloadRecover({ modelTry: model, gemini_key: hint, labelSuffix: "#hint" });
       }
 
-      if (st !== 401 && st !== 403 && st !== 429) throw e;
+            // ✅ 429는 keyring으로 fallthrough 하면 “키 회전으로 증폭”됨 → 즉시 중단
+      if (st === 429) {
+        const raMs = _parseRetryAfterMs(e);
+        const err = new Error("GEMINI_RATE_LIMIT");
+        err.code = "GEMINI_RATE_LIMIT";
+        err.httpStatus = 429;
+        err.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
+        err.detail = {
+          last_status: 429,
+          retry_after_ms: raMs,
+          last_error: _mergedErrMsg(e),
+        };
+        throw err;
+      }
+
+      if (st !== 401 && st !== 403) throw e;
       // fallthrough -> keyring
     }
   }
@@ -5446,10 +5461,25 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         }
       }
 
-      if (st === 429) {
+            if (st === 429) {
         const raMs = _parseRetryAfterMs(e);
         await markGeminiKeyRateLimitedById(userId, keyId, raMs);
-        continue;
+
+        // ✅ 429면 “이번 요청”은 즉시 종료 (키 회전 증폭 방지)
+        const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
+        err.code = "GEMINI_RATE_LIMIT";
+        err.httpStatus = 429;
+        err.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
+        err.detail = {
+          keysCount: keysCount0,
+          keysTriedCount: tried.size,
+          pt_date: pt_date_now,
+          next_reset_utc: pac.next_reset_utc,
+          last_error: _mergedErrMsg(e),
+          last_status: 429,
+          retry_after_ms: raMs,
+        };
+        throw err;
       }
 
             // ✅ 400 invalid key / 401 / 403 => exhausted(쿼터 소진) 금지. invalid_ids로 마킹 후 회전
@@ -5612,8 +5642,18 @@ async function fetchGeminiSmart({ userId, gemini_key, keyHint, model, payload, o
 
       const is5xx = typeof st === "number" && st >= 500;
 
-      // 401/403/429/5xx만 fallback (그 외는 그대로 throw)
-      if (st !== 401 && st !== 403 && st !== 429 && !is5xx) throw e;
+      // ✅ 429는 keyring 회전으로 증폭되므로 즉시 중단
+      if (st === 429) {
+        const err = new Error("GEMINI_RATE_LIMIT");
+        err.code = "GEMINI_RATE_LIMIT";
+        err.httpStatus = 429;
+        err.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
+        err.detail = { last_status: 429, last_error: String(e?.message || e) };
+        throw err;
+      }
+
+      // 401/403/5xx만 fallback (그 외는 그대로 throw)
+      if (st !== 401 && st !== 403 && !is5xx) throw e;
 
       // fallthrough → rotating
       // (rotating의 hint overload-recover를 태우기 위해, keyHint가 비어있으면 directKey를 hint로 사용)
