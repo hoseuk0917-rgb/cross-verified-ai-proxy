@@ -2074,14 +2074,16 @@ async function ensureGeminiResetIfNeeded(userId, secrets) {
   const state = secrets?.gemini?.keyring?.state || {};
   const last = state.last_reset_pt_date;
 
-    // PT 날짜가 바뀌면 exhausted 초기화
-  // (last가 null이어도 날짜가 잡히면 바로 초기화되게)
+  // PT 날짜가 바뀌면 "일일 소진(exhausted)"만 초기화
+  // + 429 쿨다운은 짧은 TTL이므로 날짜 변경 시 같이 초기화(스테일 방지)
   if (pt_date_now && last && last !== pt_date_now) {
-  state.exhausted_ids = {};
-  state.last_reset_pt_date = pt_date_now;
-  secrets.gemini.keyring.state = state;
-  await upsertUserSecretsRow(userId, secrets);
-}
+    state.exhausted_ids = {};
+    state.rate_limited_until = {};
+    state.last_reset_pt_date = pt_date_now;
+    secrets.gemini.keyring.state = state;
+    await upsertUserSecretsRow(userId, secrets);
+  }
+
   // 최초면 last_reset_pt_date 세팅
   if (pt_date_now && !state.last_reset_pt_date) {
     state.last_reset_pt_date = pt_date_now;
@@ -2139,6 +2141,29 @@ async function markGeminiKeyExhausted(userId, secrets, keyId, pt_date_now) {
   await upsertUserSecretsRow(userId, secrets);
 }
 
+async function markGeminiKeyInvalid(userId, secrets, keyId, pt_date_now, meta = {}) {
+  if (!keyId) return;
+
+  const state = secrets?.gemini?.keyring?.state || {};
+  if (!state.invalid_ids || typeof state.invalid_ids !== "object") state.invalid_ids = {};
+
+  // invalid_ids 값은 "truthy"면 후보에서 제외되므로, 메타는 자유롭게 넣어도 됨
+  state.invalid_ids[keyId] = {
+    pt_date: pt_date_now || "unknown",
+    reason: meta?.reason ?? null,
+    status: meta?.status ?? null,
+  };
+
+  // invalid로 박았으면 exhausted에서 제거(혼선 방지)
+  try { delete state.exhausted_ids?.[keyId]; } catch (_) {}
+
+  const keys = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
+  state.active_id = _rotateKeyId(keys, keyId);
+
+  secrets.gemini.keyring.state = state;
+  await upsertUserSecretsRow(userId, secrets);
+}
+
 async function markGeminiKeyRateLimitedById(userId, keyId, retryAfterMs) {
   if (!userId || !keyId) return;
 
@@ -2172,61 +2197,18 @@ async function getGeminiKeyFromDB(userId) {
   const keys = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
   const keysCount = keys.length;
 
-  // 키가 아예 없으면 즉시 종료
+    // 키가 아예 없으면 즉시 종료
   if (!keysCount) {
-    // 여기까지 오면: 후보 키를 끝까지 못 구함
-//  - 전부 exhausted 인지
-//  - 아니면 전부 rate-limited(쿨다운) 인지 구분해서 에러코드 분기
-const state2 = secrets?.gemini?.keyring?.state || {};
-const exhausted2 = state2.exhausted_ids || {};
-const rl2 = state2.rate_limited_until || {};
-const nowMs2 = Date.now();
-
-let nonExhausted = 0;
-let nonExhaustedButRateLimited = 0;
-let minUntil = null;
-
-for (const k of keys) {
-  const id = k?.id;
-  if (!id) continue;
-  if (exhausted2[id]) continue;
-  nonExhausted++;
-
-  const until = rl2[id];
-  if (Number.isFinite(until) && until > nowMs2) {
-    nonExhaustedButRateLimited++;
-    if (minUntil == null || until < minUntil) minUntil = until;
-  }
-}
-
-// ✅ 케이스 A: “키는 있는데 전부 쿨다운 중”
-if (nonExhausted > 0 && nonExhaustedButRateLimited === nonExhausted && minUntil != null) {
-  const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
-  err.code = "GEMINI_RATE_LIMIT";
-  err.httpStatus = 200;
-
-  const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
-  err.detail = {
-    keysCount,
-    keysTriedCount: tried?.size ?? null,
-    pt_date: pt_date_now,
-    next_reset_utc: pac.next_reset_utc,
-    retry_after_ms: retryAfterMs,
-  };
-  throw err;
-}
-
-// ✅ 케이스 B: 진짜 exhausted/없음
-const err = new Error("GEMINI_KEYRING_EMPTY_OR_EXHAUSTED");
-err.code = "GEMINI_KEY_EXHAUSTED";
-err.httpStatus = 200;
-err.detail = {
-  keysCount,
-  keysTriedCount: tried?.size ?? null,
-  pt_date: pt_date_now,
-  next_reset_utc: pac.next_reset_utc,
-};
-throw err;
+    const err = new Error("GEMINI_KEYRING_EMPTY");
+    err.code = "GEMINI_KEY_EXHAUSTED";
+    err.httpStatus = 200;
+    err.detail = {
+      keysCount: 0,
+      keysTriedCount: 0,
+      pt_date: pt_date_now,
+      next_reset_utc: pac.next_reset_utc,
+    };
+    throw err;
   }
 
   // ✅ 핵심: “현재 후보 키 복호화 실패”는 ‘전체 소진’이 아니라 ‘해당 키만 탈락’ → 다음 키로 계속
@@ -2277,8 +2259,8 @@ throw err;
 };
     }
 
-    // 복호화 실패/빈키 → 해당 키만 exhausted 처리 후 다음 키로 진행
-    await markGeminiKeyExhausted(userId, secrets, cand.keyId, pt_date_now);
+        // 복호화 결과가 빈 문자열이면: quota 소진이 아니라 저장값 이상/키 이상 → invalid 처리 후 다음 키로 진행
+    await markGeminiKeyInvalid(userId, secrets, cand.keyId, pt_date_now, { reason: "EMPTY_KEY_AFTER_DECRYPT", status: null });
   }
 
   // 여기까지 왔으면 “진짜로” 쓸 키가 없음
@@ -3309,13 +3291,29 @@ app.get("/api/settings/gemini/status", async (req, res) => {
     const state = secrets.gemini.keyring.state || {};
     const exhaustedIds = state.exhausted_ids || {};
 
+        const invalidIds = state.invalid_ids || {};
+    const rl = state.rate_limited_until || {};
+    const nowMs = Date.now();
+
+    const rate_limited_active_ids = Object.entries(rl)
+      .filter(([, until]) => Number.isFinite(until) && until > nowMs)
+      .map(([id]) => id);
+
     return res.json(buildSuccess({
       pt_date: pac.pt_date,
       next_reset_utc: pac.next_reset_utc,
       key_count: keys.length,
       active_id: state.active_id || null,
+
       exhausted_count: Object.keys(exhaustedIds).length,
       exhausted_ids: exhaustedIds,
+
+      invalid_count: Object.keys(invalidIds).length,
+      invalid_ids: invalidIds,
+
+      rate_limited_count: rate_limited_active_ids.length,
+      rate_limited_active_ids,
+      rate_limited_until: rl,
     }));
   } catch (e) {
     console.error("❌ /api/settings/gemini/status Error:", e.message);
@@ -4999,14 +4997,19 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         continue;
       }
 
-      // ✅ 400 invalid key / 401 / 403 => "오늘만 exhausted" 처리해서 회전
+            // ✅ 400 invalid key / 401 / 403 => exhausted(쿼터 소진) 금지. invalid_ids로 마킹 후 회전
       if (st === 401 || st === 403 || (st === 400 && _isInvalidKey(e)) || _isInvalidKey(e)) {
         const row = await loadUserSecretsRow(userId);
         let secrets = _ensureGeminiSecretsShape(row.secrets);
-        await markGeminiKeyExhausted(userId, secrets, keyId, lastKctx?.pt_date ?? pt_date_now ?? null);
+        await markGeminiKeyInvalid(
+          userId,
+          secrets,
+          keyId,
+          lastKctx?.pt_date ?? pt_date_now ?? null,
+          { reason: "AUTH_OR_INVALID_KEY", status: st }
+        );
         continue;
       }
-
       throw e;
     }
   }
@@ -5041,6 +5044,23 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
   }
 
   err.code = _is429 ? "GEMINI_RATE_LIMIT" : "GEMINI_KEY_EXHAUSTED";
+    // (옵션) keyring 상태를 detail에 포함(디버깅/운영 가시성)
+  let _kr_state = null;
+  try {
+    const rowS = await loadUserSecretsRow(userId);
+    const secretsS = _ensureGeminiSecretsShape(rowS.secrets);
+    _kr_state = secretsS?.gemini?.keyring?.state || null;
+  } catch (_) {}
+
+  const _exhausted_ids = _kr_state?.exhausted_ids || {};
+  const _invalid_ids = _kr_state?.invalid_ids || {};
+  const _rl_until = _kr_state?.rate_limited_until || {};
+  const _nowMs = Date.now();
+
+  const _rate_limited_active_ids = Object.entries(_rl_until)
+    .filter(([, until]) => Number.isFinite(until) && until > _nowMs)
+    .map(([id]) => id);
+
   err.detail = {
     keysCount: (_keysStoredCount ?? tried.size),
     keysTriedCount: tried.size,
@@ -5049,8 +5069,17 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
     last_error: _lastMsg,
     last_status: _lastStatus,
     retry_after_ms: _retryAfterMs,
-  };
 
+    exhausted_count: Object.keys(_exhausted_ids).length,
+    exhausted_ids: _exhausted_ids,
+
+    invalid_count: Object.keys(_invalid_ids).length,
+    invalid_ids: _invalid_ids,
+
+    rate_limited_count: _rate_limited_active_ids.length,
+    rate_limited_active_ids: _rate_limited_active_ids,
+    rate_limited_until: _rl_until,
+  };
   throw err;
 }
 
