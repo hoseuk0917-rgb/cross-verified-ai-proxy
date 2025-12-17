@@ -5385,6 +5385,18 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
     return raMs;
   };
 
+    // ✅ 429가 "프로젝트/키 단위"일 수 있으니, 다른 키(다른 프로젝트 포함)로 소수만 추가 시도 허용
+  // - 증폭 방지를 위해 기본 2회로 제한 (hint 포함)
+  const GEMINI_429_MAX_TRIES = Math.max(1, parseInt(process.env.GEMINI_429_MAX_TRIES || "2", 10));
+  let _rl429_count = 0;
+  let _rl429_minRetryAfterMs = null;
+
+  const _note429 = (raMs) => {
+    _rl429_count += 1;
+    const ms = Number.isFinite(raMs) ? raMs : 60000;
+    _rl429_minRetryAfterMs = _rl429_minRetryAfterMs == null ? ms : Math.min(_rl429_minRetryAfterMs, ms);
+  };
+
   const _throwOverloaded200 = (e, modelUsed) => {
     const st = getStatus(e);
     const raMs = _parseRetryAfterMs(e);
@@ -5496,27 +5508,16 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         });
       }
 
-      // ✅ 429는 keyring으로 fallthrough 하면 “키 회전으로 증폭”됨 → 즉시 중단 + 전역 쿨다운 갱신
+      // ✅ 429는 "hint 키"에서만 막힌 것일 수 있음(다른 프로젝트/키는 OK일 수 있음)
+      // - 따라서 즉시 종료하지 말고 keyring을 소수만 추가 시도
       if (st === 429) {
         const raMs = _parseRetryAfterMs(e);
-        try {
-          await markGeminiKeyRateLimitedGlobal(userId, raMs);
-        } catch (_) {}
-
-        const err = new Error("GEMINI_RATE_LIMIT");
-        err.code = "GEMINI_RATE_LIMIT";
-        err.httpStatus = 429;
-        err.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
-        err.detail = {
-          last_status: 429,
-          retry_after_ms: raMs,
-          last_error: _mergedErrMsg(e),
-        };
-        throw err;
+        _note429(raMs);
+        // fallthrough -> keyring (즉시 throw 금지)
+      } else {
+        if (st !== 401 && st !== 403) throw e;
+        // fallthrough -> keyring
       }
-
-      if (st !== 401 && st !== 403) throw e;
-      // fallthrough -> keyring
     }
   }
 
@@ -5572,31 +5573,40 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         }
       }
 
-            if (st === 429) {
-  const raMs = _parseRetryAfterMs(e);
+                  if (st === 429) {
+        const raMs = _parseRetryAfterMs(e);
 
-  // key별 + 전역 쿨다운 모두 갱신 (프로젝트/모델 레벨 429에도 대응)
-  await markGeminiKeyRateLimitedById(userId, keyId, raMs);
-  try {
-    await markGeminiKeyRateLimitedGlobal(userId, raMs);
-  } catch (_) {}
+        // key별 쿨다운은 항상 갱신
+        await markGeminiKeyRateLimitedById(userId, keyId, raMs);
 
-  // ✅ 429면 “이번 요청”은 즉시 종료 (키 회전 증폭 방지)
-  const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
-  err.code = "GEMINI_RATE_LIMIT";
-  err.httpStatus = 429;
-  err.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
-  err.detail = {
-    keysCount: keysCount0,
-    keysTriedCount: tried.size,
-    pt_date: pt_date_now,
-    next_reset_utc: pac.next_reset_utc,
-    last_error: _mergedErrMsg(e),
-    last_status: 429,
-    retry_after_ms: raMs,
-  };
-  throw err;
-}
+        _note429(raMs);
+
+        // ✅ 429는 "키/프로젝트 단위"일 수 있으므로, 다른 키를 소수만 추가 시도
+        if (_rl429_count >= GEMINI_429_MAX_TRIES) {
+          // 여기서만 전역 쿨다운 갱신(너무 많은 재시도 방지)
+          try {
+            await markGeminiKeyRateLimitedGlobal(userId, _rl429_minRetryAfterMs ?? raMs);
+          } catch (_) {}
+
+          const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
+          err.code = "GEMINI_RATE_LIMIT";
+          err.httpStatus = 429;
+          err.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
+          err.detail = {
+            keysCount: keysCount0,
+            keysTriedCount: tried.size,
+            pt_date: pt_date_now,
+            next_reset_utc: pac.next_reset_utc,
+            last_error: _mergedErrMsg(e),
+            last_status: 429,
+            retry_after_ms: (_rl429_minRetryAfterMs ?? raMs),
+          };
+          throw err;
+        }
+
+        // 다음 키로 계속
+        continue;
+      }
 
             // ✅ 400 invalid key / 401 / 403 => exhausted(쿼터 소진) 금지. invalid_ids로 마킹 후 회전
       if (st === 401 || st === 403 || (st === 400 && _isInvalidKey(e)) || _isInvalidKey(e)) {
