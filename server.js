@@ -12623,20 +12623,19 @@ try {
 
 // ✅ Gemini rate limit (429) — 기존 정책 유지(200 + success:false)
 if (e?.code === "GEMINI_RATE_LIMIT") {
-  // Retry-After는 "초" 단위가 표준
-  let sec = 15; // fallback
   try {
     const ms = Number(e?.detail?.retry_after_ms);
     if (Number.isFinite(ms) && ms > 0) {
-      sec = Math.max(1, Math.ceil(ms / 1000));
+      // HTTP Retry-After는 초 단위가 일반적
+      const sec = Math.max(1, Math.ceil(ms / 1000));
+      res.set("Retry-After", String(sec));
       // 디버그/클라 편의용(선택)
       res.set("X-Retry-After-Ms", String(Math.ceil(ms)));
     }
   } catch (_) {}
 
-  try {
-    res.set("Retry-After", String(sec));
-  } catch (_) {}
+  // 캐시 방지(선택이지만 권장)
+  try { res.set("Cache-Control", "no-store"); } catch (_) {}
 
   return res.status(429).json({
     success: false,
