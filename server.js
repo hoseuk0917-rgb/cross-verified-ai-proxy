@@ -2590,6 +2590,9 @@ const adminStats = {
 
 const adminRecentErrors = [];
 
+// server boot time (for admin/status)
+const SERVER_STARTED_AT = new Date().toISOString();
+
 /**
  * verify / translate / docs_analyze 요청 카운트용 helper
  */
@@ -14053,9 +14056,38 @@ app.get("/api/test-session", requireDiag, async (req, res) => {
 // Admin dashboard APIs (beta)
 // ================================
 app.get("/api/admin/status", (req, res) => {
+  const env = process.env || {};
+
+  const build = {
+    started_at: SERVER_STARTED_AT,
+    uptime_s: Math.round(process.uptime()),
+    node: process.version,
+    platform: process.platform,
+    arch: process.arch,
+
+    // Render envs (있으면 자동 노출)
+    render: {
+      service_id: env.RENDER_SERVICE_ID || null,
+      service_name: env.RENDER_SERVICE_NAME || null,
+      instance_id: env.RENDER_INSTANCE_ID || null,
+      region: env.RENDER_REGION || null,
+    },
+
+    // commit / version 후보들 (환경마다 키가 달라서 fallback 여러 개)
+    commit:
+      env.RENDER_GIT_COMMIT ||
+      env.GIT_COMMIT ||
+      env.COMMIT_SHA ||
+      env.SOURCE_VERSION ||
+      null,
+
+    app_version: env.APP_VERSION || null,
+  };
+
   return res.json(
     buildSuccess({
       server_time: new Date().toISOString(),
+      build,
       stats: adminStats,
       whitelist: getNaverWhitelistStatus(),
     })
