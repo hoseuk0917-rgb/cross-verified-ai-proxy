@@ -9780,7 +9780,9 @@ if (naverPool.length > 0) {
 ghUserText = String(query || "").trim();
 
 // ✅ S-17 cache key (only QV/FV) — must be defined before cache get/set
-// ✅ S-17 cache key (only QV/FV) — assign (NOT declare) to keep scope valid
+// - Ensure __cacheKey exists in THIS scope to avoid ReferenceError
+let __cacheKey = null;
+
 if (safeMode === "qv" || safeMode === "fv") {
   __cacheKey =
     `v1|${safeMode}` +
@@ -9788,8 +9790,6 @@ if (safeMode === "qv" || safeMode === "fv") {
     `|q:${hash16(String(query || ""))}` +
     `|core:${hash16(String(userCoreText || core_text || req.body?.snippet_meta?.snippet_core || ""))}` +
     `|ua:${hash16(String(user_answer || ""))}`;
-} else {
-  __cacheKey = null;
 }
 
 const __cachedPayload = __cacheKey ? verifyCacheGet(__cacheKey) : null;
