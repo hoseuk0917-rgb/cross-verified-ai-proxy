@@ -3412,7 +3412,7 @@ app.post("/api/dev/seed-secrets", async (req, res) => {
       }
 
             const mode = String(action || "replace").toLowerCase(); // replace | append
-      const MAX_KEYS = 4;
+      const MAX_KEYS = 1; // fallback-only: Gemini keyring은 1개 키만 유지
 
       // ✅ dedupe incoming by plaintext
       const _seenIn = new Set();
