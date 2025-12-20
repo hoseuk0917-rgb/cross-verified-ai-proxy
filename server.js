@@ -7521,14 +7521,42 @@ function __routerCacheSet(k, v) {
 
 // ✅ helper: request -> user groq key
 async function __getUserGroqKey(req) {
-  // 로그인 토큰에서 userId 확보 (기존 헬퍼 재사용)
+  // ✅ user_secrets.user_id 는 "users" 테이블 id(=resolveLogUserId 결과) 기준
+  // - auth user id(au.id)로 조회하면 키를 못 찾는 케이스 발생
+
   let userId = null;
+
+  // 0) request 캐시 우선
   try {
-    const au = await getSupabaseAuthUser(req);
-    userId = au?.id || null;
+    if (Object.prototype.hasOwnProperty.call(req, "_resolvedLogUserId")) {
+      userId = req._resolvedLogUserId || null;
+    }
   } catch (_) {}
 
-  // 네가 이미 추가한 함수 사용 (user_secrets 우선, env fallback optional)
+  // 1) 없으면 auth_user/email 기반으로 users.id로 resolve
+  if (!userId) {
+    try {
+      const au = await getSupabaseAuthUser(req);
+      const bearer = getBearerToken(req);
+
+      if (au) {
+        userId = await resolveLogUserId({
+          user_id: null,
+          user_email: au?.email || null,
+          user_name: au?.user_metadata?.full_name || au?.user_metadata?.name || null,
+          auth_user: au,
+          bearer_token: bearer,
+        });
+      }
+    } catch (_) {}
+
+    // cache
+    try {
+      req._resolvedLogUserId = userId || null;
+    } catch (_) {}
+  }
+
+  // 2) user_secrets 우선, env fallback optional
   return await __getGroqApiKeyForUser({ supabase, userId });
 }
 
@@ -8475,13 +8503,14 @@ if (REQUIRE_USER_AUTH && !authUser) {
     .json(buildError("UNAUTHORIZED", "로그인이 필요합니다. (Authorization: Bearer <token>)"));
 }
 
-logUserId = await resolveLogUserId({
+  logUserId = req._resolvedLogUserId || await resolveLogUserId({
   user_id,
   user_email,
   user_name,
   auth_user: authUser,
   bearer_token: getBearerToken(req), // ✅ Bearer localtest 같은 값도 로그 식별에 사용
 });
+try { req._resolvedLogUserId = logUserId || null; } catch (_) {}
 
 if (!logUserId) {
   return res.status(400).json(
