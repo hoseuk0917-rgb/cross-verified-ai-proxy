@@ -7767,13 +7767,19 @@ const __sf =
     ? "qv"
     : __sf0;
 
-    // 0) ✅ fallback: never leave __routerPlan null
+      // 0) ✅ fallback: never leave __routerPlan null
   if (!__routerPlan) {
     // ⚠️ rawMode 변수는 선언/초기화 순서에 따라 TDZ(ReferenceError)가 날 수 있으므로
     // 요청 바디에서 직접 읽어 안전하게 기록한다.
     const __rawModeSafe = String(
       (req && req.body && (req.body.mode ?? req.body.safeMode ?? req.body.raw_mode)) ?? "auto"
     ).toLowerCase();
+
+    // ⚠️ GROQ_ROUTER_MODEL은 아래에서 const로 선언되므로(동일 스코프) 여기서 참조하면 TDZ 위험.
+    // env에서 직접 읽어 안전하게 기록한다.
+    const __routerModelSafe = String(
+      process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile"
+    );
 
     const __err0 = (__routerError && String(__routerError).trim())
       ? `router_error:${String(__routerError).trim().slice(0, 140)}`
@@ -7785,7 +7791,7 @@ const __sf =
       primary: __sf,
       plan: [{ mode: __sf, priority: 1, reason: "router_missing_or_failed" }],
       runs: [__sf],
-      model: (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
+      model: __routerModelSafe,
       cached: false,
       lv_extra: false,
       reason: __err0, // ✅ 응답 reason으로 바로 노출
