@@ -156,8 +156,19 @@ async function translateText(text, targetLang, deepl_key, _gemini_key_unused) {
 const HTTP_TIMEOUT_MS = parseInt(process.env.HTTP_TIMEOUT_MS || "12000", 10);
 const ENGINE_TIMEBOX_MS = parseInt(process.env.ENGINE_TIMEBOX_MS || "25000", 10); // 엔진 1개 상한
 const GEMINI_TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS || "45000", 10); // Gemini는 더 길게
-const GEMINI_QVFV_PRE_MODEL = process.env.GEMINI_QVFV_PRE_MODEL || "gemini-2.0-flash-lite";
-const GEMINI_VERIFY_MODEL    = process.env.GEMINI_VERIFY_MODEL    || "gemini-2.0-flash";
+
+// ✅ Gemini model knobs (single source of truth)
+// - pre(qv/fv preprocess) and verify can be controlled independently
+// - defaults intentionally match the /api/verify stage hardcoding you had (2.5 flash family)
+const GEMINI_QVFV_PRE_MODEL =
+  process.env.GEMINI_QVFV_PRE_MODEL || "gemini-2.5-flash-lite";
+
+const GEMINI_VERIFY_MODEL =
+  process.env.GEMINI_VERIFY_MODEL || "gemini-2.5-flash";
+
+// verify에서 “lite”를 요청했을 때 쓰는 모델(verify 전용). 없으면 pre 모델로 fallback.
+const GEMINI_VERIFY_LITE_MODEL =
+  process.env.GEMINI_VERIFY_LITE_MODEL || GEMINI_QVFV_PRE_MODEL || "gemini-2.5-flash-lite";
 
 const ENGINE_RETRY_MAX = parseInt(process.env.ENGINE_RETRY_MAX || "1", 10); // 0~1 권장
 const ENGINE_RETRY_BASE_MS = parseInt(process.env.ENGINE_RETRY_BASE_MS || "350", 10);
@@ -5948,8 +5959,8 @@ ${JSON.stringify(githubData).slice(0, 2500)}
   userId,                 // ???꾨옒?먯꽌 ?⑥닔 ?쒓렇?덉쿂瑜?userId 諛쏄쾶 諛붽? 嫄곕씪 ?ш린???꾩떆
   gemini_key,
   keyHint: gemini_key,
-  // ✅ pro 금지 → flash 계열만 사용
-  model: "gemini-2.5-flash",
+    // ✅ pro 금지 → flash 계열만 사용 (env 단일화)
+  model: GEMINI_VERIFY_MODEL || "gemini-2.5-flash",
   payload: { contents: [{ parts: [{ text: prompt }] }] },
 });
 
@@ -6031,7 +6042,7 @@ ${baseText}
       userId,
       gemini_key,
       keyHint: gemini_key,
-      model: "gemini-2.5-flash",
+        model: GEMINI_VERIFY_MODEL || "gemini-2.5-flash",
       payload: { contents: [{ parts: [{ text: prompt }] }] },
     });
 
@@ -8395,12 +8406,13 @@ if (!allowedModes.includes(safeMode)) {
   let verifyModelUsed = null;    // 실제로 사용된 verify 모델(로그/응답용)
 
   // ✅ verify 단계는 flash/flash-lite만 허용 (pro 금지)
+// - 모델명 하드코딩 금지: env 상수로 단일화
 if (safeMode === "qv" || safeMode === "fv" || safeMode === "dv") {
   const g = String(geminiModelRaw || "");
   if (g === "flash-lite" || g === "lite" || /flash-lite/i.test(g)) {
-    verifyModel = "gemini-2.5-flash-lite";
+    verifyModel = GEMINI_VERIFY_LITE_MODEL || GEMINI_QVFV_PRE_MODEL || "gemini-2.5-flash-lite";
   } else {
-    verifyModel = "gemini-2.5-flash";
+    verifyModel = GEMINI_VERIFY_MODEL || "gemini-2.5-flash";
   }
 }
 
@@ -11930,26 +11942,30 @@ try {
   for (const m of verifyModelCandidates) {
     try {
       verify = await fetchGeminiSmart({
-  userId: logUserId,
-  keyHint: gemini_key,
-  model: m,
-  payload: verifyPayload,
-  opts: { label: `verify:${m}`, minChars: 20 },
-});
-verifyModelUsed = m;
-      verifyModelUsed = m; // ✅ 실제 성공 모델 기록
+        userId: logUserId,
+        keyHint: gemini_key,
+        model: m,
+        payload: verifyPayload,
+        opts: { label: `verify:${m}`, minChars: 20 },
+      });
+
+      verifyModelUsed = m; // ✅ 실제 성공 모델 기록(중복 제거)
       break;
     } catch (e) {
-      if (
-  e?.code === "INVALID_GEMINI_KEY" ||
-  e?.code === "GEMINI_KEY_EXHAUSTED" ||
-  e?.code === "GEMINI_KEY_MISSING" ||
-  e?.code === "GEMINI_RATE_LIMIT"
-) throw e;
-
+      const code = e?.code;
       const status = e?.response?.status;
 
-      if (status === 429) throw e; // ✅ 쿼터 소진은 즉시 상위로
+      // ✅ 즉시 중단(상위로 던져서 key/쿨다운 정책이 처리하게)
+      if (
+        code === "INVALID_GEMINI_KEY" ||
+        code === "GEMINI_KEY_EXHAUSTED" ||
+        code === "GEMINI_KEY_MISSING" ||
+        code === "GEMINI_RATE_LIMIT" ||
+        status === 429
+      ) {
+        throw e;
+      }
+
       lastVerifyErr = e;
       // 다음 후보 모델로 계속 진행
     }
