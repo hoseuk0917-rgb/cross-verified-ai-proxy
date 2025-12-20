@@ -7453,19 +7453,13 @@ function __buildRouterPlanPublicFinal({ safeMode, rawMode, routerPlan, runLvExtr
 
 let __routerCached = false;
 
-// NOTE: __cacheKey는 이 핸들러의 "다른 캐시(응답/verify 캐시 등)"에서 계속 쓰이므로 유지
-let __cacheKey = null;
-
-// 환경변수로 라우터 전체 on/off 가능
+// 환경변수로 라우터 전체 on/off 가능 (single source of truth)
 const GROQ_ROUTER_ENABLE = String(process.env.GROQ_ROUTER_ENABLE || "1") !== "0";
 
-// ✅ Groq Router config — TDZ 방지: 라우터 실행 경로보다 “먼저” 선언
+// ✅ Groq Router config — 라우터 실행 경로보다 “먼저” 선언
 const GROQ_API_BASE = process.env.GROQ_API_BASE || "https://api.groq.com/openai/v1";
 const GROQ_ROUTER_MODEL = process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile";
 const GROQ_ROUTER_TIMEOUT_MS = parseInt(process.env.GROQ_ROUTER_TIMEOUT_MS || "12000", 10);
-
-// alias: keep single source of truth
-const ENABLE_GROQ_ROUTER = GROQ_ROUTER_ENABLE;
 
 // env fallback option
 const GROQ_ALLOW_ENV_FALLBACK = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
@@ -7911,9 +7905,7 @@ if (
 // - key: user_secrets(integrations.groq.api_key_enc) 우선, 없으면 env GROQ_API_KEY fallback(선택)
 // - returns: { plan: [{mode:"qv"|"fv"|"lv", priority:int, reason:string}], confidence:0..1 }
 // ─────────────────────────────
-// (moved) GROQ_API_BASE / GROQ_ROUTER_MODEL / GROQ_ROUTER_TIMEOUT_MS / ENABLE_GROQ_ROUTER declared earlier (avoid TDZ)
-
-// (moved) GROQ_ALLOW_ENV_FALLBACK declared earlier (avoid TDZ)
+// (moved) GROQ_API_BASE / GROQ_ROUTER_MODEL / GROQ_ROUTER_TIMEOUT_MS declared earlier (avoid TDZ)
 
 function _safeJsonParse(s) {
   try { return JSON.parse(s); } catch { return null; }
