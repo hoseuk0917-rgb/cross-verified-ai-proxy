@@ -1,0 +1,15 @@
+{
+  "verdict": "INSUFFICIENT",
+  "confidence_01": 0,
+  "evidence_used": [
+    "E1",
+    "E2",
+    "E3"
+  ],
+  "final_answer_ko": "2025년 한국 인구에 대한 수치가 제공되지 않음",
+  "reason_brief": "근거 목록에 있는 항목들에서 2025년 한국 인구에 대한 수치를 찾을 수 없음",
+  "next_queries": [
+    "2025년 한국 인구 통계",
+    "한국 인구 수치"
+  ]
+}

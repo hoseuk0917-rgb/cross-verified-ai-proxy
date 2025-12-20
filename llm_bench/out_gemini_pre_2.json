@@ -1,0 +1,35 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "```json\n{\n  \"korean_core\": \"2025년 한국 인구 예측\",\n  \"english_core\": \"2025 South Korea population forecast\",\n  \"claims\": [\n    {\n      \"id\": \"c1\",\n      \"text_ko\": \"2025년 한국 인구는 얼마인가?\",\n      \"text_en\": \"What is the population of South Korea in 2025?\",\n      \"type\": \"number\",\n      \"key_entities\": [\"한국\", \"인구\", \"2025년\"],\n      \"key_numbers\": [\"2025\"]\n    }\n  ],\n  \"engine_queries\": {\n    \"naver\": [\"2025년 한국 인구\", \"2025 한국 인구 예측\", \"2025 인구 전망\"],\n    \"gdelt\": [\"South Korea population 2025\", \"Korea population forecast 2025\"],\n    \"crossref\": [\"population projection South Korea 2025\", \"demographic forecast Korea 2025\"],\n    \"openalex\": [\"population projection South Korea 2025\", \"demographic forecast Korea 2025\"],\n    \"wikidata\": [\"population of South Korea in 2025\"]\n  },\n  \"time_scope\": {\n    \"target_year\": 2025,\n    \"recency_need\": \"high\"\n  },\n  \"notes\": \"2025년 인구 예측 자료 위주로 검색. 최신 자료 중요.\"\n}\n```"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "avgLogprobs": -0.0350056230352166
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 354,
+    "candidatesTokenCount": 356,
+    "totalTokenCount": 710,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 354
+      }
+    ],
+    "candidatesTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 356
+      }
+    ]
+  },
+  "modelVersion": "gemini-2.0-flash",
+  "responseId": "5eJDaYSHLsuA0-kPld-qqAI"
+}

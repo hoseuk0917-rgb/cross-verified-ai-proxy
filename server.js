@@ -8692,56 +8692,74 @@ if (safeMode !== "lv") {
 switch (safeMode) {
   case "qv":
   case "fv": {
-    if (ENABLE_WIKIDATA_QVFV) {
-  engines.push("crossref", "openalex", "wikidata", "gdelt", "naver");
-} else {
-  engines.push("crossref", "openalex", "gdelt", "naver");
-}
+    // ✅ 요청 engines가 있으면 "실제 실행 엔진"을 그걸로 제한
+    const __normEng = (x) => String(x || "").trim().toLowerCase();
+    const __reqArrRaw =
+      Array.isArray(req?.body?.engines) ? req.body.engines
+      : (Array.isArray(req?.body?.engines_requested) ? req.body.engines_requested
+        : (Array.isArray(req?.body?.enginesRequested) ? req.body.enginesRequested : null));
 
-// ✅ qv/fv + legal-ish면 klaw “추가 엔진”으로 1회 실행
-if (__runKlawExtra) {
-  engines.push("klaw");
+    const __reqSet = new Set(
+      Array.isArray(__reqArrRaw) ? __reqArrRaw.map(__normEng).filter(Boolean) : []
+    );
 
-  try {
-    const t_klaw = Date.now();
-    external.klaw = await fetchKLawAll(klawKeyFinal, query);
-    const ms_klaw = Date.now() - t_klaw;
+    const __defaults = ENABLE_WIKIDATA_QVFV
+      ? ["crossref", "openalex", "wikidata", "gdelt", "naver"]
+      : ["crossref", "openalex", "gdelt", "naver"];
 
-    // time/metric 흔적 남기기(형식 불명확해도 안전하게 누적)
-    try { recordTime(engineTimes, "klaw_ms", ms_klaw); } catch {}
-    try { recordMetric(engineMetrics, "klaw", ms_klaw); } catch {}
-    try {
-      if (!engineMetrics.klaw || typeof engineMetrics.klaw !== "object") engineMetrics.klaw = {};
-      engineMetrics.klaw.calls = Number(engineMetrics.klaw.calls || 0) + 1;
-      engineMetrics.klaw.ms_total = Number(engineMetrics.klaw.ms_total || 0) + ms_klaw;
-    } catch {}
+    const __final = (__reqSet.size > 0)
+      ? __defaults.filter((e) => __reqSet.has(e))
+      : __defaults.slice();
 
-    try {
-      if (partial_scores && typeof partial_scores === "object") {
-        partial_scores.klaw_extra = { wanted: true, used: true, ms: ms_klaw };
+    engines.push(...__final);
+
+    // ✅ qv/fv + legal-ish면 klaw “추가 엔진”으로 1회 실행
+    // - 요청 engines가 있으면, 거기에 klaw가 포함된 경우에만 실행
+    const __allowKlawExtra = __runKlawExtra && (__reqSet.size === 0 || __reqSet.has("klaw"));
+
+    if (__allowKlawExtra) {
+      engines.push("klaw");
+
+      try {
+        const t_klaw = Date.now();
+        external.klaw = await fetchKLawAll(klawKeyFinal, query);
+        const ms_klaw = Date.now() - t_klaw;
+
+        // time/metric 흔적 남기기(형식 불명확해도 안전하게 누적)
+        try { recordTime(engineTimes, "klaw_ms", ms_klaw); } catch {}
+        try { recordMetric(engineMetrics, "klaw", ms_klaw); } catch {}
+        try {
+          if (!engineMetrics.klaw || typeof engineMetrics.klaw !== "object") engineMetrics.klaw = {};
+          engineMetrics.klaw.calls = Number(engineMetrics.klaw.calls || 0) + 1;
+          engineMetrics.klaw.ms_total = Number(engineMetrics.klaw.ms_total || 0) + ms_klaw;
+        } catch {}
+
+        try {
+          if (partial_scores && typeof partial_scores === "object") {
+            partial_scores.klaw_extra = { wanted: true, used: true, ms: ms_klaw };
+          }
+        } catch {}
+      } catch (e) {
+        // klaw 실패는 qv/fv 자체를 죽이지 않음(추가 엔진이므로)
+        try { external.klaw = null; } catch {}
+        try {
+          if (partial_scores && typeof partial_scores === "object") {
+            partial_scores.klaw_extra = {
+              wanted: true,
+              used: false,
+              error: String(e?.message || e || "klaw_failed"),
+            };
+          }
+        } catch {}
       }
-    } catch {}
-  } catch (e) {
-    // klaw 실패는 qv/fv 자체를 죽이지 않음(추가 엔진이므로)
-    try { external.klaw = null; } catch {}
-    try {
-      if (partial_scores && typeof partial_scores === "object") {
-        partial_scores.klaw_extra = {
-          wanted: true,
-          used: false,
-          error: String(e?.message || e || "klaw_failed"),
-        };
-      }
-    } catch {}
-  }
-} else {
-  // 키 없거나 legal-ish 아님 → klaw 미실행
-  try {
-    if (__looksLegalish && partial_scores && typeof partial_scores === "object") {
-      partial_scores.klaw_extra = { wanted: true, used: false, reason: "missing_klaw_key_or_not_legalish" };
+    } else {
+      // 키 없거나 legal-ish 아님 → klaw 미실행
+      try {
+        if (__looksLegalish && partial_scores && typeof partial_scores === "object") {
+          partial_scores.klaw_extra = { wanted: true, used: false, reason: "missing_klaw_key_or_not_requested_or_not_legalish" };
+        }
+      } catch {}
     }
-  } catch {}
-}
 
         // QV/FV 전처리는 항상 lite 계열 모델 사용
     //   - 기본값: gemini-2.0-flash-lite
@@ -9069,10 +9087,23 @@ const __tryEarlyStop = (where, packs = {}) => {
   }
 };
 
+// ✅ requested engines hard-filter (runtime guard)
+const __wantEngines = new Set(
+  (Array.isArray(engines) ? engines : []).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
+);
+
 const runOrEmpty = async (name, fn, q) => {
+  const nn = String(name || "").trim().toLowerCase();
+
+  // ✅ 엔진 요청 필터: 요청되지 않은 엔진은 절대 호출하지 않는다
+  if (nn && __wantEngines.size > 0 && !__wantEngines.has(nn)) {
+    return { result: [], ms: 0, skipped: true, skipped_reason: "engine_not_requested" };
+  }
+
   const qq = String(q || "").trim();
-  if (!qq) return { result: [], ms: 0, skipped: true };
-  return await safeFetchTimed(name, fn, qq, engineTimes, engineMetrics);
+  if (!qq) return { result: [], ms: 0, skipped: true, skipped_reason: "empty_query" };
+
+  return await safeFetchTimed(nn, fn, qq, engineTimes, engineMetrics);
 };
 
 // ✅ 쿼리가 비면 호출하지 않고 result=[]로 처리 + cap 초과도 호출 안 함
@@ -11654,10 +11685,24 @@ try {
   if (flags?.num_miss) numMiss += 1;
 };
 
-        // 0) __known 채우기: 최종 blocks evidence에 "살아있는" URL만 모음
+                // 0) __known 채우기: 최종 blocks evidence에 "살아있는" URL만 모음
     for (const b of blocksForVerify) {
-      const evs = Array.isArray(b?.evidence_items) ? b.evidence_items : (Array.isArray(b?.evidence) ? b.evidence : []);
+      const evs = (() => {
+        if (Array.isArray(b?.evidence_items)) return b.evidence_items;
+        if (Array.isArray(b?.evidence)) return b.evidence;
+        if (b?.evidence && typeof b.evidence === "object") {
+          const tmp = [];
+          for (const k of Object.keys(b.evidence)) {
+            const arr = b.evidence[k];
+            if (Array.isArray(arr)) tmp.push(...arr);
+          }
+          return tmp;
+        }
+        return [];
+      })();
+
       for (const ev of evs) {
+        if (typeof __isEvidenceLikeItem === "function" && !__isEvidenceLikeItem(ev)) continue;
         const k0 = __keyOf(ev);
         const k = k0 ? __canonUrlKey(k0) : null;
         if (k) __known.add(k);
@@ -11666,11 +11711,23 @@ try {
 
         // 1) blocksForVerify 내부 evidence(ev) 기반 (URL canonical + 중복 집계 방지)
     for (const b of blocksForVerify) {
-      const evs = Array.isArray(b?.evidence_items)
-        ? b.evidence_items
-        : (Array.isArray(b?.evidence) ? b.evidence : []);
+      const evs = (() => {
+        if (Array.isArray(b?.evidence_items)) return b.evidence_items;
+        if (Array.isArray(b?.evidence)) return b.evidence;
+        if (b?.evidence && typeof b.evidence === "object") {
+          const tmp = [];
+          for (const k of Object.keys(b.evidence)) {
+            const arr = b.evidence[k];
+            if (Array.isArray(arr)) tmp.push(...arr);
+          }
+          return tmp;
+        }
+        return [];
+      })();
 
       for (const ev of evs) {
+        if (typeof __isEvidenceLikeItem === "function" && !__isEvidenceLikeItem(ev)) continue;
+
         const key0 = __keyOf(ev);
         const key = key0 ? __canonUrlKey(key0) : null;
 

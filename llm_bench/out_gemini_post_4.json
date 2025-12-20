@@ -1,0 +1,35 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "```json\n{\n  \"verdict\": \"INSUFFICIENT\",\n  \"confidence_01\": 0.5,\n  \"evidence_used\": [],\n  \"final_answer_ko\": \"제공된 근거 목록에는 2025년 한국 인구에 대한 구체적인 수치가 제시되어 있지 않습니다. 따라서 2025년 한국 인구를 특정할 수 없습니다.\",\n  \"reason_brief\": \"질문은 2025년 한국 인구에 대한 수치를 요구하지만, 주어진 근거들에는 해당 수치가 명시적으로 포함되어 있지 않습니다. 따라서 판단 불가합니다.\",\n  \"next_queries\": [\"2025년 한국 인구 통계\", \"2025년 한국 인구 예측\", \"한국 인구 변화 추이\"]\n}\n```"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "avgLogprobs": -0.082625018225775823
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 728,
+    "candidatesTokenCount": 180,
+    "totalTokenCount": 908,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 728
+      }
+    ],
+    "candidatesTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 180
+      }
+    ]
+  },
+  "modelVersion": "gemini-2.0-flash",
+  "responseId": "aT1EaemvKpqs0-kP_qnu2QI"
+}

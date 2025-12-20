@@ -1,0 +1,69 @@
+당신은 “검증 판정 모델”이다.
+
+아래 질문과 근거(evidence items)를 보고,
+- 근거가 질문/주장에 대해 "지지(SUPPORTED)" / "반박(CONTRADICTED)" / "판단불가(INSUFFICIENT)" 인지 판단한다.
+- 근거는 일부가 노이즈(무관/불명확/신뢰 어려움)일 수 있다.
+- 근거의 출처 유형(공식/비공식 등)은 스스로 판단하되, 추측으로 단정하지 말고 근거 내용에 기반하라.
+- 출력은 반드시 “JSON 한 덩어리”만 반환하라(코드펜스 금지).
+
+[질문]
+2025년 한국 인구는?
+
+[요구 출력 JSON 스키마]
+{
+  "verdict": "SUPPORTED" | "CONTRADICTED" | "INSUFFICIENT",
+  "confidence_01": 0.0 ~ 1.0,
+  "evidence_used": ["E1","E2"],
+  "final_answer_ko": "한국어로 1~3문장. 근거 기반으로만.",
+  "reason_brief": "한글로 짧게(1~3문장). 왜 이 verdict인지.",
+  "next_queries": ["추가로 확인하면 좋은 검색어 0~3개"]
+}
+
+[근거 목록]
+아래 JSON 배열의 각 항목에는 id가 있다. 당신은 근거를 고를 때 id로만 선택해야 한다.
+(주의: 근거 목록에 있는 내용 외에는 가정하지 마라.)
+
+[
+  {
+    "id": "E1",
+    "title": "KOSIS 인구통계(예시)",
+    "url": "https://kosis.kr/",
+    "snippet": "통계청 KOSIS 인구 관련 자료에서 2025년 추계/전망치를 확인할 수 있음.",
+    "date": "2025-01-01"
+  },
+  {
+    "id": "E2",
+    "title": "UN World Population Prospects (예시)",
+    "url": "https://population.un.org/wpp/",
+    "snippet": "UN WPP에서 Republic of Korea의 2025년 인구 추정치를 제공함.",
+    "date": "2024-12-01"
+  },
+  {
+    "id": "E3",
+    "title": "블로그 글(예시)",
+    "url": "https://example.com/blog-korea-pop-2025",
+    "snippet": "2025년 한국 인구가 6천만 명을 넘는다고 주장함(출처/근거 링크 없음).",
+    "date": "2025-02-10"
+  },
+  {
+    "id": "E4",
+    "title": "무관한 기사(예시)",
+    "url": "https://example.com/news-korea-tourism",
+    "snippet": "한국 관광객 수 증가에 대한 기사로, 인구 수치와 직접 관련 없음.",
+    "date": "2025-01-20"
+  },
+  {
+    "id": "E5",
+    "title": "통계표 캡처(예시)",
+    "url": "https://example.com/screenshot",
+    "snippet": "표 일부만 있어 연도/정의(중위/고위/저위) 확인이 어려움.",
+    "date": "2025-01-05"
+  },
+  {
+    "id": "E6",
+    "title": "포럼 댓글(예시)",
+    "url": "https://example.com/forum",
+    "snippet": "2025년 인구가 급감해 4천만 명대라는 주장만 있고 근거 없음.",
+    "date": "2025-02-01"
+  }
+]

@@ -1,0 +1,9 @@
+[
+  { "id": 1, "label": "SUPPORT" },
+  { "id": 2, "label": "SUPPORT" },
+  { "id": 3, "label": "SUPPORT" },
+
+  { "id": 4, "label": "CONFLICT" },
+  { "id": 5, "label": "NOISE" },
+  { "id": 6, "label": "NOISE" }
+]

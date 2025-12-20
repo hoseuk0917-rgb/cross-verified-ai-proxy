@@ -1,0 +1,16 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "당신은 “검증 판정 모델”이다.\n아래 [질문]과 [Groq가 원문에서 추출한 요약/키워드/숫자/인용문]만 보고 판단하라.\n- 원문에 없는 숫자/표현을 만들지 마라.\n- 출력은 JSON 한 덩어리만 (코드펜스 금지).\n\n[질문]\n2025년 한국 인구는?\n\n[Groq 추출(JSON)]\n{\n  \"numbers\": [\n    \"51,700,000\",\n    \"51,450,000\",\n    \"51,234,567\",\n    \"51,010,000\",\n    \"51.1 million\",\n    \"60,000,000\",\n    \"2023\",\n    \"2024\",\n    \"2025\",\n    \"2026\"\n  ],\n  \"dates\": [\n    \"2025-01-15\",\n    \"2024-12-01\",\n    \"2025-02-10\"\n  ],\n  \"entities\": [\n    \"통계청 KOSIS\",\n    \"United Nations\",\n    \"World Population Prospects (WPP)\",\n    \"Republic of Korea\"\n  ],\n  \"terms\": [\n    \"인구 통계\",\n    \"총인구\",\n    \"추계\",\n    \"전망\",\n    \"장래인구추계\"\n  ],\n  \"quotes\": [\n    \"2025년 총인구(중위)는 51,234,567명으로 표시된다.\",\n    \"For Republic of Korea, the estimated mid-year population in 2025 is 51.1 million (persons).\",\n    \"Population trends indicate a gradual decline after a peak in earlier years.\"\n  ],\n  \"claims_ko\": \"2025년 한국 인구는 51,234,567명으로 추계된다. 이는 통계청 KOSIS와 유엔 세계 인구 전망(WPP)의 중위 추계에 따른 값이다.\",\n  \"missing\": [\n    \"정확한 수치의 확정일\"\n  ]\n}\n\n[요구 출력 JSON 스키마]\n{\n  \"verdict\": \"SUPPORTED\" | \"CONTRADICTED\" | \"INSUFFICIENT\",\n  \"confidence_01\": 0.0 ~ 1.0,\n  \"final_answer_ko\": \"한국어로 1~2문장. 숫자 있으면 포함(원문 기반).\",\n  \"reason_brief\": \"1~2문장.\",\n  \"key_numbers\": [\"원문 기반 핵심 수치 문자열 0~5개\"],\n  \"used_quotes\": [\"사용한 인용문(있으면) 0~2개\"]\n}"
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "temperature": 0.1,
+    "maxOutputTokens": 512
+  }
+}

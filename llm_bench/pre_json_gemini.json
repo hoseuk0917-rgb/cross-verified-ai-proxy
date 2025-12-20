@@ -1,0 +1,47 @@
+{
+  "korean_core": "2025년 한국 인구 예측",
+  "english_core": "2025 South Korea population prediction",
+  "claims": [
+    {
+      "id": "c1",
+      "text_ko": "2025년 한국 인구는 얼마인가?",
+      "text_en": "What is the population of South Korea in 2025?",
+      "type": "number",
+      "key_entities": [
+        "한국",
+        "인구",
+        "2025년"
+      ],
+      "key_numbers": [
+        "2025"
+      ]
+    }
+  ],
+  "engine_queries": {
+    "naver": [
+      "2025년 한국 인구",
+      "2025 한국 인구 예측",
+      "2025 인구 전망"
+    ],
+    "gdelt": [
+      "South Korea population 2025",
+      "Korea population forecast 2025"
+    ],
+    "crossref": [
+      "population projection South Korea 2025",
+      "demographic forecast Korea 2025"
+    ],
+    "openalex": [
+      "population projection South Korea 2025",
+      "demographic forecast Korea 2025"
+    ],
+    "wikidata": [
+      "population of South Korea in 2025"
+    ]
+  },
+  "time_scope": {
+    "target_year": 2025,
+    "recency_need": "high"
+  },
+  "notes": "2025년 인구 예측 자료 위주로 검색. 최신 자료 중요."
+}

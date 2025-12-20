@@ -1,0 +1,10 @@
+{
+  "case_id": "case1_population_2025",
+  "gold_overall_verdict": "INSUFFICIENT",
+  "notes": "case1: 일부는 공식 근거, 일부는 노이즈/상충이 섞인 상황에서 evidence_used 선별 성능을 보기 위한 라벨",
+  "labels": {
+    "E1": "SUPPORT",
+    "E2": "SUPPORT",
+    "E3": "NOISE"
+  }
+}

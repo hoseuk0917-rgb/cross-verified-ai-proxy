@@ -1,0 +1,26 @@
+[
+  {
+    "id": "E1",
+    "engine": "kosis",
+    "title": "KOSIS (발췌)",
+    "url": "https://kosis.kr/",
+    "date": "2025-01-01",
+    "snippet": "【원문 발췌】2025년 대한민국 총인구는 51,234,567명(추계)이라고 제시한다. (표/그래프 문장 포함)"
+  },
+  {
+    "id": "E2",
+    "engine": "un",
+    "title": "UN WPP (발췌)",
+    "url": "https://population.un.org/wpp/",
+    "date": "2024-12-01",
+    "snippet": "【원문 발췌】Republic of Korea population (2025): 51.2 million (median variant)로 제시된다."
+  },
+  {
+    "id": "E3",
+    "engine": "noise_site",
+    "title": "블로그/커뮤니티 글 (발췌)",
+    "url": "https://example.com/",
+    "date": "2025-02-01",
+    "snippet": "【원문 발췌】2025년 한국 인구는 60,000,000명이라고 주장한다. (근거/출처 불명)"
+  }
+]

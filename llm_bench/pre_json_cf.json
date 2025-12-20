@@ -1,0 +1,46 @@
+{
+  "korean_core": "2025년 한국 인구",
+  "english_core": "Korea population in 2025",
+  "claims": [
+    {
+      "id": "c1",
+      "text_ko": "2025년 한국 인구",
+      "text_en": "Korea population in 2025",
+      "type": "number",
+      "key_entities": [
+        "Korea",
+        "2025"
+      ],
+      "key_numbers": [
+        "population"
+      ]
+    }
+  ],
+  "engine_queries": {
+    "naver": [
+      "2025년 한국 인구",
+      "Korea population 2025"
+    ],
+    "gdelt": [
+      "Korea population 2025",
+      "2025 population Korea"
+    ],
+    "crossref": [
+      "Korea population 2025",
+      "population Korea 2025"
+    ],
+    "openalex": [
+      "Korea population 2025",
+      "population Korea 2025"
+    ],
+    "wikidata": [
+      "Korea population 2025",
+      "population Korea 2025"
+    ]
+  },
+  "time_scope": {
+    "target_year": 2025,
+    "recency_need": "high"
+  },
+  "notes": ""
+}
