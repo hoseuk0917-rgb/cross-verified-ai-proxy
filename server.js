@@ -13467,7 +13467,7 @@ try {
   });
 } catch {}
 
-  const _in = String(safeText ?? text ?? "").trim();
+  const _in = String(text ?? "").trim();
 
   // result가 string이거나, {text}/{translated}/{translation} 형태여도 안전하게 읽기
   const _out0 =
