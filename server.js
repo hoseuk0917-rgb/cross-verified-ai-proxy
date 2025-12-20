@@ -9756,6 +9756,117 @@ try {
 }
 
 // ✅ (B안 보강) Gemini가 sentinel을 놓쳐도, "명백한 비코드"는 DV/CV를 강제 종료
+// DV/CV: obvious non-code fast-exit (GitHub 전용 모드 오용 방지)
+const looksObviouslyNonCode = (q) => {
+  const s = String(q ?? "").trim();
+  if (!s) return true;
+
+  // ✅ DV/CV에서 "코드/개발 근거"로 볼 만한 신호가 있으면 non-code로 취급하지 않음(보수적으로 false)
+  const codeHints = [
+    "github.com",
+    "http://",
+    "https://",
+    "```",
+    "stack",
+    "trace",
+    "exception",
+    "error",
+    "TypeError",
+    "ReferenceError",
+    "SyntaxError",
+    "Unhandled",
+    "npm",
+    "node",
+    "yarn",
+    "pnpm",
+    "pip",
+    "gradle",
+    "mvn",
+    "docker",
+    "kubernetes",
+    "k8s",
+    ".js",
+    ".ts",
+    ".py",
+    ".java",
+    ".go",
+    ".cs",
+    ".rb",
+    ".php",
+    ".rs",
+    ".cpp",
+    ".c",
+    ".h",
+    "/api/",
+    "curl ",
+    "SELECT ",
+    "INSERT ",
+    "UPDATE ",
+    "DELETE ",
+    "FROM ",
+    "WHERE ",
+    "{",
+    "}",
+    ";",
+    "=>",
+    "::",
+  ];
+  for (const h of codeHints) {
+    if (s.toLowerCase().includes(String(h).toLowerCase())) return false;
+  }
+
+  // ✅ 심볼이 많으면 코드/로그 가능성이 높으니 non-code로 보지 않음
+  const symbolCount = (s.match(/[{}[\]();<>:=`$\\\/]/g) || []).length;
+  if (symbolCount >= 4) return false;
+
+  // ✅ 짧고 자연어 위주(공백이 꽤 있고, 알파/한글 위주)면 non-code 가능성↑
+  const len = s.length;
+  const space = (s.match(/\s/g) || []).length;
+  const hangul = (s.match(/[가-힣]/g) || []).length;
+  const alpha = (s.match(/[A-Za-z]/g) || []).length;
+  const digit = (s.match(/[0-9]/g) || []).length;
+
+  // 질문형/일반질문 키워드
+  const nlHints = [
+    "what",
+    "why",
+    "how",
+    "meaning",
+    "설명",
+    "뜻",
+    "뭐야",
+    "무엇",
+    "어떻게",
+    "왜",
+    "정의",
+    "비교",
+    "차이",
+    "요약",
+    "알려줘",
+  ];
+  const low = s.toLowerCase();
+  const hasNlHint = nlHints.some((k) => low.includes(k));
+
+  // 너무 길면 애매하니(문서/로그일 수도) non-code로 단정하지 않음
+  if (len >= 220) return false;
+
+  // 숫자만 많은 질의는(버전/포트/에러코드) 개발 질문일 수 있어 non-code로 단정하지 않음
+  if (digit >= 16) return false;
+
+  // 자연어 비율이 높고(한글+알파), 공백이 적당히 있고, 질문 힌트가 있으면 non-code로 판정
+  const letter = hangul + alpha;
+  const letterRatio = len > 0 ? letter / len : 0;
+  const spaceRatio = len > 0 ? space / len : 0;
+
+  if (letterRatio >= 0.65 && spaceRatio >= 0.08 && hasNlHint) return true;
+
+  // 마지막으로: “레이트리밋 redis store” 같이 패키지 키워드만 나열한 경우도 DV/CV에서는 non-code 취급
+  // (코드/레포 링크/에러/로그가 없으면 DV/CV로 검증할 게 거의 없음)
+  if (letterRatio >= 0.60 && spaceRatio >= 0.06 && symbolCount === 0) return true;
+
+  return false;
+};
+
 if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(rawQuery || query)) {
   const elapsedMs = Date.now() - start;
 
