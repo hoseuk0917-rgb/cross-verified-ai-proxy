@@ -7359,6 +7359,8 @@ const verifyCoreHandler = async (req, res) => {
 
   let safeMode = String(req.body?.mode ?? mode ?? "").trim().toLowerCase();
   const rawMode = safeMode; // ✅ 요청된 원래 mode를 보존(뒤에서 fallback plan에서 사용)
+    // ✅ verify-cache key (QV/FV). Declare once in handler scope to avoid ReferenceError.
+  var __cacheKey = null;
 
 // ✅ /api/verify-snippet은 "FV 고정" + 라우터 개입 금지 (endpoint 기준)
 // ✅ snippet_meta.is_snippet은 "입력 타입 메타"일 뿐, mode 강제에 쓰지 않는다.
@@ -9780,8 +9782,8 @@ if (naverPool.length > 0) {
 ghUserText = String(query || "").trim();
 
 // ✅ S-17 cache key (only QV/FV) — must be defined before cache get/set
-// - Ensure __cacheKey exists in THIS scope to avoid ReferenceError
-let __cacheKey = null;
+// - __cacheKey is declared once near rawMode (var). Here we only assign.
+__cacheKey = null;
 
 if (safeMode === "qv" || safeMode === "fv") {
   __cacheKey =
