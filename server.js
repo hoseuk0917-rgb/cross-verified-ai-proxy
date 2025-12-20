@@ -7459,7 +7459,15 @@ let __cacheKey = null;
 // 환경변수로 라우터 전체 on/off 가능
 const GROQ_ROUTER_ENABLE = String(process.env.GROQ_ROUTER_ENABLE || "1") !== "0";
 
-// ✅ TDZ 재발 방지: 라우터 실행 경로보다 “먼저” 선언해 둔다.
+// ✅ Groq Router config — TDZ 방지: 라우터 실행 경로보다 “먼저” 선언
+const GROQ_API_BASE = process.env.GROQ_API_BASE || "https://api.groq.com/openai/v1";
+const GROQ_ROUTER_MODEL = process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile";
+const GROQ_ROUTER_TIMEOUT_MS = parseInt(process.env.GROQ_ROUTER_TIMEOUT_MS || "12000", 10);
+
+// alias: keep single source of truth
+const ENABLE_GROQ_ROUTER = GROQ_ROUTER_ENABLE;
+
+// env fallback option
 const GROQ_ALLOW_ENV_FALLBACK = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
 
 // ✅ Groq Router in-memory cache (process-wide via globalThis)
@@ -7903,9 +7911,7 @@ if (
 // - key: user_secrets(integrations.groq.api_key_enc) 우선, 없으면 env GROQ_API_KEY fallback(선택)
 // - returns: { plan: [{mode:"qv"|"fv"|"lv", priority:int, reason:string}], confidence:0..1 }
 // ─────────────────────────────
-const GROQ_API_BASE = process.env.GROQ_API_BASE || "https://api.groq.com/openai/v1";
-const GROQ_ROUTER_MODEL = process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile";
-const GROQ_ROUTER_TIMEOUT_MS = parseInt(process.env.GROQ_ROUTER_TIMEOUT_MS || "12000", 10);
+// (moved) GROQ_API_BASE / GROQ_ROUTER_MODEL / GROQ_ROUTER_TIMEOUT_MS / ENABLE_GROQ_ROUTER declared earlier (avoid TDZ)
 
 // (moved) GROQ_ALLOW_ENV_FALLBACK declared earlier (avoid TDZ)
 
