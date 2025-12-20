@@ -441,29 +441,60 @@ const useSsl =
 function _isPgTerminationError(err) {
   const code = String(err?.code || "");
   const msg = String(err?.message || "");
+  const name = String(err?.name || "");
+
+  // ✅ Supabase/PG 강제 종료류
   if (code === "XX000" && /db_termination/i.test(msg)) return true;
-  if (/terminating connection|server closed the connection|connection terminated|db_termination/i.test(msg)) return true;
+  if (/db_termination|terminating connection|server closed the connection|connection terminated/i.test(msg))
+    return true;
+
+  // ✅ "connect timeout" 류도 사실상 동일한 일시 장애로 취급 (풀 리셋 + 1회 재시도)
+  if (/timeout exceeded when trying to connect/i.test(msg)) return true;
+  if (/connection timeout/i.test(msg)) return true;
+
+  // ✅ Node 네트워크 에러 코드들(일시 장애 가능성이 높음)
+  if (
+    code === "ETIMEDOUT" ||
+    code === "ECONNRESET" ||
+    code === "EPIPE" ||
+    code === "ENOTFOUND" ||
+    code === "EAI_AGAIN" ||
+    code === "ECONNREFUSED" ||
+    code === "ENETUNREACH"
+  ) {
+    return true;
+  }
+
+  // 일부 라이브러리는 code 없이 name/message로만 내려옴
+  if (name === "AbortError" && /timeout/i.test(msg)) return true;
+
   return false;
 }
 
 function _createPgPool() {
   const _isFinitePosInt = (x) => Number.isFinite(Number(x)) && Number(x) > 0;
 
-  // ✅ PROD 기본값을 더 여유롭게 (env가 있으면 env가 우선)
+  // ✅ PROD 기본값: Supabase/Render에서 커넥션 불안정 + 커넥션 수 제한을 고려해 낮춤
+  // (env가 있으면 env 우선)
+  const _max =
+    _isFinitePosInt(process.env.PGPOOL_MAX)
+      ? parseInt(process.env.PGPOOL_MAX, 10)
+      : (isProd ? 2 : 5);
+
   const _idleMs =
     _isFinitePosInt(process.env.PGPOOL_IDLE_MS)
       ? parseInt(process.env.PGPOOL_IDLE_MS, 10)
-      : (isProd ? 30000 : 10000);
+      : (isProd ? 15000 : 10000);
 
   const _connMs =
     _isFinitePosInt(process.env.PGPOOL_CONN_MS)
       ? parseInt(process.env.PGPOOL_CONN_MS, 10)
-      : (isProd ? 20000 : 10000);
+      : (isProd ? 15000 : 10000);
 
   const pool = new pg.Pool({
     connectionString: DB_URL,
     ssl: useSsl,
-    max: parseInt(process.env.PGPOOL_MAX || "5", 10),
+    max: Math.max(1, _max),
     idleTimeoutMillis: _idleMs,
     connectionTimeoutMillis: _connMs,
     keepAlive: true,
@@ -473,9 +504,9 @@ function _createPgPool() {
   pool.on("error", (err) => {
     console.error("⚠️ PG POOL ERROR (idle client):", err.code || "", err.message);
 
-    // db_termination류면 풀을 리셋(비동기 fire-and-forget)
+    // db_termination/timeout류면 풀을 리셋(비동기 fire-and-forget)
     if (_isPgTerminationError(err)) {
-      console.warn("⚠️ PG POOL: db_termination detected → resetting pool");
+      console.warn("⚠️ PG POOL: termination/timeout detected → resetting pool");
       void _resetPgPool(err);
     }
   });
@@ -485,6 +516,13 @@ function _createPgPool() {
 
 let _pgPool = _createPgPool();
 let _pgPoolResetting = false;
+
+// ✅ reset 폭주 방지(스로틀)
+let _pgPoolLastResetAtMs = 0;
+const PGPOOL_RESET_MIN_INTERVAL_MS = parseInt(
+  process.env.PGPOOL_RESET_MIN_INTERVAL_MS || "1500",
+  10
+);
 
 // ✅ 외부(예: connect-pg-simple)가 pool.on(...)을 호출할 수 있으니,
 //    리스너를 기억해두고 pool 교체 시에도 재부착
@@ -501,18 +539,39 @@ function _attachRememberedListeners(pool) {
 
 _attachRememberedListeners(_pgPool);
 
+function _withTimeout(promise, timeoutMs, label = "timeout") {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) =>
+      setTimeout(() => rej(Object.assign(new Error(label), { code: "ETIMEDOUT" })), timeoutMs)
+    ),
+  ]);
+}
+
 async function _resetPgPool(reasonErr) {
+  const now = Date.now();
+
+  // ✅ 너무 자주 리셋하면 오히려 장애를 증폭시킬 수 있음
+  if (now - _pgPoolLastResetAtMs < PGPOOL_RESET_MIN_INTERVAL_MS) return;
+
   if (_pgPoolResetting) return;
   _pgPoolResetting = true;
+  _pgPoolLastResetAtMs = now;
+
   try {
     const old = _pgPool;
+
+    // 새 풀 먼저 만든 뒤 교체 (다운타임 최소화)
     _pgPool = _createPgPool();
 
     // 새 풀로 교체되면, 기억된 리스너 재부착
     _attachRememberedListeners(_pgPool);
 
+    // old.end()가 길게 걸릴 수 있으니 타임아웃 보호
     try {
-      if (old) await old.end().catch(() => {});
+      if (old) {
+        await _withTimeout(old.end().catch(() => {}), 2500, "OLD_POOL_END_TIMEOUT").catch(() => {});
+      }
     } catch (_) {}
   } finally {
     _pgPoolResetting = false;
@@ -3832,9 +3891,31 @@ app.get("/api/settings/gemini/status", async (req, res) => {
       rate_limited_until: rl,
     }));
   } catch (e) {
-    console.error("❌ /api/settings/gemini/status Error:", e.message);
-    return res.status(500).json(buildError("GEMINI_STATUS_ERROR", "상태 조회 실패", e.message));
+  const msg = String(e?.message || e || "");
+  const code = String(e?.code || "");
+
+  // ✅ DB/네트워크 일시 장애는 500 대신 503 + Retry-After로 degrade
+  const transient =
+    _isPgTerminationError(e) ||
+    /timeout exceeded when trying to connect/i.test(msg) ||
+    /connection terminated due to connection timeout/i.test(msg) ||
+    code === "ETIMEDOUT" ||
+    code === "ECONNRESET" ||
+    code === "EPIPE" ||
+    code === "EAI_AGAIN";
+
+  if (transient) {
+    console.error("❌ /api/settings/gemini/status transient:", code, msg);
+    res.setHeader("Retry-After", "3");
+    res.setHeader("X-Retry-After-Ms", "3000");
+    return res
+      .status(503)
+      .json(buildError("GEMINI_STATUS_ERROR", "상태 조회 실패", msg));
   }
+
+  console.error("❌ /api/settings/gemini/status Error:", msg);
+  return res.status(500).json(buildError("GEMINI_STATUS_ERROR", "상태 조회 실패", msg));
+}
 });
 
 // ✅ ADD: Groq key status (앱 ping/진단용)
