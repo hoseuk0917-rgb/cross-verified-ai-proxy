@@ -7978,7 +7978,8 @@ async function _getGroqApiKeyForUser(authUser) {
 
   // ✅ 3) (선택) env fallback
   try {
-    if (typeof GROQ_ALLOW_ENV_FALLBACK !== "undefined" && GROQ_ALLOW_ENV_FALLBACK) {
+        const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+    if (__allowEnvFallback) {
       const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
       if (envK) return envK;
     }
@@ -8171,7 +8172,8 @@ async function __getGroqApiKeyForUser({ supabase, userId }) {
   }
 
   // 2) env fallback (옵션)
-  if (GROQ_ALLOW_ENV_FALLBACK) {
+    const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+  if (__allowEnvFallback) {
     const envKey = String(process.env.GROQ_API_KEY || "").trim();
     if (envKey) return envKey;
   }
