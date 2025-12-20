@@ -9756,7 +9756,39 @@ partial_scores.engine_times = engineTimes;
 partial_scores.engine_metrics = engineMetrics;
 
 // ✅ “쿼리 없으면 제외” + “calls 없으면 제외” + “results 0이면 제외”
-const enginesRequested = [...engines];
+// ✅ 요청 body.engines(또는 engines_requested/enginesRequested)가 있으면 그걸 우선 반영
+const enginesRequested = (() => {
+  const raw =
+    (req && req.body && typeof req.body === "object")
+      ? (req.body.engines ?? req.body.engines_requested ?? req.body.enginesRequested)
+      : null;
+
+  let arr = [];
+  if (Array.isArray(raw)) arr = raw;
+  else if (typeof raw === "string") arr = raw.split(/[\s,]+/);
+
+  // normalize
+  const norm = (x) => String(x || "").trim().toLowerCase();
+  arr = arr.map(norm).filter(Boolean);
+
+  // allow only engines already allowed in this path (the default `engines` list)
+  const allowed = new Set((Array.isArray(engines) ? engines : []).map(norm));
+
+  if (arr.length > 0) {
+    const uniq = [...new Set(arr)];
+    const filtered = uniq.filter((e) => allowed.has(e));
+    return filtered.length > 0 ? filtered : [...allowed];
+  }
+
+  // fallback: if earlier stages already set engines_requested, respect it
+  const ps = (partial_scores && Array.isArray(partial_scores.engines_requested))
+    ? partial_scores.engines_requested.map(norm).filter(Boolean)
+    : [];
+
+  if (ps.length > 0) return [...new Set(ps)];
+
+  return Array.isArray(engines) ? engines.slice() : [];
+})();
 
 // ✅ PRE-FINALIZE(호출단계) used/excluded 계산: 쿼리/calls/results 기준
 const { used: enginesUsedPre, excluded: enginesExcludedPre } = computeEnginesUsed({
@@ -10653,7 +10685,36 @@ partial_scores.engine_results = {
 partial_scores.engine_times = engineTimes;
 partial_scores.engine_metrics = engineMetrics;
 
-const enginesRequested = [...engines];
+// ✅ 요청 body.engines(또는 engines_requested/enginesRequested)가 있으면 그걸 우선 반영
+const enginesRequested = (() => {
+  const raw =
+    (req && req.body && typeof req.body === "object")
+      ? (req.body.engines ?? req.body.engines_requested ?? req.body.enginesRequested)
+      : null;
+
+  let arr = [];
+  if (Array.isArray(raw)) arr = raw;
+  else if (typeof raw === "string") arr = raw.split(/[\s,]+/);
+
+  const norm = (x) => String(x || "").trim().toLowerCase();
+  arr = arr.map(norm).filter(Boolean);
+
+  const allowed = new Set((Array.isArray(engines) ? engines : []).map(norm));
+
+  if (arr.length > 0) {
+    const uniq = [...new Set(arr)];
+    const filtered = uniq.filter((e) => allowed.has(e));
+    return filtered.length > 0 ? filtered : [...allowed];
+  }
+
+  const ps = (partial_scores && Array.isArray(partial_scores.engines_requested))
+    ? partial_scores.engines_requested.map(norm).filter(Boolean)
+    : [];
+
+  if (ps.length > 0) return [...new Set(ps)];
+
+  return Array.isArray(engines) ? engines.slice() : [];
+})();
 
 const { used: enginesUsedPre, excluded: enginesExcludedPre } = computeEnginesUsed({
   enginesRequested,
