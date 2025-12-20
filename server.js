@@ -7906,7 +7906,6 @@ if (
 const GROQ_API_BASE = process.env.GROQ_API_BASE || "https://api.groq.com/openai/v1";
 const GROQ_ROUTER_MODEL = process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile";
 const GROQ_ROUTER_TIMEOUT_MS = parseInt(process.env.GROQ_ROUTER_TIMEOUT_MS || "12000", 10);
-const ENABLE_GROQ_ROUTER = GROQ_ROUTER_ENABLE; // alias: keep single source of truth
 
 // (moved) GROQ_ALLOW_ENV_FALLBACK declared earlier (avoid TDZ)
 
@@ -8028,9 +8027,13 @@ async function _getGroqApiKeyForUser(authUser) {
 }
 
 async function groqRoutePlan({ authUser, groq_api_key, query, snippet, question, hintMode }) {
-  if (!ENABLE_GROQ_ROUTER) {
-    return { plan: [{ mode: (hintMode || "qv"), priority: 1, reason: "router_disabled" }], confidence: null, raw: null };
-  }
+  if (!GROQ_ROUTER_ENABLE) {
+  return {
+    plan: [{ mode: (hintMode || "qv"), priority: 1, reason: "router_disabled" }],
+    confidence: null,
+    raw: null,
+  };
+}
 
     const apiKey = (groq_api_key && String(groq_api_key).trim().length >= 10)
     ? String(groq_api_key).trim()
