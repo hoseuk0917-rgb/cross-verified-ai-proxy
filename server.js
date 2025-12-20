@@ -7312,7 +7312,7 @@ const verifyCoreHandler = async (req, res) => {
   const __answerText0 = String((__b0.answerText ?? __b0.user_answer ?? __b0.query ?? "")).trim();
   let answerText = __answerText0;
 
-  // ✅ TDZ 방지: verify 핸들러 스코프에서 먼저 선언
+  // ✅ TDZ 방지: verify 핸들러 스코프에서 먼저 선언 (DV/CV에서 사용)
   let ghUserText = String(__b0?.query ?? "").trim();
 
   // ✅ DV/CV 경로에서 rawQuery 변수를 뒤쪽 로직(allowCuratedLists/anchor/relevance 등)이 직접 참조함
@@ -7328,19 +7328,19 @@ const verifyCoreHandler = async (req, res) => {
   const __ghDebug = buildGithubDebugInput({
     mode: __b0?.mode,
     query: __b0?.query,
-    rawQuery, // ✅ 계산된 rawQuery 사용
+    rawQuery,
     user_answer: __b0?.user_answer,
-    answerText: answerText,
+    answerText,
     ghUserText,
   });
 
   let __irrelevant_urls = [];
-  let verifyRawJson = ""; // ✅ NEW: payload.verify_raw로 내려줄 "정제된 JSON 문자열"
-  let verifyRawJsonSanitized = ""; // ✅ NEW(S-19): evidence 정합화된 verify JSON
-  let logUserId = null;   // ???붿껌留덈떎 ?낅┰
-  let authUser = null;    // ???붿껌留덈떎 ?낅┰
+  let verifyRawJson = ""; // ✅ payload.verify_raw로 내려줄 "정제된 JSON 문자열"
+  let verifyRawJsonSanitized = ""; // ✅ evidence 정합화된 verify JSON
+  let logUserId = null;
+  let authUser = null;
 
-      const {
+  const {
     query,
     mode,
     gemini_key,
@@ -7350,17 +7350,12 @@ const verifyCoreHandler = async (req, res) => {
     user_answer,
     github_token,
     gemini_model,
-
-    // ??FV?먯꽌 "?ъ떎 臾몄옣"??query? 遺꾨━?댁꽌 蹂대궡怨??띠쓣 ???ъ슜
     core_text,
-
     user_id,
     user_email,
     user_name,
-
-    // 🔍 /api/verify-snippet → snippetToVerifyBody에서 실어주는 메타
     snippet_meta,
-    } = req.body;
+  } = __b0;
 
   let safeMode = String(req.body?.mode ?? mode ?? "").trim().toLowerCase();
   const rawMode = safeMode; // ✅ 요청된 원래 mode를 보존(뒤에서 fallback plan에서 사용)
