@@ -8277,11 +8277,6 @@ if (safeMode === "auto" || safeMode === "overlay" || safeMode === "route") {
 // - 라우터가 qv + lv_extra 형태로 추가실행하는 건 OK
 try {
   const __path0 = String(req.path || "");
-  if (__path0 === "/api/verify" && String(safeMode || "").toLowerCase() === "lv") {
-    return res
-      .status(400)
-      .json(buildError("INVALID_MODE", "LV는 /api/lv 전용입니다. (/api/verify에서는 qv/fv/dv/cv만 허용)"));
-  }
 } catch (_) {}
 
 // ✅ FV는 “검증할 스니펫/클레임”이 있을 때만 허용 (없으면 QV로 강제)
@@ -8313,7 +8308,7 @@ try {
   }
 } catch (_) {}
 
-const allowedModes = ["qv", "fv", "dv", "cv", "lv"];
+const allowedModes = ["qv", "fv", "dv"];
 if (!allowedModes.includes(safeMode)) {
   return res
     .status(400)
@@ -8328,7 +8323,7 @@ if (!allowedModes.includes(safeMode)) {
   let verifyModelUsed = null;    // 실제로 사용된 verify 모델(로그/응답용)
 
   // ✅ verify 단계는 flash/flash-lite만 허용 (pro 금지)
-if (safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "cv") {
+if (safeMode === "qv" || safeMode === "fv" || safeMode === "dv") {
   const g = String(geminiModelRaw || "");
   if (g === "flash-lite" || g === "lite" || /flash-lite/i.test(g)) {
     verifyModel = "gemini-2.5-flash-lite";
@@ -8468,6 +8463,18 @@ const githubTokenFinal = (github_token && String(github_token).trim()) || vault.
 
 const geminiKeysCount = (userSecrets?.gemini?.keyring?.keys || []).length;
 
+// ✅ legal-ish 감지 (LV 제거 전제: qv/fv에서만 klaw “추가 엔진”으로 선택 실행)
+function _looksLegalishText(s) {
+  const t = String(s || "").toLowerCase();
+  if (!t) return false;
+  // 한국 법률/판례/조문/소송/계약 등 “질문 의도” 힌트만 넓게
+  return /(\bklaw\b|law\.go\.kr|easylaw|법령|조문|조항|판례|대법원|헌법|민법|형법|상법|행정|소송|소장|가처분|고소|고발|벌금|처벌|합의|손해배상|계약|위약금|해고|임금|근로기준법|노동청|퇴직금|산재)/i.test(t);
+}
+const __looksLegalish =
+  _looksLegalishText(query) ||
+  _looksLegalishText(req?.body?.question) ||
+  _looksLegalishText(userCoreText);
+
 // ✅ 모드별 필수키 검증(body → vault 순서)
 if ((safeMode === "qv" || safeMode === "fv") && (!naverIdFinal || !naverSecretFinal)) {
   return res.status(400).json(
@@ -8478,17 +8485,14 @@ if ((safeMode === "qv" || safeMode === "fv") && (!naverIdFinal || !naverSecretFi
   );
 }
 
-if (safeMode === "lv" && !klawKeyFinal) {
-  return res
-    .status(400)
-    .json(buildError("VALIDATION_ERROR", "LV 모드에서는 klaw_key가 필요합니다. (설정 저장 또는 body 포함)"));
-}
-
-if ((safeMode === "dv" || safeMode === "cv") && !githubTokenFinal) {
+if (safeMode === "dv" && !githubTokenFinal) {
   return res.status(400).json(
-    buildError("VALIDATION_ERROR", "DV/CV 모드에서는 github_token이 필요합니다. (설정 저장 또는 body 포함)")
+    buildError("VALIDATION_ERROR", "DV 모드에서는 github_token이 필요합니다. (설정 저장 또는 body 포함)")
   );
 }
+
+// ✅ qv/fv에서 klaw를 “추가 실행”할지(키 없으면 그냥 스킵)
+const __runKlawExtra = !!(__looksLegalish && klawKeyFinal);
 
 if (!logUserId) {
   return res.status(400).json(
@@ -8526,6 +8530,51 @@ switch (safeMode) {
   engines.push("crossref", "openalex", "wikidata", "gdelt", "naver");
 } else {
   engines.push("crossref", "openalex", "gdelt", "naver");
+}
+
+// ✅ qv/fv + legal-ish면 klaw “추가 엔진”으로 1회 실행
+if (__runKlawExtra) {
+  engines.push("klaw");
+
+  try {
+    const t_klaw = Date.now();
+    external.klaw = await fetchKLawAll(klawKeyFinal, query);
+    const ms_klaw = Date.now() - t_klaw;
+
+    // time/metric 흔적 남기기(형식 불명확해도 안전하게 누적)
+    try { recordTime(engineTimes, "klaw_ms", ms_klaw); } catch {}
+    try { recordMetric(engineMetrics, "klaw", ms_klaw); } catch {}
+    try {
+      if (!engineMetrics.klaw || typeof engineMetrics.klaw !== "object") engineMetrics.klaw = {};
+      engineMetrics.klaw.calls = Number(engineMetrics.klaw.calls || 0) + 1;
+      engineMetrics.klaw.ms_total = Number(engineMetrics.klaw.ms_total || 0) + ms_klaw;
+    } catch {}
+
+    try {
+      if (partial_scores && typeof partial_scores === "object") {
+        partial_scores.klaw_extra = { wanted: true, used: true, ms: ms_klaw };
+      }
+    } catch {}
+  } catch (e) {
+    // klaw 실패는 qv/fv 자체를 죽이지 않음(추가 엔진이므로)
+    try { external.klaw = null; } catch {}
+    try {
+      if (partial_scores && typeof partial_scores === "object") {
+        partial_scores.klaw_extra = {
+          wanted: true,
+          used: false,
+          error: String(e?.message || e || "klaw_failed"),
+        };
+      }
+    } catch {}
+  }
+} else {
+  // 키 없거나 legal-ish 아님 → klaw 미실행
+  try {
+    if (__looksLegalish && partial_scores && typeof partial_scores === "object") {
+      partial_scores.klaw_extra = { wanted: true, used: false, reason: "missing_klaw_key_or_not_legalish" };
+    }
+  } catch {}
 }
 
         // QV/FV 전처리는 항상 lite 계열 모델 사용
@@ -9516,6 +9565,13 @@ partial_scores.engine_queries = {
   wikidata: uniqStrings(engineQueriesUsed.wikidata, 12),
   gdelt: uniqStrings(engineQueriesUsed.gdelt, 12),
   naver: uniqStrings(engineQueriesUsed.naver, 12),
+  // ✅ klaw는 “추가 엔진”이므로 query 1개만 넣어 엔진_used 산정/표시에 힌트 제공
+  klaw: uniqStrings(
+    (engineQueriesUsed && Array.isArray(engineQueriesUsed.klaw) && engineQueriesUsed.klaw.length > 0)
+      ? engineQueriesUsed.klaw
+      : [String(query || "").trim()].filter(Boolean),
+    12
+  ),
 };
 
 // ✅ (이 위치로 이동!) 엔진별 "결과 개수" 기록 + engines_used/excluded 계산
@@ -9525,6 +9581,8 @@ partial_scores.engine_results = {
   wikidata: Array.isArray(external.wikidata) ? external.wikidata.length : 0,
   gdelt: Array.isArray(external.gdelt) ? external.gdelt.length : 0,
   naver: Array.isArray(external.naver) ? external.naver.length : 0,
+  // ✅ klaw는 배열이 아닐 수 있으니 “존재 여부” 기반
+  klaw: external.klaw ? 1 : 0,
 };
 
 // ✅ 메트릭/타임 누적도 여기서 확정 저장(호출 끝난 뒤 값이 들어있음)
@@ -9953,18 +10011,18 @@ const githubRepoBlob = (r) => {
 };
 
 // 질의에 "강한 앵커"가 있으면 그게 repo 메타에 반드시 있어야 통과
-const needExpressRateLimit = /express-rate-limit/i.test(rawQuery);
-const needRedis = /\bredis\b/i.test(rawQuery);
+const needExpressRateLimitAnchor = /express-rate-limit/i.test(rawQuery);
+const needRedisAnchor = /\bredis\b/i.test(rawQuery);
 
 // 1차 relevance 판정
 const isRelevantGithubRepo = (r) => {
   const blob = githubRepoBlob(r);
 
-  if (needExpressRateLimit) {
+  if (needExpressRateLimitAnchor) {
     // express-rate-limit 관련이면 "express-rate-limit" 또는 공식 store 이름( rate-limit-redis )이 최소 1개는 있어야 함
     if (!blob.includes("express-rate-limit") && !blob.includes("rate-limit-redis")) return false;
   }
-  if (needRedis) {
+  if (needRedisAnchor) {
     // redis가 질의에 있으면 repo 메타에도 redis가 있어야 함 (Hono/Koa 같은 엉뚱한 레포 컷)
     if (!blob.includes("redis")) return false;
   }
@@ -9989,7 +10047,7 @@ const wantCurated =
 const allowCurated = Boolean(allowCuratedLists || wantCurated);
 
 // ✅ gh repo 중복 제거(여러 query/page에서 같은 repo 나오는 것 방지)
-const ghSeen = new Set();
+// (이미 상단에서 ghSeen을 만들었으므로 여기서는 재선언하지 않음)
 
 for (const q of ghQueries) {
   const q1 = sanitizeGithubQuery(q, ghUserText);
@@ -10351,59 +10409,14 @@ partial_scores.engine_exclusion_reasons_pre = Object.fromEntries(
   }
 
   case "lv": {
-    engines.push("klaw");
-     external.klaw = await fetchKLawAll(klawKeyFinal, query);
-
-    let lvSummary = null;
-        if (gemini_key || geminiKeysCount > 0) {
-      const prompt = `
-너는 대한민국 법령 및 판례를 요약해주는 엔진이다.
-[사용자 질의]
-${query}
-
-[아래는 K-Law API에서 가져온 JSON 응답이다.]
-이 JSON 안에 포함된 관련 법령·판례를 확인하고 질의에 답하는 데 중요한 내용만 요약해라.
-
-- 한국어로 3~7개의 bullet
-- 법령/조문 또는 사건명 + 핵심(의무/금지/절차)
-- 서론/결론 금지
-
-[K-Law JSON]
-${JSON.stringify(external.klaw).slice(0, 6000)}
-      `.trim();
-
-      try {
-        const t_lv = Date.now();
-        lvSummary = await fetchGeminiSmart({
-  userId: logUserId,
-  keyHint: gemini_key,
-  model: "gemini-2.5-flash-lite",
-  payload: { contents: [{ parts: [{ text: prompt }] }] },
-});
-        const ms_lv = Date.now() - t_lv;
-        recordTime(geminiTimes, "lv_flash_lite_summary_ms", ms_lv);
-        recordMetric(geminiMetrics, "lv_flash_lite_summary", ms_lv);
-      } catch (e) {
-        if (
-  e?.code === "INVALID_GEMINI_KEY" ||
-  e?.code === "GEMINI_KEY_EXHAUSTED" ||
-  e?.code === "GEMINI_KEY_MISSING" ||
-  e?.code === "GEMINI_RATE_LIMIT"
-) throw e;
-
-        if (DEBUG) console.warn("⚠️ LV Flash-Lite summary fail:", e.message);
-        lvSummary = null;
-      }
-    }
-
-    partial_scores.lv_summary = lvSummary || null;
-    break;
-  }
-
-  default: {
-    // 여기까지 오면 allowedModes 검증에서 이미 걸러짐
-    break;
-  }
+  // ✅ LV 모드 제거: 여기로 오면 차단
+  return res.status(400).json(
+    buildError(
+      "VALIDATION_ERROR",
+      "LV 모드는 제거되었습니다. mode=qv 또는 mode=fv로 요청하세요. (법률 키워드 + klaw_key가 있으면 klaw 엔진을 추가 실행합니다.)"
+    )
+  );
+}
 }
 
 // ✅ 이후 로직(보정계수/로그/응답)은 enginesUsed를 기준으로 사용
