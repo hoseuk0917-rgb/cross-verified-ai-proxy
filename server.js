@@ -7459,6 +7459,9 @@ let __cacheKey = null;
 // 환경변수로 라우터 전체 on/off 가능
 const GROQ_ROUTER_ENABLE = String(process.env.GROQ_ROUTER_ENABLE || "1") !== "0";
 
+// ✅ TDZ 재발 방지: 라우터 실행 경로보다 “먼저” 선언해 둔다.
+const GROQ_ALLOW_ENV_FALLBACK = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+
 // ✅ Groq Router in-memory cache (process-wide via globalThis)
 // - Same input => skip Groq call
 // - TTL + MAX size (LRU-ish via Map insertion order)
@@ -7534,9 +7537,16 @@ let __routerUsed = false; // ✅ 실제 라우터 실행/캐시히트 여부
 let __routerError = null; // ✅ router failure diagnostics (string)
 
 try {
-  const _rawMode = String(safeMode || "").trim().toLowerCase();
+    // NOTE: safeMode는 이 시점에 기본값("qv") 등으로 이미 세팅돼 있을 수 있으므로,
+  // 라우팅 조건은 요청 바디의 원시 모드(mode/safeMode/raw_mode)를 우선으로 본다.
+  const _rawMode = String(
+    (req && req.body && (req.body.mode ?? req.body.safeMode ?? req.body.raw_mode)) ??
+    safeMode ??
+    ""
+  ).trim().toLowerCase();
+
   const __cacheMode =
-  (_rawMode === "overlay" || _rawMode === "route") ? "auto" : _rawMode;
+    (_rawMode === "overlay" || _rawMode === "route") ? "auto" : _rawMode;
 
   const __isSn =
     (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : false;
@@ -7544,7 +7554,7 @@ try {
   const _shouldRoute =
     GROQ_ROUTER_ENABLE &&
     !__isSn &&
-    (!safeMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
+    (!_rawMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
 
   if (_shouldRoute) {
     // auth user (best-effort) — avoid ReferenceError when authUser is not in scope
@@ -7711,7 +7721,9 @@ __runLvExtra = !!wantLvExtra;
 // - plan/runs: [topPrimary] (+ lv extra면 lv를 뒤에 추가)
 // - qv+fv 조합은 만들지 않음
 try {
-  if (__routerPlan && typeof __routerPlan === "object") {
+  // ✅ 라우터를 실제로 실행/캐시히트한 경우에만 plan/runs/primary를 "top 정규화"로 덮어쓴다.
+  // (라우터 미사용/스킵/실패 fallback 진단(reason/plan)을 보존)
+  if (__routerUsed && __routerPlan && typeof __routerPlan === "object") {
     // fv를 원했는데 스니펫이 없어서 서버가 qv로 내린 경우 흔적 남김
     if (primaryRaw === "fv" && !__hasSnippetClaim) {
       __routerPlan.reason = (__routerPlan.reason || "") ? __routerPlan.reason : "server_downgrade_fv_no_snippet";
@@ -7868,8 +7880,7 @@ const GROQ_ROUTER_MODEL = process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versat
 const GROQ_ROUTER_TIMEOUT_MS = parseInt(process.env.GROQ_ROUTER_TIMEOUT_MS || "12000", 10);
 const ENABLE_GROQ_ROUTER = GROQ_ROUTER_ENABLE; // alias: keep single source of truth
 
-// (선택) env fallback 허용 여부
-const GROQ_ALLOW_ENV_FALLBACK = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+// (moved) GROQ_ALLOW_ENV_FALLBACK declared earlier (avoid TDZ)
 
 function _safeJsonParse(s) {
   try { return JSON.parse(s); } catch { return null; }
