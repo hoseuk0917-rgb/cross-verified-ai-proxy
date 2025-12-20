@@ -11928,52 +11928,137 @@ Rules:
       // ✅ verify는 모델 실패/빈문자 발생이 있어서 fallback 시도
 const verifyPayload = { contents: [{ parts: [{ text: verifyPrompt }] }] };
 
-// 1순위: verifyModel, 2순위: flash, 3순위: flash-lite
-const verifyModelCandidates = [
-  verifyModel,
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-].filter((v, i, a) => v && a.indexOf(v) === i);
-
+// ✅ NEW: verify는 Groq 우선(옵션) → 실패 시 Gemini 후보 fallback
 let lastVerifyErr = null;
+let groqVerifyUsed = false;
+let groqVerifyModelUsed = null;
 
-const t_verify = Date.now();
-try {
-  for (const m of verifyModelCandidates) {
-    try {
-      verify = await fetchGeminiSmart({
-        userId: logUserId,
-        keyHint: gemini_key,
-        model: m,
-        payload: verifyPayload,
-        opts: { label: `verify:${m}`, minChars: 20 },
-      });
+const GROQ_VERIFY_ENABLE = String(process.env.GROQ_VERIFY_ENABLE || "1") !== "0";
+const GROQ_VERIFY_MODEL =
+  String(process.env.GROQ_VERIFY_MODEL || "").trim() ||
+  (typeof GROQ_ROUTER_MODEL !== "undefined" ? String(GROQ_ROUTER_MODEL) : "llama-3.3-70b-versatile");
 
-      verifyModelUsed = m; // ✅ 실제 성공 모델 기록(중복 제거)
-      break;
-    } catch (e) {
-      const code = e?.code;
-      const status = e?.response?.status;
+const __getGroqKeyForVerify = () => {
+  // ✅ env 우선 (당장 테스트/운영 전환 쉽게)
+  const envKey = String(process.env.GROQ_API_KEY || "").trim();
+  if (envKey) return envKey;
 
-      // ✅ 즉시 중단(상위로 던져서 key/쿨다운 정책이 처리하게)
-      if (
-        code === "INVALID_GEMINI_KEY" ||
-        code === "GEMINI_KEY_EXHAUSTED" ||
-        code === "GEMINI_KEY_MISSING" ||
-        code === "GEMINI_RATE_LIMIT" ||
-        status === 429
-      ) {
-        throw e;
-      }
+  // ✅ 혹시 handler-scope에 groq key 변수가 있으면(이름이 다를 수 있어서 안전하게 typeof로만)
+  try {
+    if (typeof groq_api_key !== "undefined" && String(groq_api_key || "").trim()) return String(groq_api_key).trim();
+  } catch (_) {}
+  try {
+    if (typeof groq_key !== "undefined" && String(groq_key || "").trim()) return String(groq_key).trim();
+  } catch (_) {}
 
-      lastVerifyErr = e;
-      // 다음 후보 모델로 계속 진행
+  return "";
+};
+
+const __fetchGroqVerify = async ({ model, prompt, timeoutMs }) => {
+  const key = __getGroqKeyForVerify();
+  if (!key) throw Object.assign(new Error("GROQ_KEY_MISSING_FOR_VERIFY"), { code: "GROQ_KEY_MISSING_FOR_VERIFY" });
+
+  const url = `${String(GROQ_API_BASE || "https://api.groq.com/openai/v1").replace(/\/+$/, "")}/chat/completions`;
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 12000));
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.2,
+        max_tokens: 4096,
+      }),
+    });
+
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = json?.error?.message || `GROQ_HTTP_${res.status}`;
+      throw Object.assign(new Error(msg), { response: { status: res.status, data: json } });
     }
+
+    const content = json?.choices?.[0]?.message?.content;
+    if (!content || !String(content).trim()) throw new Error("GROQ_VERIFY_EMPTY");
+    return String(content);
+  } finally {
+    clearTimeout(t);
   }
-} finally {
-  const ms_verify = Date.now() - t_verify;
-  recordTime(geminiTimes, "verify_ms", ms_verify);
-  recordMetric(geminiMetrics, "verify", ms_verify);
+};
+
+// 1) Groq 우선 시도
+if (GROQ_VERIFY_ENABLE) {
+  const t_groq_verify = Date.now();
+  try {
+    verify = await __fetchGroqVerify({
+      model: GROQ_VERIFY_MODEL,
+      prompt: verifyPrompt,
+      timeoutMs: parseInt(process.env.GROQ_VERIFY_TIMEOUT_MS || "12000", 10),
+    });
+    groqVerifyUsed = true;
+    groqVerifyModelUsed = GROQ_VERIFY_MODEL;
+
+    const ms = Date.now() - t_groq_verify;
+    if (partial_scores && typeof partial_scores === "object") {
+      partial_scores.groq_verify = { used: true, model: groqVerifyModelUsed, ms };
+    }
+  } catch (e) {
+    const ms = Date.now() - t_groq_verify;
+    if (partial_scores && typeof partial_scores === "object") {
+      partial_scores.groq_verify = { used: false, model: GROQ_VERIFY_MODEL, ms, err: String(e?.message || e) };
+    }
+    lastVerifyErr = e;
+    // Groq 실패 시 Gemini로 fallback
+  }
+}
+
+// 2) Groq로 성공 못 했으면 Gemini 후보로 fallback
+if (!groqVerifyUsed) {
+  // 1순위: verifyModel, 2순위: flash, 3순위: flash-lite
+  const verifyModelCandidates = [
+    verifyModel,
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+  ].filter((v, i, a) => v && a.indexOf(v) === i);
+
+  const t_verify = Date.now();
+  try {
+    for (const m of verifyModelCandidates) {
+      try {
+        verify = await fetchGeminiSmart({
+          userId: logUserId,
+          keyHint: gemini_key,
+          model: m,
+          payload: verifyPayload,
+          opts: { label: `verify:${m}`, minChars: 20 },
+        });
+        verifyModelUsed = m; // ✅ 실제 성공 모델 기록
+        break;
+      } catch (e) {
+        if (
+          e?.code === "INVALID_GEMINI_KEY" ||
+          e?.code === "GEMINI_KEY_EXHAUSTED" ||
+          e?.code === "GEMINI_KEY_MISSING" ||
+          e?.code === "GEMINI_RATE_LIMIT"
+        ) throw e;
+
+        const status = e?.response?.status;
+        if (status === 429) throw e; // ✅ 쿼터 소진은 즉시 상위로
+        lastVerifyErr = e;
+        // 다음 후보 모델로 계속 진행
+      }
+    }
+  } finally {
+    const ms_verify = Date.now() - t_verify;
+    recordTime(geminiTimes, "verify_ms", ms_verify);
+    recordMetric(geminiMetrics, "verify", ms_verify);
+  }
 }
 
 verifyRawJson = ""; // ✅ reset (declared at handler-scope)
@@ -12000,6 +12085,37 @@ if (!verify || !String(verify).trim()) {
 
     verifyRawJson = jsonText; // ✅ NEW: 코드펜스/잡문 제거된 JSON만 내려줌
     verifyMeta = JSON.parse(jsonText);
+
+    // ✅ NEW: input.blocks 가 주어졌으면, verifyMeta.blocks 는 그 id 집합으로 "락" 걸기
+// - 모델이 멋대로 core_text를 2~8로 쪼개 5블록 만들어도 제거
+// - 텍스트는 input.blocks의 text로 강제해 downstream 정합성 유지
+try {
+  const _bf = Array.isArray(blocksForVerify) ? blocksForVerify : [];
+  if (_bf.length > 0 && verifyMeta && Array.isArray(verifyMeta.blocks)) {
+    const id2text = new Map();
+    const allowed = new Set();
+
+    for (const b of _bf) {
+      const id = Number.isFinite(Number(b?.id)) ? Number(b.id) : null;
+      if (id == null) continue;
+      allowed.add(id);
+      id2text.set(id, String(b?.text || "").trim());
+    }
+
+    verifyMeta.blocks = verifyMeta.blocks
+      .filter((vb) => allowed.has(Number(vb?.id)))
+      .map((vb) => {
+        const id = Number(vb.id);
+        const forcedText = id2text.get(id);
+        return {
+          ...vb,
+          id,
+          text: (forcedText && forcedText.length > 0) ? forcedText : String(vb?.text || "").trim(),
+        };
+      })
+      .sort((a, b) => Number(a.id) - Number(b.id));
+  }
+} catch (_) {}
 
 // ✅ (optional) normalize if helper exists
 if (typeof normalizeVerifyMeta === "function") {
@@ -12244,8 +12360,14 @@ function __isEvidenceLikeItem(x) {
     x.snippet || x.summary || x.text || x.evidence_text || x.evidenceText || ""
   ).trim();
 
-  // 최소 하나라도 있으면 evidence로 간주(엔진별로 title/host만 있는 경우도 있음)
-  return !!(url || host || title || text);
+  // ✅ NEW: academic 엔진(논문/레코드)에서 URL/host가 없어도 DOI/ID만 있는 경우가 많음
+  const doi = String(x.doi || x.DOI || x.doi_url || x.doiUrl || "").trim();
+  const id = String(
+    x.id || x.paper_id || x.paperId || x.work_id || x.workId || x.openalex_id || x.openalexId || ""
+  ).trim();
+
+  // 최소 하나라도 있으면 evidence로 간주
+  return !!(url || host || title || text || doi || id);
 }
 
 // helper: external[eng]에서 "evidence 배열" 최대한 안전하게 꺼내기
