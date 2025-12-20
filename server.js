@@ -13396,22 +13396,47 @@ try {
   // verdict 계산 실패해도 전체 응답은 그대로 유지
 }
 
-// ✅ (필수) QV/FV/DV/CV에서 Gemini가 0ms 스킵인데 success:true로 나가는 것 방지
-const NEED_GEMINI =
+// ✅ (필수) QV/FV/DV/CV에서 LLM이 통째로 스킵인데 success:true로 나가는 것 방지
+// - 기존은 500을 냈는데, 프론트/로그 안정 위해 200 + code 로 통일
+const NEED_LLM =
   safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "cv";
 
-if (NEED_GEMINI) {
+if (NEED_LLM) {
   const gemMs = Number(payload?.partial_scores?.gemini_total_ms || 0);
   const flLen = String(flash || "").trim().length;
   const vrLen = String(verify || "").trim().length;
 
-  // gemini_total_ms=0 AND flash/verify 둘 다 비면 "스킵"으로 판단하고 실패 처리
-  if (!(gemMs > 0 || flLen > 0 || vrLen > 0)) {
-    return res.status(500).json({
+  // ✅ Groq verify가 있었는지도 같이 본다 (Gemini total=0이어도 Groq만 쓴 케이스는 정상)
+  const groqVerifyUsed = !!payload?.partial_scores?.groq_verify?.used;
+  const groqVerifyMs = Number(payload?.partial_scores?.groq_verify?.ms || 0);
+
+  const hasAnyLlmSignal =
+    (gemMs > 0) ||
+    (flLen > 0) ||
+    (vrLen > 0) ||
+    (groqVerifyUsed) ||
+    (groqVerifyMs > 0);
+
+  if (!hasAnyLlmSignal) {
+    // ✅ 500 대신 200 + 에러코드 (번역/기타 엔드포인트 정책과 통일)
+    return res.status(200).json({
       success: false,
-      code: "GEMINI_SKIPPED",
+      code: "LLM_SKIPPED",
       message:
-        "Gemini stage was skipped unexpectedly (gemini_total_ms=0, flash/verify empty). Check gemini key resolution and skip/early-return logic.",
+        "LLM stage was skipped unexpectedly (gemini_total_ms=0, flash/verify empty, groq_verify unused). Check key resolution and skip/early-return logic.",
+      diag: {
+        mode: safeMode,
+        engines_requested: payload?.partial_scores?.engines_requested ?? null,
+        engines_used_pre: payload?.partial_scores?.engines_used_pre ?? null,
+        gemini_total_ms: gemMs,
+        flash_len: flLen,
+        verify_len: vrLen,
+        groq_verify: payload?.partial_scores?.groq_verify ?? null,
+        // 키링 상태/쿨다운은 여기서 직접 접근 안 하고,
+        // partial_scores에 이미 남아있는 값들만 안전하게 내려준다.
+        gemini_times: payload?.partial_scores?.gemini_times ?? null,
+        gemini_metrics: payload?.partial_scores?.gemini_metrics ?? null,
+      },
       timestamp: new Date().toISOString(),
     });
   }
