@@ -3826,6 +3826,68 @@ app.get("/api/settings/gemini/status", async (req, res) => {
   }
 });
 
+// ✅ ADD: Groq key status (앱 ping/진단용)
+app.get("/api/settings/groq/status", async (req, res) => {
+  try {
+    const authUser = await getSupabaseAuthUser(req);
+    if (!authUser) {
+      return res.status(401).json(buildError("UNAUTHORIZED", "로그인이 필요합니다."));
+    }
+
+    const userId = await resolveLogUserId({
+      user_id: null,
+      user_email: authUser.email,
+      user_name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || null,
+      auth_user: authUser,
+      bearer_token: getBearerToken(req),
+    });
+
+    const row = await loadUserSecretsRow(userId);
+    const secrets = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
+
+    const enc = secrets?.integrations?.groq?.api_key_enc || null;
+
+    // 복호화 가능/여부만 체크 (키 본문은 절대 노출 금지)
+    let dec_ok = false;
+    let dec_len = 0;
+
+    try {
+      const v = decryptIntegrationsSecrets(secrets);
+      const k = String(v?.groq_api_key || v?.groq_key || "").trim();
+      if (k) {
+        dec_ok = true;
+        dec_len = k.length;
+      }
+    } catch (_) {}
+
+    const allow_env_fallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+    const env_present = !!String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+
+    // "지금 이 사용자 기준으로" 라우터가 쓸 수 있는 키 소스 요약
+    const effective_source =
+      dec_ok ? "user_secrets" : (allow_env_fallback && env_present ? "env" : "none");
+
+    return res.json(buildSuccess({
+      has_groq_enc: !!enc,
+      has_groq_dec: !!dec_ok,
+      groq_key_len: dec_len,
+
+      allow_env_fallback,
+      env_present,
+      effective_source,
+
+      // 참고: 라우터 관련 env (키 값은 노출 금지)
+      groq_api_base: String(process.env.GROQ_API_BASE || "https://api.groq.com/openai/v1"),
+      groq_router_model: String(process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile"),
+      groq_router_timeout_ms: parseInt(process.env.GROQ_ROUTER_TIMEOUT_MS || "12000", 10),
+      groq_router_enable: String(process.env.GROQ_ROUTER_ENABLE || "1") !== "0",
+    }));
+  } catch (e) {
+    console.error("❌ /api/settings/groq/status Error:", e.message);
+    return res.status(500).json(buildError("GROQ_STATUS_ERROR", "상태 조회 실패", e.message));
+  }
+});
+
 app.get(
   "/auth/admin",
   passport.authenticate("google", { scope: ["email", "profile"] })
