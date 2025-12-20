@@ -7531,6 +7531,8 @@ async function __getUserGroqKey(req) {
 
 // ✅ S-17: Groq Router execution (sets safeMode + __runLvExtra + __routerPlan, with in-memory plan cache)
 let __routerUsed = false; // ✅ 실제 라우터 실행/캐시히트 여부
+let __routerError = null; // ✅ router failure diagnostics (string)
+
 try {
   const _rawMode = String(safeMode || "").trim().toLowerCase();
   const __cacheMode =
@@ -7741,6 +7743,11 @@ try {
   }
 } catch (e) {
   // 라우터 실패해도 기존 흐름 유지 (qv/fv 강제/기본 로직으로 진행)
+  try {
+    __routerError = String(e?.code || e?.message || e || "unknown").slice(0, 160);
+  } catch (_) {
+    __routerError = "unknown";
+  }
   __routerPlan = null;
   __runLvExtra = false;
   __routerCached = false;
@@ -7760,10 +7767,20 @@ const __sf =
     ? "qv"
     : __sf0;
 
-  // 0) ✅ fallback: never leave __routerPlan null
+    // 0) ✅ fallback: never leave __routerPlan null
   if (!__routerPlan) {
+    // ⚠️ rawMode 변수는 선언/초기화 순서에 따라 TDZ(ReferenceError)가 날 수 있으므로
+    // 요청 바디에서 직접 읽어 안전하게 기록한다.
+    const __rawModeSafe = String(
+      (req && req.body && (req.body.mode ?? req.body.safeMode ?? req.body.raw_mode)) ?? "auto"
+    ).toLowerCase();
+
+    const __err0 = (__routerError && String(__routerError).trim())
+      ? `router_error:${String(__routerError).trim().slice(0, 140)}`
+      : "router_plan_was_null";
+
     __routerPlan = {
-      raw_mode: String(rawMode || "auto").toLowerCase(),
+      raw_mode: __rawModeSafe,
       safe_mode_final: __sf,
       primary: __sf,
       plan: [{ mode: __sf, priority: 1, reason: "router_missing_or_failed" }],
@@ -7771,7 +7788,8 @@ const __sf =
       model: (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
       cached: false,
       lv_extra: false,
-      error: "router_plan_was_null",
+      reason: __err0, // ✅ 응답 reason으로 바로 노출
+      error: __err0,  // ✅ 내부 진단도 유지
     };
   }
 
