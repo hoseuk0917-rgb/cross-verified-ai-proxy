@@ -41,3 +41,6 @@ coverage/
 dist/
 tmp/
 .cache/
+
+# local bench
+llm_bench/

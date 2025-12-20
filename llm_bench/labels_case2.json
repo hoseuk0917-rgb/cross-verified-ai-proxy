@@ -1,8 +1,0 @@
-{
-  "require_number": true,
-  "case_id": "case2_population_2025_fulltext",
-  "gold_overall_verdict": "SUPPORTED",
-  "support_ids": [ "E1", "E2" ],
-  "contradict_ids": [ "E3" ],
-  "noise_ids": []
-}
