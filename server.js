@@ -9867,7 +9867,7 @@ const looksObviouslyNonCode = (q) => {
   return false;
 };
 
-if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(rawQuery || query)) {
+if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(query)) {
   const elapsedMs = Date.now() - start;
 
   const suggestedMode =
