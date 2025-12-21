@@ -7549,23 +7549,44 @@ async function preprocessQVFVOneShot({
 
     // ✅ official seed는 "prepend"로 최우선 보장 (cap=2에서 중요)
     const __officialSeeds = __isPop
-      ? [
-          "site:kosis.kr DT_1BPA002 2025 총인구 statHtml",
-          "site:jumin.mois.go.kr 2025 주민등록인구",
-          "통계청 장래인구추계 총인구",
-          "DT_1BPA002 총인구",
-        ]
-      : __isNumericLike
-        ? [
-            "KOSIS 통계표",
-            "통계청 통계",
-          ]
-        : [];
+  ? [
+      // ✅ Naver 쿼리 제약(짧게/30자 이내) 고려: "site:" 같은 긴/영문 시드는 제거
+      "KOSIS DT_1BPA002 총인구",
+      "통계청 장래인구추계 총인구",
+      "주민등록인구 mois",
+      "KOSIS 인구 통계표",
+    ]
+  : __isNumericLike
+    ? [
+        "KOSIS 통계표",
+        "통계청 통계",
+      ]
+    : [];
 
-    if (__officialSeeds.length) {
-      const __officialQ = __officialSeeds.map((s) => (__year ? `${__year}년 ${s}` : s));
-      naverQ = __dedupeQ([ ...__officialQ, ...(naverQ || []) ]).slice(0, BLOCK_NAVER_MAX_QUERIES);
-    }
+const __mkYearQ = (seed) => {
+  const s = String(seed || "").trim();
+  if (!s) return "";
+  const y = String(__year || "").trim();
+
+  // year가 있으면 "2025 KOSIS 총인구" 같은 짧은 형태로 우선 시도
+  if (y) {
+    const cand1 = `${y} ${s}`.trim();
+    if (cand1.length <= 30) return cand1;
+
+    const cand2 = `${y}${s}`.replace(/\s+/g, "").trim();
+    if (cand2.length <= 30) return cand2;
+  }
+
+  // 최후: 30자 제한에 맞게 컷
+  return s.length <= 30 ? s : s.slice(0, 30);
+};
+
+if (__officialSeeds.length) {
+  const __officialQ = __officialSeeds.map(__mkYearQ).filter(Boolean);
+
+  // ✅ 핵심: 공식 시드를 "맨 앞"에 강제 배치 → per_block_cap에서도 먼저 호출됨
+  naverQ = __dedupeQ([ ...__officialQ, ...(naverQ || []) ]).slice(0, BLOCK_NAVER_MAX_QUERIES);
+}
 
     return {
       id,
@@ -9621,23 +9642,41 @@ try {
 
   // ✅ official seed prepend (cap가 작을수록 효과 큼)
   const __officialSeeds = __isPop
-    ? [
-        "site:kosis.kr DT_1BPA002 2025 총인구 statHtml",
-        "site:jumin.mois.go.kr 2025 주민등록인구",
-        "통계청 장래인구추계 총인구",
-        "DT_1BPA002 총인구",
-      ]
-    : __isNumericLike
+  ? [
+      "KOSIS DT_1BPA002 총인구",
+      "통계청 장래인구추계 총인구",
+      "주민등록인구 mois",
+      "KOSIS 인구 통계표",
+    ]
+  : __isNumericLike
     ? [
         "KOSIS 통계표",
         "통계청 통계",
       ]
     : [];
 
-  if (__officialSeeds.length) {
-    const __officialQ = __officialSeeds.map((s) => (__year ? `${__year}년 ${s}` : s));
-    naverQ = __dedupeQ([ ...__officialQ, ...(naverQ || []) ]);
+const __mkYearQ = (seed) => {
+  const s = String(seed || "").trim();
+  if (!s) return "";
+  const y = String(__year || "").trim();
+
+  if (y) {
+    const cand1 = `${y} ${s}`.trim();
+    if (cand1.length <= 30) return cand1;
+
+    const cand2 = `${y}${s}`.replace(/\s+/g, "").trim();
+    if (cand2.length <= 30) return cand2;
   }
+
+  return s.length <= 30 ? s : s.slice(0, 30);
+};
+
+if (__officialSeeds.length) {
+  const __officialQ = __officialSeeds.map(__mkYearQ).filter(Boolean);
+
+  // ✅ 여기서도 cap을 맞춰 공식 시드 우선 유지
+  naverQ = __dedupeQ([ ...__officialQ, ...(naverQ || []) ]).slice(0, BLOCK_NAVER_MAX_QUERIES);
+}
 
   naverQ = __dedupeQ(naverQ).slice(0, BLOCK_NAVER_MAX_QUERIES);
 
@@ -10639,6 +10678,104 @@ partial_scores.engine_results = {
 partial_scores.engine_times = engineTimes;
 partial_scores.engine_metrics = engineMetrics;
 
+// ✅ evidence digest (UI/log-friendly, small)
+try {
+  const _trim = (s, n) => {
+    s = String(s ?? "").trim();
+    if (!s) return "";
+    return s.length > n ? (s.slice(0, n - 1) + "…") : s;
+  };
+
+  const _pickTitle = (it) =>
+    _trim(
+      it?.title ??
+      it?.name ??
+      it?.headline ??
+      it?.paper_title ??
+      it?.display_name ??
+      it?.label ??
+      "",
+      160
+    );
+
+  const _pickLink = (it) =>
+    _trim(
+      it?.url ??
+      it?.link ??
+      it?.doi_url ??
+      it?.doiUrl ??
+      it?.doi ??
+      it?.id ??
+      "",
+      260
+    );
+
+  const _pickDate = (it) =>
+    _trim(
+      it?.published ??
+      it?.publishedAt ??
+      it?.publication_date ??
+      it?.date ??
+      it?.datetime ??
+      it?.created_at ??
+      it?.year ??
+      "",
+      40
+    );
+
+  const _topK = (arr, k) => {
+    const a = Array.isArray(arr) ? arr : [];
+    return a.slice(0, Math.max(0, k | 0));
+  };
+
+  const _digestItems = (arr, k) =>
+    _topK(arr, k).map((it) => ({
+      title: _pickTitle(it),
+      link: _pickLink(it),
+      date: _pickDate(it),
+      whitelisted: (it?.whitelisted === true) ? true : undefined,
+      tier: (typeof it?.tier === "number" && Number.isFinite(it.tier)) ? it.tier : undefined,
+    })).filter((x) => x.title || x.link);
+
+  const _safeCount = (x) => Array.isArray(x) ? x.length : 0;
+
+  const blockCounts = (() => {
+    const b = (Array.isArray(blocksForVerify) ? blocksForVerify : []);
+    // 너무 커지면 UI/DB 부담 → id + counts만
+    return b.slice(0, 24).map((bb) => ({
+      id: String(bb?.id ?? ""),
+      counts: {
+        crossref: _safeCount(bb?.evidence?.crossref),
+        openalex: _safeCount(bb?.evidence?.openalex),
+        wikidata: _safeCount(bb?.evidence?.wikidata),
+        gdelt: _safeCount(bb?.evidence?.gdelt),
+        naver: _safeCount(bb?.evidence?.naver),
+      },
+    })).filter((x) => x.id);
+  })();
+
+  partial_scores.evidence_digest = {
+    totals: {
+      crossref: _safeCount(external?.crossref),
+      openalex: _safeCount(external?.openalex),
+      wikidata: _safeCount(external?.wikidata),
+      gdelt: _safeCount(external?.gdelt),
+      naver: _safeCount(external?.naver),
+      klaw: external?.klaw ? 1 : 0,
+    },
+    top: {
+      crossref: _digestItems(external?.crossref, 3),
+      openalex: _digestItems(external?.openalex, 3),
+      wikidata: _digestItems(external?.wikidata, 3),
+      gdelt: _digestItems(external?.gdelt, 3),
+      naver: _digestItems(external?.naver, 3),
+    },
+    blocks: blockCounts,
+    early_stop: partial_scores?.call_caps?.early_stop ? true : false,
+    early_stop_reason: partial_scores?.call_caps?.early_stop_reason ?? null,
+  };
+} catch {}
+
 // ✅ “쿼리 없으면 제외” + “calls 없으면 제외” + “results 0이면 제외”
 // ✅ 요청 body.engines(또는 engines_requested/enginesRequested)가 있으면 그걸 우선 반영
 const enginesRequested = (() => {
@@ -11550,6 +11687,30 @@ partial_scores.engine_results = {
 // QV/FV처럼 로그용으로 얘네도 남겨두면 Admin UI에서 보기 편함
 partial_scores.engine_times = engineTimes;
 partial_scores.engine_metrics = engineMetrics;
+
+// ✅ evidence digest (DV/CV: github only)
+try {
+  const _trim = (s, n) => {
+    s = String(s ?? "").trim();
+    if (!s) return "";
+    return s.length > n ? (s.slice(0, n - 1) + "…") : s;
+  };
+  const _pickTitle = (it) => _trim(it?.title ?? it?.name ?? it?.full_name ?? it?.repo ?? "", 160);
+  const _pickLink  = (it) => _trim(it?.url ?? it?.html_url ?? it?.link ?? "", 260);
+  const _pickDate  = (it) => _trim(it?.updated_at ?? it?.created_at ?? it?.date ?? "", 40);
+
+  const gh = Array.isArray(external?.github) ? external.github : [];
+  partial_scores.evidence_digest = {
+    totals: { github: gh.length },
+    top: {
+      github: gh.slice(0, 3).map((it) => ({
+        title: _pickTitle(it),
+        link: _pickLink(it),
+        date: _pickDate(it),
+      })).filter((x) => x.title || x.link),
+    },
+  };
+} catch {}
 
 // ✅ 요청 body.engines(또는 engines_requested/enginesRequested)가 있으면 그걸 우선 반영
 const enginesRequested = (() => {
