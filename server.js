@@ -7352,23 +7352,19 @@ async function preprocessQVFVOneShot({
     return t;
   };
 
-  const makeBlock = (id, txt) => {
+    const makeBlock = (id, txt) => {
     const text = clipBlockText(txt, 260);
 
-    // 기본 fallback
-    let seed = __cleanNaverSeed(text || ko);
-    let naverQ = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
-
-        // 공식 통계/공공기관 seed는 "덮어쓰기"가 아니라 "append" (화이트리스트 기반 운영과 일관)
+    // --- detect 먼저 (seed 품질을 위해) ---
     const __baseForDetect = String(query || userIntentQ || baseCore || "");
     const __isPop = /(인구|총인구|주민등록인구|명)/i.test(__baseForDetect);
 
-    // 숫자/통계류를 아주 가볍게만 감지(여기서는 __isNumericQ를 아직 선언 전이라 로컬 휴리스틱 사용)
+    // 숫자/통계류를 아주 가볍게만 감지(여기서는 __isNumericQ 선언 전이라 로컬 휴리스틱 사용)
     const __isNumericLike =
       /\d/.test(__baseForDetect) ||
       /(인구|명|금액|원|달러|USD|KRW|비율|퍼센트|%|수치|규모|GDP|성장률|물가|인플레이션|실업률|환율|통계|추계|집계)/i.test(__baseForDetect);
 
-    // 연도(예: 2025) 자동 추출해서 seed에 붙임 (없으면 빈 문자열)
+    // 연도(예: 2025) 자동 추출
     const __year = (() => {
       const m = __baseForDetect.match(/\b(19|20)\d{2}\b/);
       return m ? m[0] : "";
@@ -7388,9 +7384,27 @@ async function preprocessQVFVOneShot({
       return out;
     };
 
-    // ✅ “필수 키워드 고정” 대신 “공식 seed 추가” (화이트리스트로 도메인 품질은 이미 보장)
-    // - 인구류면 KOSIS/통계청/행안부 중심 seed
-    // - 그 외 숫자성 질문이면 KOSIS/통계청 일반 seed만 약하게 추가
+    // --- seed 생성: 숫자/인구류는 "블록 텍스트" 대신 "질문(query)" 기반으로 ---
+    const __cleanNaverSeed = (s) => {
+      let t = String(s || "").trim();
+      t = t.replace(/^질문:\s*/g, "");
+      t = t.replace(/예:\s*/g, "");
+      t = t.replace(/[()]/g, " ");
+      t = t.replace(/\s+/g, " ").trim();
+      // 너무 긴 문장은 앞부분만 (네이버 쿼리로는 문장조각이 독이 됨)
+      if (t.length > 60) t = t.slice(0, 60).trim();
+      return t;
+    };
+
+    // 기본 fallback: seed는 원칙적으로 text/ko 기반
+    // 단, __isPop / __isNumericLike면 query(질문) 기반 seed를 우선 사용
+    let seed = __isPop || __isNumericLike
+      ? __cleanNaverSeed(query || userIntentQ || baseCore || ko || text)
+      : __cleanNaverSeed(text || ko);
+
+    let naverQ = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
+
+    // ✅ official seed는 "append"가 아니라 "prepend"로 최우선 보장 (cap=2에서 특히 중요)
     const __officialSeeds = __isPop
       ? [
           "KOSIS 총인구",
@@ -7407,7 +7421,8 @@ async function preprocessQVFVOneShot({
 
     if (__officialSeeds.length) {
       const __officialQ = __officialSeeds.map((s) => (__year ? `${__year}년 ${s}` : s));
-      naverQ = __dedupeQ([...(naverQ || []), ...__officialQ]).slice(0, BLOCK_NAVER_MAX_QUERIES);
+      // prepend → cap=2면 official이 먼저 나가고, 나머지 fallback은 뒤로 밀림
+      naverQ = __dedupeQ([ ...__officialQ, ...(naverQ || []) ]).slice(0, BLOCK_NAVER_MAX_QUERIES);
     }
 
     return {
