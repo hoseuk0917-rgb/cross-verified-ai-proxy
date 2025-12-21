@@ -8093,17 +8093,54 @@ try {
   ).trim().toLowerCase();
 
   const __cacheMode =
-    (_rawMode === "overlay" || _rawMode === "route") ? "auto" : _rawMode;
+  (_rawMode === "overlay" || _rawMode === "route") ? "auto" : _rawMode;
 
-  const __isSn =
-    (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : false;
+const __isSn =
+  (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : false;
 
-  const _shouldRoute =
-    GROQ_ROUTER_ENABLE &&
-    !__isSn &&
-    (!_rawMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
+// ✅ auto/overlay/route/빈값이면 "원래는" 라우터가 개입하던 케이스
+const __wouldRouteByMode =
+  (!_rawMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
 
-  if (_shouldRoute) {
+// ✅ 기본값=1: auto/overlay/route/빈값은 라우터를 스킵하고 one-shot preprocess(router_plan)로 확정
+// - 이전 동작으로 되돌리고 싶으면 env: GROQ_ROUTER_PREFER_QVFV_ONE_SHOT=0
+const __preferOneShot =
+  String(process.env.GROQ_ROUTER_PREFER_QVFV_ONE_SHOT || "1") !== "0";
+
+// ✅ 라우터 실행 조건: (기존 조건) AND (one-shot 선호가 꺼져있을 때만)
+const _shouldRoute =
+  GROQ_ROUTER_ENABLE &&
+  !__isSn &&
+  __wouldRouteByMode &&
+  !__preferOneShot;
+
+// ✅ 라우터 스킵 경로: "missing"으로 표시해서, 뒤에서 one-shot router_plan이 오면 교체되게 만든다.
+if (!_shouldRoute && GROQ_ROUTER_ENABLE && !__isSn && __wouldRouteByMode && __preferOneShot) {
+  try {
+    // 이 시점 safeMode는 auto/빈값일 수 있으니 보수적으로 qv로 둔다(뒤에서 pre.router_plan이 오면 확정됨)
+    safeMode = "qv";
+    __runLvExtra = false;
+
+    __routerPlan = {
+      raw_mode: _rawMode,
+      safe_mode_final: "qv",
+      primary: "qv",
+
+      // ✅ "router_missing" 포함: (뒤의 9253 근처 로직) one-shot이 router_plan을 주면 덮어쓰도록 트리거
+      plan: [{ mode: "qv", priority: 1, reason: "router_missing_prefer_one_shot_preprocess" }],
+      runs: ["qv"],
+
+      model: String(process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile"),
+      cached: false,
+      lv_extra: false,
+
+      reason: "router_missing_prefer_one_shot_preprocess",
+      error: null,
+    };
+  } catch (_) {}
+}
+
+if (_shouldRoute) {
     // auth user (best-effort) — avoid ReferenceError when authUser is not in scope
     let __au = (typeof authUser !== "undefined" ? authUser : null) || null;
     if (!__au) {
@@ -9211,10 +9248,22 @@ const groqPreprocessModel =
     || (typeof GROQ_ROUTER_MODEL !== "undefined" ? String(GROQ_ROUTER_MODEL) : "llama-3.3-70b-versatile");
 
 const __sm0 = String(safeMode || "").toLowerCase();
+
+// ✅ 요청 raw mode를 우선 사용 (라우터 스킵/실패/지연 시에도 전처리가 auto/fv 힌트를 잃지 않게)
+const __reqMode0 = String(
+  req?.body?.mode ?? req?.body?.safeMode ?? req?.body?.raw_mode ?? ""
+).toLowerCase().trim();
+
+const __modeForBase = (__reqMode0 || __sm0);
+
 const qvfvBaseText =
-  ((__sm0 === "fv" || __sm0 === "auto" || __sm0 === "overlay" || __sm0 === "route" || __sm0 === "") && userCoreText)
+  (((__modeForBase === "fv" ||
+     __modeForBase === "auto" ||
+     __modeForBase === "overlay" ||
+     __modeForBase === "route" ||
+     __modeForBase === "") && userCoreText)
     ? userCoreText
-    : query;
+    : query);
 
 // ✅ QV/FV 전처리 원샷 (답변+블록+블록별 쿼리)
 try {
@@ -9222,8 +9271,11 @@ try {
   const userQuestion = String(req?.body?.question || "").trim();
   const groqKeyBody = String(req?.body?.groq_api_key || req?.body?.groq_key || "").trim();
 
+  // ✅ one-shot에게도 raw 힌트를 줌 (auto/overlay/route/빈값이면 그대로 전달)
+  const __preModeHint = (__reqMode0 || __sm0 || "qv");
+
   let pre = await preprocessQVFVOneShot({
-    mode: safeMode,
+    mode: __preModeHint,
     query,
     core_text: qvfvBaseText,
     question: userQuestion, // ✅ADD
@@ -9250,10 +9302,14 @@ try {
 
       // 2) 기존 __routerPlan이 없거나, 실패/폴백 상태면 one-shot 결과로 대체(보수적)
       try {
-        if (typeof __routerPlan === "undefined" || !__routerPlan || (__routerPlan && String(__routerPlan?.reason || "").includes("router_missing"))) {
-          __routerPlan = __rpPre;
-        }
-      } catch {}
+  const __rr = String(__routerPlan?.reason || "");
+  const __isFallbackRouterPlan =
+    /router_missing|router_plan_was_null|router_plan_empty|router_error/i.test(__rr);
+
+  if (typeof __routerPlan === "undefined" || !__routerPlan || __isFallbackRouterPlan) {
+    __routerPlan = __rpPre;
+  }
+} catch (_) {}
 
       // 3) 요청 모드가 auto/overlay/route/빈값이면 safeMode를 qv/fv로 확정
       try {
