@@ -6932,13 +6932,13 @@ async function preprocessQVFVOneShot({
 
     const prompt = `
 너는 Cross-Verified AI의 "전처리 엔진"이다.
-목표: (QV) 답변 생성 + 의미블록 분해 + 블록별 외부검증 엔진 쿼리 생성을 한 번에 수행한다.
+목표: (QV/FV) 모드 확정(router_plan) + (QV일 때) 답변 생성 + 의미블록 분해 + 블록별 외부검증 엔진 쿼리 생성을 한 번에 수행한다.
 
 [입력]
-- mode: ${mode}                // "qv" | "fv"
+- mode_hint: ${mode}                // "qv" | "fv" | "auto" | "overlay" | "route" | "" 등
 - user_query: ${query}
 - user_question_intent(있으면 최우선): ${userIntentQ ? userIntentQ : "(없음)"}
-- core_text(FV에서만 사용): ${mode === "fv" ? baseCore : "(QV에서는 무시)"}
+- core_text(있으면 스니펫/원문일 가능성): ${baseCore ? baseCore : "(없음)"}
 
 [절대 규칙 — 위반하면 실패]
 1) 출력은 JSON 1개만. (설명/접두어/접미어/코드블록/마크다운 금지)
@@ -6949,7 +6949,18 @@ async function preprocessQVFVOneShot({
 6) user_question_intent가 있으면 다의어/중의성(예: 수도/은행/배터리/애플 등) 해소에 반드시 사용하고,
    반대 의미로 튀는 naver 쿼리는 만들지 말 것. (필요 시 수식어/괄호로 의미 고정)
 
-[매우 중요 — 숫자/통계 질문 규칙(필수)]
+[매우 중요 — router_plan 규칙(필수)]
+- router_plan은 반드시 포함해야 한다. (없으면 실패)
+- router_plan.safe_mode_final은 반드시 "qv" 또는 "fv" 중 하나여야 한다.
+- mode_hint가 "qv"면 safe_mode_final은 반드시 "qv".
+- mode_hint가 "fv"면 safe_mode_final은 반드시 "fv".
+- mode_hint가 auto/overlay/route/빈값 등(qv/fv가 아닌 경우)이면 다음 기준으로 "qv" 또는 "fv"를 결정하라:
+  (A) core_text가 사실 검증 대상 문장/스니펫/원문(인용문, 특정 주장, 특정 문장/문단)으로 보이면 "fv"
+  (B) 사용자가 일반 질문(설명/정의/비교/방법 등)이라면 "qv"
+  (C) user_question_intent가 있으면 그 의도를 기준으로 (A)/(B)를 보정하라.
+- router_plan.plan, router_plan.runs는 qv/fv만 포함한다.
+
+[숫자/통계 질문 규칙(필수)]
 - 사용자의 질문이 "인구/금액/비율/수치/연도별 값/규모" 등 숫자 답을 요구하면,
   가능하면 수치를 제시하되, **확실한 근거/기준(원출처·기준시점·정의)** 없이 숫자를 만들어내면 실패다.
 - 근거가 부족하거나 수치가 불확실하면, 숫자를 억지로 넣지 말고
@@ -6957,14 +6968,14 @@ async function preprocessQVFVOneShot({
 - 어떤 기준/정의가 필요한지도 함께 적어라. (예: KOSIS 통계표, 통계청 장래인구추계, 주민등록인구 등)
 
 [QV 규칙]
-- 질문에 대해 최선의 한국어 답변(answer_ko)을 6~10문장으로 작성한다.
+- router_plan.safe_mode_final이 "qv"일 때만, 질문에 대해 최선의 한국어 답변(answer_ko)을 6~10문장으로 작성한다.
 - 웹검색/브라우징/실시간 조회를 했다고 주장하지 말라.
 - 확실하지 않은 고유명사/수치/날짜는 단정 대신 "추정/잠정/통계 추계/전망(범위)"로 표시한다.
 - 숫자/통계 질문이면, 가능하면 근거 있는 범위/값을 제시하되 근거가 불충분하면 숫자 없이도 OK(기준/정의 먼저 명시).
 
 [FV 규칙]
-- answer_ko는 반드시 "" (빈 문자열).
-- 검증 대상 텍스트는 core_text(없으면 user_query) 그대로.
+- router_plan.safe_mode_final이 "fv"일 때, answer_ko는 반드시 "" (빈 문자열).
+- 검증 대상 텍스트는 core_text가 있으면 core_text, 없으면 user_query를 사용한다.
 
 [blocks 규칙]
 - 각 블록은 "주장/수치/조건" 단위로 1~2문장씩 묶는다.
@@ -6980,7 +6991,15 @@ async function preprocessQVFVOneShot({
 
 [출력 JSON 스키마]
 {
-  "answer_ko": "...",          // FV는 ""
+  "router_plan": {
+    "safe_mode_final": "qv",
+    "primary": "qv",
+    "plan": [{"mode":"qv","priority":1,"reason":"..."}],
+    "runs": ["qv"],
+    "confidence": 0.75,
+    "reason": "..."
+  },
+  "answer_ko": "...",          // safe_mode_final이 "fv"면 ""
   "korean_core": "...",
   "english_core": "...",
   "blocks": [
@@ -6997,7 +7016,7 @@ async function preprocessQVFVOneShot({
     }
   ]
 }
-  `.trim();
+`.trim();
 
   // ─────────────────────────────
   // helpers
