@@ -7597,8 +7597,11 @@ const verifyCoreHandler = async (req, res) => {
     snippet_meta,
   } = __b0;
 
-  let safeMode = String(req.body?.mode ?? mode ?? "").trim().toLowerCase();
-  const rawMode = safeMode; // ✅ 요청된 원래 mode를 보존(뒤에서 fallback plan에서 사용)
+  let safeMode = String(
+  (req.body?.mode ?? req.body?.safeMode ?? req.body?.raw_mode ?? mode ?? "")
+).trim().toLowerCase();
+
+const rawMode = safeMode; // ✅ 요청된 원래 mode를 보존(뒤에서 fallback plan에서 사용)
     // ✅ verify-cache key (QV/FV). Declare once in handler scope to avoid ReferenceError.
   var __cacheKey = null;
 
