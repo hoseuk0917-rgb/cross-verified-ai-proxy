@@ -758,48 +758,24 @@ function _buildSessionStore() {
   return null;
 }
 
-// ✅ PROD auto 결정(부팅 시 1회)
-// - session middleware mount 전에 결정되어야 하므로 여기서 미리 구한다.
-let sessionStore = _buildSessionStore();
-
-if (isProd && SESSION_STORE_MODE === "auto") {
-  // 기본값: PgStore를 "가능하면" 쓰되, 빠른 체크 실패면 MemoryStore
-  // => 여기서 결정이 끝나야 app.use(session(...))가 안정적으로 동작한다.
-  sessionStore = new session.MemoryStore(); // default safe
-  void (async () => {
-    try {
-      await _ensureSessionStoreTableOnceFast();
-
-      // ✅ 성공 → PgStore 사용으로 확정
-      sessionStore = new PgStore({
-        pool: pgPool,
-        schemaName: SESSION_STORE_SCHEMA,
-        tableName: SESSION_STORE_TABLE,
-        createTableIfMissing: false,
-        pruneSessionInterval: 60 * 10,
-      });
-
-      console.log(`✅ session store ready (auto→pg): ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}`);
-    } catch (e) {
-      const code = String(e?.code || "");
-      const msg = String(e?.message || e);
-
-      if (code === "SESSION_STORE_MISSING" && SESSION_STORE_HARD_FAIL_IF_MISSING) {
-        console.error("❌ session store missing and hard-fail enabled:", msg);
-        process.exit(1);
-      }
-
-      const transient = _isPgSessionTransientError(e);
-      console.warn(
-        `⚠️ session store auto-check failed; using MemoryStore (transient=${transient}):`,
-        code,
-        msg
-      );
-
-      // 그대로 MemoryStore 유지
-    }
-  })();
+// ✅ PROD: session store는 부팅 시점에 "확정"되어야 함
+// - MemoryStore로 시작했다가 나중에 PgStore로 바꾸면 express-session 미들웨어는 바뀌지 않아서
+//   경고가 계속 뜨고(프로덕션), 세션도 Pg로 안 감.
+// - 그래서: 처음부터 PgStore로 고정한다.
+// - createTableIfMissing: true 로 부팅 타이밍/테이블 유무 레이스를 줄임.
+try {
+  await _ensureSessionStoreTableOnceFast();
+} catch (e) {
+  console.warn("⚠️ session store table ensure failed (continue with PgStore):", String(e?.message || e));
 }
+
+const sessionStore = new PgStore({
+  pool: pgPool,
+  schemaName: SESSION_STORE_SCHEMA,
+  tableName: SESSION_STORE_TABLE,
+  createTableIfMissing: true,
+  pruneSessionInterval: 60 * 10,
+});
 
 // ✅ 최종 보정(혹시라도 null이면 memory로)
 if (!sessionStore) {
