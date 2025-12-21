@@ -12308,12 +12308,40 @@ const GROQ_VERIFY_MODEL =
   String(process.env.GROQ_VERIFY_MODEL || "").trim() ||
   (typeof GROQ_ROUTER_MODEL !== "undefined" ? String(GROQ_ROUTER_MODEL) : "llama-3.3-70b-versatile");
 
-const __getGroqKeyForVerify = () => {
-  // ✅ env 우선 (당장 테스트/운영 전환 쉽게)
-  const envKey = String(process.env.GROQ_API_KEY || "").trim();
-  if (envKey) return envKey;
+const __getGroqKeyForVerify = async () => {
+  // 0) body override 우선 (테스트/운영 전환 + 사용자별 키 없이도 즉시 호출 가능)
+  try {
+    const kBody = String(req?.body?.groq_api_key || req?.body?.groq_key || "").trim();
+    if (kBody) return kBody;
+  } catch (_) {}
 
-  // ✅ 혹시 handler-scope에 groq key 변수가 있으면(이름이 다를 수 있어서 안전하게 typeof로만)
+  // 0.5) request cache (같은 요청 내에서 여러 번 호출될 수 있으니 1회만 resolve)
+  try {
+    if (req && Object.prototype.hasOwnProperty.call(req, "_groq_verify_key_cache")) {
+      return String(req._groq_verify_key_cache || "").trim();
+    }
+  } catch (_) {}
+
+  // 1) user_secrets 우선 (router/preprocess와 동일 정책)
+  try {
+    const kUser = await __getUserGroqKey(req);
+    const kk = String(kUser || "").trim();
+    if (kk) {
+      try { req._groq_verify_key_cache = kk; } catch (_) {}
+      return kk;
+    }
+  } catch (_) {}
+
+  // 2) (옵션) env fallback
+  try {
+    const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+    if (__allowEnvFallback) {
+      const envKey = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+      if (envKey) return envKey;
+    }
+  } catch (_) {}
+
+  // 3) 레거시: handler-scope 변수 fallback (있으면 사용)
   try {
     if (typeof groq_api_key !== "undefined" && String(groq_api_key || "").trim()) return String(groq_api_key).trim();
   } catch (_) {}
@@ -12325,7 +12353,7 @@ const __getGroqKeyForVerify = () => {
 };
 
 const __fetchGroqVerify = async ({ model, prompt, timeoutMs }) => {
-  const key = __getGroqKeyForVerify();
+  const key = await __getGroqKeyForVerify();
   if (!key) throw Object.assign(new Error("GROQ_KEY_MISSING_FOR_VERIFY"), { code: "GROQ_KEY_MISSING_FOR_VERIFY" });
 
   const url = `${String(GROQ_API_BASE || "https://api.groq.com/openai/v1").replace(/\/+$/, "")}/chat/completions`;
