@@ -7378,32 +7378,95 @@ async function preprocessQVFVOneShot({
     } catch (_) {}
   }
 
-  // ─────────────────────────────
+    // ─────────────────────────────
   // 3) Manual fallback (최후 안전망)
+  //   - Groq/Gemini 전처리 실패 시에도 one-shot 스키마 유지
+  //   - router_plan 포함 + auto 계열 모드에서도 qv/fv 결정
   // ─────────────────────────────
   const base = baseCore || query || "";
-  const [t1, t2] = splitIntoTwoParts(base);
-
   const ko = normalizeKoreanQuestion(base);
   const en = String(base).trim();
 
-    const __cleanNaverSeed = (s) => {
+  // ✅ fallback에서도 qv/fv 최종 결정
+  const __modeHint = String(mode || "").toLowerCase().trim();
+
+  // core_text가 실제 스니펫/원문으로 들어온 경우를 우선적으로 fv로 본다
+  const __hasCoreText = String(core_text || "").trim().length >= 20;
+  const __hasSnippetClaim = __hasCoreText; // 안전하게 core_text 기준으로만 판단
+
+  let __safeFinal = __modeHint;
+  if (__safeFinal !== "qv" && __safeFinal !== "fv") {
+    __safeFinal = __hasSnippetClaim ? "fv" : "qv";
+  }
+
+  const __router_plan_fallback = {
+    raw_mode: __modeHint,
+    safe_mode_final: __safeFinal,
+    primary: __safeFinal,
+    plan: [{ mode: __safeFinal, priority: 1, reason: "manual_fallback" }],
+    runs: [__safeFinal],
+    confidence: null,
+    reason: "manual_fallback",
+    model: null,
+    provider: "fallback",
+    cached: null,
+    lv_extra: false,
+  };
+
+  // ✅ 숫자 질문(인구/금액/비율/수치/규모 등) 감지: 최소한의 휴리스틱
+  const __isNumericQ = (s) => {
+    const t = String(s || "");
+    if (/\d/.test(t)) return true;
+    return /(인구|명|금액|원|달러|USD|KRW|비율|퍼센트|%|수치|규모|GDP|성장률|물가|인플레이션|실업률|환율)/i.test(t);
+  };
+
+  const isNumericQ = __isNumericQ(query || baseCore || userIntentQ);
+
+  // ✅ QV일 때만 최소 answer_ko 생성 (fallback은 "기준/정의 확인" 유도)
+  const answer_ko =
+    (__safeFinal === "qv")
+      ? (() => {
+          const isPop = /(인구|총인구|주민등록인구|명)/i.test(String(query || userIntentQ || baseCore || ""));
+          const magnitudeHint = isPop ? "대략 5천만 명대" : "대략 큰 규모/수준";
+
+          const core = String(query || baseCore || "").trim() || "질문";
+          const line1 = `질문: ${core}`;
+          const line2 = isNumericQ
+            ? `정확한 값은 공표 자료의 기준시점(집계/추계)과 정의에 따라 달라질 수 있어, 기준을 먼저 확인하는 게 안전합니다.`
+            : `정확한 답은 공표 자료의 기준시점/정의에 따라 달라질 수 있습니다.`;
+          const line3 = isPop
+            ? `이 질문은 ${magnitudeHint}로만 말하면 안전하며, 정확한 수치는 KOSIS/통계청 자료(해당 기준시점)를 확인해야 합니다.`
+            : `가능하면 공식 통계/공공기관/원출처 기준으로 확인하는 것을 권장합니다.`;
+          const line4 = `필요하면 “총인구/주민등록인구/추계인구” 중 어떤 기준인지도 같이 정해야 합니다.`;
+
+          return [line1, line2, line3, line4].join("\n");
+        })()
+      : "";
+
+  // blocks seed: QV면 answer_ko 기반, FV면 base(스니펫/원문) 기반
+  const seedForBlocks = (__safeFinal === "qv") ? (answer_ko || base) : base;
+  const [b1, b2] = splitIntoTwoParts(seedForBlocks);
+
+  const __cleanNaverSeed = (s) => {
     let t = String(s || "").trim();
     t = t.replace(/^질문:\s*/g, "");
     t = t.replace(/예:\s*/g, "");
     t = t.replace(/[()]/g, " ");
     t = t.replace(/\s+/g, " ").trim();
+    // 너무 긴 문장은 앞부분만 (네이버 쿼리로는 문장조각이 독이 됨)
+    if (t.length > 60) t = t.slice(0, 60).trim();
     return t;
   };
 
-    const makeBlock = (id, txt) => {
+  const makeBlock = (id, txt) => {
     const text = clipBlockText(txt, 260);
 
     // --- detect 먼저 (seed 품질을 위해) ---
     const __baseForDetect = String(query || userIntentQ || baseCore || "");
+
     const __isPop = /(인구|총인구|주민등록인구|명)/i.test(__baseForDetect);
 
-    // 숫자/통계류를 아주 가볍게만 감지(여기서는 __isNumericQ 선언 전이라 로컬 휴리스틱 사용)
+    // 숫자/통계류를 아주 가볍게만 감지
     const __isNumericLike =
       /\d/.test(__baseForDetect) ||
       /(인구|명|금액|원|달러|USD|KRW|비율|퍼센트|%|수치|규모|GDP|성장률|물가|인플레이션|실업률|환율|통계|추계|집계)/i.test(__baseForDetect);
@@ -7429,46 +7492,29 @@ async function preprocessQVFVOneShot({
     };
 
     // --- seed 생성: 숫자/인구류는 "블록 텍스트" 대신 "질문(query)" 기반으로 ---
-    const __cleanNaverSeed = (s) => {
-      let t = String(s || "").trim();
-      t = t.replace(/^질문:\s*/g, "");
-      t = t.replace(/예:\s*/g, "");
-      t = t.replace(/[()]/g, " ");
-      t = t.replace(/\s+/g, " ").trim();
-      // 너무 긴 문장은 앞부분만 (네이버 쿼리로는 문장조각이 독이 됨)
-      if (t.length > 60) t = t.slice(0, 60).trim();
-      return t;
-    };
-
-    // 기본 fallback: seed는 원칙적으로 text/ko 기반
-    // 단, __isPop / __isNumericLike면 query(질문) 기반 seed를 우선 사용
-    let seed = __isPop || __isNumericLike
+    let seed = (__isPop || __isNumericLike)
       ? __cleanNaverSeed(query || userIntentQ || baseCore || ko || text)
       : __cleanNaverSeed(text || ko);
 
     let naverQ = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
 
-    // ✅ official seed는 "append"가 아니라 "prepend"로 최우선 보장 (cap=2에서 특히 중요)
+    // ✅ official seed는 "prepend"로 최우선 보장 (cap=2에서 중요)
     const __officialSeeds = __isPop
-  ? [
-      // cap=2에서 이 2개가 먼저 나가게 해서 "숫자 포함 표/공식 집계" 쪽으로 강제 유도
-      "site:kosis.kr DT_1BPA002 2025 총인구 statHtml",
-      "site:jumin.mois.go.kr 2025 주민등록인구",
-
-      // 뒤는 여유분(혹시 cap 늘릴 때 대비)
-      "통계청 장래인구추계 총인구",
-      "DT_1BPA002 총인구",
-    ]
-  : __isNumericLike
-  ? [
-      "KOSIS 통계표",
-      "통계청 통계",
-    ]
-  : [];
+      ? [
+          "site:kosis.kr DT_1BPA002 2025 총인구 statHtml",
+          "site:jumin.mois.go.kr 2025 주민등록인구",
+          "통계청 장래인구추계 총인구",
+          "DT_1BPA002 총인구",
+        ]
+      : __isNumericLike
+        ? [
+            "KOSIS 통계표",
+            "통계청 통계",
+          ]
+        : [];
 
     if (__officialSeeds.length) {
       const __officialQ = __officialSeeds.map((s) => (__year ? `${__year}년 ${s}` : s));
-      // prepend → cap=2면 official이 먼저 나가고, 나머지 fallback은 뒤로 밀림
       naverQ = __dedupeQ([ ...__officialQ, ...(naverQ || []) ]).slice(0, BLOCK_NAVER_MAX_QUERIES);
     }
 
@@ -7485,50 +7531,16 @@ async function preprocessQVFVOneShot({
     };
   };
 
-    // 숫자 질문(인구/금액/비율/수치/규모 등) 감지: 최소한의 휴리스틱
-  const __isNumericQ = (s) => {
-    const t = String(s || "");
-    if (/\d/.test(t)) return true;
-    return /(인구|명|금액|원|달러|USD|KRW|비율|퍼센트|%|수치|규모|GDP|성장률|물가|인플레이션|실업률|환율)/i.test(t);
-  };
-
-  const isNumericQ = __isNumericQ(query || baseCore || userIntentQ);
-
-  // QV일 때만 최소 answer_ko 생성 (숫자질문이면 0-9 포함 강제)
-  const answer_ko =
-    (String(mode || "").toLowerCase().trim() === "qv")
-      ? (() => {
-          // 숫자/통계 질문 fallback: 숫자를 "예시"로 만들어 넣지 말고, 기준/정의 확인을 유도
-const isPop = /(인구|총인구|주민등록인구|명)/i.test(String(query || userIntentQ || baseCore || ""));
-const magnitudeHint = isPop ? "대략 5천만 명대" : "대략 큰 규모/수준";
-
-const core = String(query || baseCore || "").trim() || "질문";
-const line1 = `질문: ${core}`;
-const line2 = isNumericQ
-  ? `정확한 값은 공표 자료의 기준시점(집계/추계)과 정의에 따라 달라질 수 있어, 기준을 먼저 확인하는 게 안전합니다.`
-  : `정확한 답은 공표 자료의 기준시점/정의에 따라 달라질 수 있습니다.`;
-const line3 = isPop
-  ? `이 질문은 ${magnitudeHint}로만 말하면 안전하며, 정확한 수치는 KOSIS/통계청 자료(해당 기준시점)를 확인해야 합니다.`
-  : `가능하면 공식 통계/공공기관/원출처 기준으로 확인하는 것을 권장합니다.`;
-const line4 = `필요하면 “총인구/주민등록인구/추계인구” 중 어떤 기준인지도 같이 정해야 합니다.`;
-
-const out = [line1, line2, line3, line4].join("\n");
-return out;
-        })()
-      : "";
-
-  // blocks는 QV면 answer_ko 기반으로, FV면 base 기반으로
-  const seedForBlocks = (String(mode || "").toLowerCase().trim() === "qv")
-    ? (answer_ko || base)
-    : base;
-
-  const [b1, b2] = splitIntoTwoParts(seedForBlocks);
-
   return {
-    answer_ko,
+    router_plan: __router_plan_fallback,
+
+    // ✅ router_plan.safe_mode_final 기준으로 answer_ko 제어
+    answer_ko: (__safeFinal === "qv" ? (answer_ko || "") : ""),
+
     korean_core: ko,
     english_core: en,
     blocks: [makeBlock(1, b1), makeBlock(2, b2)].filter((b) => b.text),
+
     _meta: {
       provider: "fallback",
       model_used: "fallback",
@@ -7536,7 +7548,6 @@ return out;
     },
   };
 }
-
 
 // ─────────────────────────────
 // ✅ 엔진 보정계수 조회 + 가중치 계산
