@@ -7210,14 +7210,26 @@ async function preprocessQVFVOneShot({
     if (kBody) return kBody;
 
     try {
-      if (authUser && typeof _getGroqApiKeyForUser === "function") {
-        const kUser = await _getGroqApiKeyForUser(authUser);
-        const kk = String(kUser || "").trim();
-        if (kk) return kk;
-      }
-    } catch (e) {
-      __groqPreError = { stage: "get_user_key", message: String(e?.message || e || "get_user_key_failed").slice(0, 200) };
-    }
+  // ✅ 1) user_secrets 기준은 "users.id (= resolveLogUserId 결과)"가 정답
+  // - preprocessQVFVOneShot 호출부에서 userId(logUserId)를 이미 넘기고 있으니 그걸 1순위로 사용
+  if (userId && typeof __getGroqApiKeyForUser === "function") {
+    const kUser1 = await __getGroqApiKeyForUser({ supabase, userId });
+    const kk1 = String(kUser1 || "").trim();
+    if (kk1) return kk1;
+  }
+
+  // ✅ 2) fallback: auth uid 기반(레거시/예외 케이스)
+  if (authUser && typeof _getGroqApiKeyForUser === "function") {
+    const kUser2 = await _getGroqApiKeyForUser(authUser);
+    const kk2 = String(kUser2 || "").trim();
+    if (kk2) return kk2;
+  }
+} catch (e) {
+  __groqPreError = {
+    stage: "get_user_key",
+    message: String(e?.message || e || "get_user_key_failed").slice(0, 200),
+  };
+}
 
     try {
       const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
@@ -7664,8 +7676,10 @@ function extractJsonObjectFromText(raw) {
     let s = String(raw || "").trim();
     if (!s) return null;
 
-    // 1) 코드펜스 제거(있으면)
-    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        // 1) 코드펜스 제거(있으면)
+    const __FENCE3 = "`".repeat(3);
+    const fenceRe = new RegExp(`${__FENCE3}(?:json)?\\s*([\\s\\S]*?)${__FENCE3}`, "i");
+    const fence = s.match(fenceRe);
     if (fence && fence[1]) s = String(fence[1]).trim();
 
     // 2) 첫 '{'부터 균형잡힌 '}'까지 스캔 (문자열 내부 괄호는 무시)
@@ -8698,7 +8712,7 @@ async function groqRoutePlan({ authUser, groq_api_key, query, snippet, question,
       resp?.data?.choices?.[0]?.text ??
       "";
 
-    const parsed = _safeJsonParse(String(txt).trim()) || _safeJsonParse(String(txt).replace(/```json|```/g, "").trim()) || null;
+    const parsed = _safeJsonParse(String(txt).trim()) || _safeJsonParse(String(txt).replace(/`{3}json|`{3}/g, "").trim()) || null;
     const norm = _normalizeRouterPlan(parsed || {});
     norm.router_ms = Date.now() - t0;
     norm.model = GROQ_ROUTER_MODEL;
@@ -9330,11 +9344,25 @@ try {
   }
 } catch (_) {}
 
-      // 3) 요청 모드가 auto/overlay/route/빈값이면 safeMode를 qv/fv로 확정
+            // 3) 요청 모드가 auto/overlay/route/빈값이면 safeMode를 qv/fv로 확정
+      //    ⚠️ prefer one-shot 경로(S-17)에서 safeMode를 "qv"로 보수 설정해도,
+      //    요청 raw mode 기준으로는 auto/overlay/route/빈값이므로 여기서 최종 확정되어야 한다.
       try {
-        const __sm = String(safeMode || "").toLowerCase();
-        if (__sm === "auto" || __sm === "overlay" || __sm === "route" || __sm === "") {
-          const __sf = String(__rpPre?.safe_mode_final || "").toLowerCase();
+        const __reqRaw = String(
+          req?.body?.mode ?? req?.body?.safeMode ?? req?.body?.raw_mode ?? ""
+        ).toLowerCase().trim();
+
+        const __wouldRouteReq =
+          (!__reqRaw || __reqRaw === "auto" || __reqRaw === "overlay" || __reqRaw === "route");
+
+        const __rr2 = String(__routerPlan?.reason || "");
+        const __wasPreferOneShot =
+          /router_missing_prefer_one_shot_preprocess/i.test(__rr2);
+
+        // 요청이 auto 계열이거나, prefer-one-shot로 router_missing 플랜을 세팅한 상태면
+        // one-shot router_plan.safe_mode_final로 safeMode를 확정한다.
+        if (__wouldRouteReq || __wasPreferOneShot) {
+          const __sf = String(__rpPre?.safe_mode_final || "").toLowerCase().trim();
           safeMode = (__sf === "fv") ? "fv" : "qv";
         }
       } catch {}
@@ -10573,8 +10601,7 @@ const looksObviouslyNonCode = (q) => {
     "github.com",
     "http://",
     "https://",
-    "```",
-
+    "`".repeat(3),
     "stack",
     "trace",
     "exception",
@@ -10716,21 +10743,14 @@ if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(query)) {
 },
 
       flash_summary: msg,
-      verify_raw:
-        "```json\n" +
-        JSON.stringify(
-          {
-            code: "MODE_MISMATCH",
-            mode_mismatch: true,
-            mode: safeMode,
-            suggested_mode: suggestedMode,
-            classifier,
-            reason: "obvious non-code query blocked before GitHub search",
-          },
-          null,
-          2
-        ) +
-        "\n```",
+            verify_raw: JSON.stringify({
+        code: "MODE_MISMATCH",
+        mode_mismatch: true,
+        mode: safeMode,
+        suggested_mode: suggestedMode,
+        classifier,
+        reason: "obvious non-code query blocked before GitHub search",
+      }),
 
       // 프론트/로그가 기대하면 유지(안 써도 되지만 안전)
       engine_times: {},
@@ -10882,22 +10902,19 @@ if (
 
       // DV/CV 응답 포맷 유지(프론트/로그 안정)
       flash_summary: msg,
-      verify_raw:
-        "```json\n" +
-        JSON.stringify(
-          {
-            mode_mismatch: true,
-            code: "MODE_MISMATCH",
-            mode: safeMode,
-            suggested_mode: suggestedMode,
-            classifier,
-            github_classifier,
-            note: "Non-code query rejected by Gemini classifier sentinel; no GitHub search executed.",
-          },
-          null,
-          2
-        ) +
-        "\n```",
+            verify_raw: JSON.stringify(
+        {
+          mode_mismatch: true,
+          code: "MODE_MISMATCH",
+          mode: safeMode,
+          suggested_mode: suggestedMode,
+          classifier,
+          github_classifier,
+          note: "Non-code query rejected by Gemini classifier sentinel; no GitHub search executed.",
+        },
+        null,
+        2
+      ),
 
       gemini_verify_model: GEMINI_VERIFY_MODEL || "gemini-2.0-flash", // 참고용(verify 기본)
       engine_times: {},
@@ -11228,21 +11245,14 @@ if (
       },
 
       flash_summary: msg,
-      verify_raw:
-        "```json\n" +
-        JSON.stringify(
-          {
-            code: "NO_EVIDENCE",
-            mode: safeMode,
-            suggested_mode: suggestedMode,
-            classifier,
-            github_queries: Array.isArray(usedGhQueries) ? usedGhQueries : [],
-            note: "No GitHub evidence found; DV/CV aborted before Gemini verify to avoid hallucination.",
-          },
-          null,
-          2
-        ) +
-        "\n```",
+        verify_raw: JSON.stringify({
+        code: "NO_EVIDENCE",
+        mode: safeMode,
+        suggested_mode: suggestedMode,
+        classifier,
+        github_queries: Array.isArray(usedGhQueries) ? usedGhQueries : [],
+        note: "No GitHub evidence found; DV/CV aborted before Gemini verify to avoid hallucination.",
+      }),
 
       /// 프론트/로그 안정용(있어도 되고 없어도 되지만, 통일 위해 유지)
       engine_times: engineTimes,
@@ -12862,8 +12872,10 @@ if (!verify || !String(verify).trim()) {
   try {
     let s = String(verify || "").trim();
 
-    // 1) ```json ... ``` 코드펜스 제거
-    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        // 1) code-fence 제거 (json fence 포함)
+    const __FENCE3 = "`".repeat(3);
+    const fenceRe = new RegExp(`${__FENCE3}(?:json)?\\s*([\\s\\S]*?)${__FENCE3}`, "i");
+    const fence = s.match(fenceRe);
     if (fence && fence[1]) s = String(fence[1]).trim();
 
     // 2) 첫 { ~ 마지막 } 까지 우선 추출(기존 방식 유지 + fence 제거로 안정화)
@@ -12922,12 +12934,8 @@ try {
 scrubVerifyMetaUnknownUrls(verifyMeta, __allowed);
 } catch (_) {}
 
-// ✅ ensure verify_raw is always valid JSON of the FINAL verifyMeta
-try {
-  verifyRawJson = JSON.stringify(verifyMeta);
-} catch (_) {
-  verifyRawJson = jsonText; // fallback
-}
+// ✅ (moved) verify_raw finalization happens AFTER S-19 sanitize below
+// - keep this block intentionally empty to avoid referencing undeclared jsonText
 
 // ✅ NEW(S-19): verifyMeta.evidence 엔진명 정합화(실제 evidence_counts=0 엔진 제거) + engine_adjust 리셋
 try {
@@ -12991,19 +12999,24 @@ try {
     }
   }
 
-  // sanitized JSON 문자열도 만들어서 내려주기
-  try {
-  verifyRawJsonSanitized = verifyMeta ? JSON.stringify(verifyMeta, null, 2) : "";
-} catch (_) {
-  verifyRawJsonSanitized = "";
-}
-
-// ✅ ensure verify_raw reflects FINAL (post-S-19) verifyMeta
-// ✅ S-19: lock verify_raw to FINAL verifyMeta (compact JSON)
+  // ✅ finalize verify_raw + verify_raw_sanitized from FINAL (post-S-19) verifyMeta
 try {
-  if (verifyMeta) verifyRawJson = JSON.stringify(verifyMeta);
+  if (verifyMeta && typeof verifyMeta === "object") {
+    verifyRawJson = JSON.stringify(verifyMeta);
+
+    try {
+      verifyRawJsonSanitized = JSON.stringify(verifyMeta, null, 2);
+    } catch (_) {
+      verifyRawJsonSanitized = "";
+    }
+  } else {
+    verifyRawJson = "";
+    verifyRawJsonSanitized = "";
+  }
 } catch (_) {
-  // keep previous verifyRawJson as-is
+  // jsonText may not exist; use typeof guard (safe even if undeclared)
+  verifyRawJson = (typeof jsonText === "string") ? jsonText : "";
+  verifyRawJsonSanitized = "";
 }
 
 if (partial_scores && typeof partial_scores === "object") {
