@@ -9178,18 +9178,63 @@ if (!logUserId) {
 }
 
 // ✅ ADD: Gemini 키 필요조건(기본: QV/FV에서만)
-// - 옵션: ALLOW_GROQ_ONLY_NO_GEMINI=1 이고 Groq 전처리+검증이 켜져 있으면 Gemini 키 없이도 진행
+// - 옵션: ALLOW_GROQ_ONLY_NO_GEMINI=1 이고 "요청 기준으로 Groq 키가 실제로 있으면" Gemini 없이도 진행
 const __needGeminiKey = (() => {
   if (!(safeMode === "qv" || safeMode === "fv")) return false;
+
+  // ✅ Gemini 키(또는 keyring)가 있으면 requirement 없음
+  try {
+    const hasHint = !!(gemini_key && String(gemini_key).trim());
+    const keysCount = Number(geminiKeysCount || 0);
+    if (hasHint || keysCount > 0) return false;
+  } catch (_) {}
 
   const allowGroqOnly = String(process.env.ALLOW_GROQ_ONLY_NO_GEMINI || "0") === "1";
   if (!allowGroqOnly) return true;
 
-  const preOn = String(process.env.GROQ_QVFV_PRE_ENABLE ?? process.env.GROQ_PREPROCESS_ENABLE ?? "1") !== "0";
+  const preOn =
+    String(process.env.GROQ_QVFV_PRE_ENABLE ?? process.env.GROQ_PREPROCESS_ENABLE ?? "1") !== "0";
   const verifyOn = String(process.env.GROQ_VERIFY_ENABLE || "1") !== "0";
 
-  // Groq-only로 안전하게 갈 수 있을 때만 Gemini 키 requirement 해제
-  return !(preOn && verifyOn);
+  // Groq pre/verify 둘 다 켜져있지 않으면 Groq-only 불가 → Gemini 필요
+  if (!(preOn && verifyOn)) return true;
+
+  // ✅ "요청 기준" Groq 키 존재 여부 체크 (body > user_secrets(vault) > env fallback(옵션))
+  let hasGroqKey = false;
+
+  // 0) body override
+  try {
+    const kBody = String(req?.body?.groq_api_key || req?.body?.groq_key || "").trim();
+    if (kBody) hasGroqKey = true;
+  } catch (_) {}
+
+  // 1) user_secrets 복호화 결과(vault) 또는 userSecrets 직접 복호화
+  if (!hasGroqKey) {
+    try {
+      if (typeof vault !== "undefined" && vault) {
+        const k = String(vault?.groq_api_key || vault?.groq_key || "").trim();
+        if (k) hasGroqKey = true;
+      } else if (typeof userSecrets !== "undefined" && userSecrets && typeof decryptIntegrationsSecrets === "function") {
+        const v = decryptIntegrationsSecrets(userSecrets);
+        const k = String(v?.groq_api_key || v?.groq_key || "").trim();
+        if (k) hasGroqKey = true;
+      }
+    } catch (_) {}
+  }
+
+  // 2) (선택) env fallback
+  if (!hasGroqKey) {
+    try {
+      const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+      if (__allowEnvFallback) {
+        const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+        if (envK) hasGroqKey = true;
+      }
+    } catch (_) {}
+  }
+
+  // Groq-only가 진짜 가능하면 Gemini 불필요(false), 아니면 필요(true)
+  return !hasGroqKey;
 })();
 
 if (__needGeminiKey) {
