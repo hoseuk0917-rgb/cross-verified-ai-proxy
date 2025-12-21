@@ -769,13 +769,20 @@ try {
   console.warn("⚠️ session store table ensure failed (continue with PgStore):", String(e?.message || e));
 }
 
-const sessionStore = new PgStore({
-  pool: pgPool,
-  schemaName: SESSION_STORE_SCHEMA,
-  tableName: SESSION_STORE_TABLE,
-  createTableIfMissing: true,
-  pruneSessionInterval: 60 * 10,
-});
+let sessionStore = null;
+
+try {
+  sessionStore = new PgStore({
+    pool: pgPool,
+    schemaName: SESSION_STORE_SCHEMA,
+    tableName: SESSION_STORE_TABLE,
+    createTableIfMissing: true,
+    pruneSessionInterval: 60 * 10,
+  });
+} catch (e) {
+  console.warn("⚠️ PgStore init failed → fallback to MemoryStore:", String(e?.message || e));
+  sessionStore = null;
+}
 
 // ✅ 최종 보정(혹시라도 null이면 memory로)
 if (!sessionStore) {
