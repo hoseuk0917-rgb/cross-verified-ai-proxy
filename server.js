@@ -6912,17 +6912,14 @@ async function preprocessQVFVOneShot({
   const userIntentQ = String(question || "").trim();
 
     const prompt = `
-너는 Cross-Verified AI의 "전처리 엔진(one-shot)"이다.
-목표:
-- (auto/overlay/route) 입력을 보고 최종 모드를 qv 또는 fv로 판정(router_plan)
-- (qv) 한국어 답변 생성 + 의미블록 분해 + 블록별 외부검증 엔진 쿼리 생성을 한 번에 수행
-- (fv) core_text(또는 user_query) 기준으로 블록/쿼리만 생성 (답변 생성 X)
+너는 Cross-Verified AI의 "전처리 엔진"이다.
+목표: (QV) 답변 생성 + 의미블록 분해 + 블록별 외부검증 엔진 쿼리 생성을 한 번에 수행한다.
 
 [입력]
-- mode: ${mode}                // "qv" | "fv" | "auto" | "overlay" | "route"
+- mode: ${mode}                // "qv" | "fv"
 - user_query: ${query}
 - user_question_intent(있으면 최우선): ${userIntentQ ? userIntentQ : "(없음)"}
-- core_text(FV용 claim/snippet 후보): ${baseCore ? baseCore : "(없음)"}
+- core_text(FV에서만 사용): ${mode === "fv" ? baseCore : "(QV에서는 무시)"}
 
 [절대 규칙 — 위반하면 실패]
 1) 출력은 JSON 1개만. (설명/접두어/접미어/코드블록/마크다운 금지)
@@ -6931,21 +6928,20 @@ async function preprocessQVFVOneShot({
 4) block.text는 "검증 대상 텍스트"에서 문장을 그대로 복사해서 사용(의역/요약/새 주장 추가 금지).
 5) naver 쿼리에는 '+'를 절대 포함하지 말 것.
 6) user_question_intent가 있으면 다의어/중의성(예: 수도/은행/배터리/애플 등) 해소에 반드시 사용하고,
-   반대 의미로 튀는 naver 쿼리를 만들지 말 것. (필요 시 수식어/괄호로 의미 고정)
-7) router_plan.plan/runs/primary에는 "auto/overlay/route"를 절대 넣지 말고, "qv" 또는 "fv"만 사용한다.
+   반대 의미로 튀는 naver 쿼리는 만들지 말 것. (필요 시 수식어/괄호로 의미 고정)
 
-[router_plan 규칙]
-- 최종 모드는 "qv" 또는 "fv" 중 하나로 결정한다.
-- 기본 판단:
-  - core_text가 충분히 길고(대략 20자 이상) “검증할 주장/문장”처럼 보이면 fv
-  - 그 외(질문/요청/설명 요구)는 qv
-- user_question_intent가 있으면 그 의도를 우선한다(중의성 방지).
-- confidence는 0.0~1.0 (확신 없으면 낮게)
+[매우 중요 — 숫자 질문 규칙(필수)]
+- 사용자의 질문이 "인구/금액/비율/수치/연도별 값/규모" 등 숫자 답을 요구하면,
+  (QV) answer_ko와 blocks 중 최소 1개 block.text에 아라비아 숫자(0-9)가 반드시 포함되어야 한다.
+- 숫자가 확실하지 않으면 "범위/추정/잠정/전망" 형태로 제시하라.
+  예: "약 50,000,000~52,000,000명", "약 3.1~3.3%", "약 1.2조~1.4조 원"
+- '불확실'만 말하고 숫자를 전혀 제시하지 않는 답변은 실패로 간주한다.
 
 [QV 규칙]
 - 질문에 대해 최선의 한국어 답변(answer_ko)을 6~10문장으로 작성한다.
 - 웹검색/브라우징/실시간 조회를 했다고 주장하지 말라.
-- 확실하지 않은 고유명사/수치/날짜는 단정하지 말고 '불확실'로 표시한다.
+- 확실하지 않은 고유명사/수치/날짜는 단정 대신 "추정/잠정/통계 추계/전망(범위)"로 표시한다.
+- 숫자 질문이면 숫자(범위/추정 포함)를 반드시 포함하라.
 
 [FV 규칙]
 - answer_ko는 반드시 "" (빈 문자열).
@@ -6955,6 +6951,7 @@ async function preprocessQVFVOneShot({
 - 각 블록은 "주장/수치/조건" 단위로 1~2문장씩 묶는다.
 - 각 block.text는 30~260자 내로 유지(너무 짧거나 너무 길면 실패).
 - id는 1부터 순서대로.
+- 숫자 질문이면, blocks 중 최소 1개는 숫자(0-9)를 포함하는 문장이어야 한다.
 
 [engine_queries 규칙]
 - crossref/openalex: 영어 키워드/짧은 구문(2~10단어, 90자 이내)
@@ -6964,14 +6961,6 @@ async function preprocessQVFVOneShot({
 
 [출력 JSON 스키마]
 {
-  "router_plan": {
-    "safe_mode_final": "qv",
-    "primary": "qv",
-    "plan": [{ "mode": "qv", "priority": 1, "reason": "..." }],
-    "runs": ["qv"],
-    "confidence": 0.0,
-    "reason": "..."
-  },
   "answer_ko": "...",          // FV는 ""
   "korean_core": "...",
   "english_core": "...",
@@ -6989,7 +6978,7 @@ async function preprocessQVFVOneShot({
     }
   ]
 }
-`.trim();
+  `.trim();
 
   // ─────────────────────────────
   // helpers
@@ -7170,11 +7159,13 @@ async function preprocessQVFVOneShot({
     };
   };
 
-  // ─────────────────────────────
+    // ─────────────────────────────
   // 1) Groq first (optional)
   // ─────────────────────────────
   const GROQ_QVFV_PRE_ENABLE =
     String(process.env.GROQ_QVFV_PRE_ENABLE ?? process.env.GROQ_PREPROCESS_ENABLE ?? "1") !== "0";
+
+  let __groqPreError = null;
 
   const __getGroqKeyForPre = async () => {
     const kBody = String(groq_api_key || "").trim();
@@ -7186,7 +7177,9 @@ async function preprocessQVFVOneShot({
         const kk = String(kUser || "").trim();
         if (kk) return kk;
       }
-    } catch (_) {}
+    } catch (e) {
+      __groqPreError = { stage: "get_user_key", message: String(e?.message || e || "get_user_key_failed").slice(0, 200) };
+    }
 
     try {
       const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
@@ -7194,7 +7187,9 @@ async function preprocessQVFVOneShot({
         const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
         if (envK) return envK;
       }
-    } catch (_) {}
+    } catch (e) {
+      __groqPreError = { stage: "get_env_fallback", message: String(e?.message || e || "get_env_fallback_failed").slice(0, 200) };
+    }
 
     return "";
   };
@@ -7233,7 +7228,9 @@ async function preprocessQVFVOneShot({
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
         const msg = json?.error?.message || `GROQ_HTTP_${res.status}`;
-        throw Object.assign(new Error(msg), { response: { status: res.status, data: json } });
+        const err = Object.assign(new Error(msg), { response: { status: res.status, data: json } });
+        err._http_status = res.status;
+        throw err;
       }
 
       const content = json?.choices?.[0]?.message?.content;
@@ -7266,8 +7263,14 @@ async function preprocessQVFVOneShot({
         model: groqModel,
         ms: Date.now() - t0,
         model_used: `groq:${groqModel}`,
+        groq_pre_error: __groqPreError,
       });
-    } catch (_) {
+    } catch (e) {
+      __groqPreError = {
+        stage: "groq_pre_call",
+        message: String(e?.message || e || "groq_pre_failed").slice(0, 220),
+        status: Number(e?._http_status || e?.response?.status || 0) || null,
+      };
       // fall through to Gemini/manual fallback
     }
   }
@@ -9138,12 +9141,15 @@ try {
   qvfvPre = pre;
   qvfvPreDone = true;
 
-  partial_scores.qvfv_pre = {
-  korean_core: pre.korean_core,
-  english_core: pre.english_core,
-  blocks_count: pre.blocks.length,
-  model_used: (pre?._meta?.model_used || pre?._meta?.model || geminiPreprocessModel),
-};
+    partial_scores.qvfv_pre = {
+    korean_core: pre.korean_core,
+    english_core: pre.english_core,
+    blocks_count: pre.blocks.length,
+    provider: (pre?._meta?.provider || null),
+    model_used: (pre?._meta?.model_used || pre?._meta?.model || geminiPreprocessModel),
+    groq_pre_error: (pre?._meta?.groq_pre_error || null),
+  };
+
   const __modeForQVAnswer = String(safeMode || "").trim().toLowerCase();
 partial_scores.qv_answer =
   (__modeForQVAnswer === "qv" ||
