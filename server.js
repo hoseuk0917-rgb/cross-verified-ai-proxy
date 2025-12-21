@@ -6911,24 +6911,36 @@ async function preprocessQVFVOneShot({
   const baseCore = (core_text || query || "").toString().trim();
   const userIntentQ = String(question || "").trim();
 
-  const prompt = `
-너는 Cross-Verified AI의 "전처리 엔진"이다.
-목표: (QV) 답변 생성 + 의미블록 분해 + 블록별 외부검증 엔진 쿼리 생성을 한 번에 수행한다.
+    const prompt = `
+너는 Cross-Verified AI의 "전처리 엔진(one-shot)"이다.
+목표:
+- (auto/overlay/route) 입력을 보고 최종 모드를 qv 또는 fv로 판정(router_plan)
+- (qv) 한국어 답변 생성 + 의미블록 분해 + 블록별 외부검증 엔진 쿼리 생성을 한 번에 수행
+- (fv) core_text(또는 user_query) 기준으로 블록/쿼리만 생성 (답변 생성 X)
 
 [입력]
-- mode: ${mode}                // "qv" | "fv"
+- mode: ${mode}                // "qv" | "fv" | "auto" | "overlay" | "route"
 - user_query: ${query}
 - user_question_intent(있으면 최우선): ${userIntentQ ? userIntentQ : "(없음)"}
-- core_text(FV에서만 사용): ${mode === "fv" ? baseCore : "(QV에서는 무시)"}
+- core_text(FV용 claim/snippet 후보): ${baseCore ? baseCore : "(없음)"}
 
 [절대 규칙 — 위반하면 실패]
-1) 출력은 JSON 1개만. (설명/접두어/접미어/코드블록/마크다운/줄바꿈 코멘트 모두 금지)
+1) 출력은 JSON 1개만. (설명/접두어/접미어/코드블록/마크다운 금지)
 2) JSON은 반드시 double quote(")만 사용하고, trailing comma 금지.
 3) blocks는 반드시 1~${QVFV_MAX_BLOCKS}개.
 4) block.text는 "검증 대상 텍스트"에서 문장을 그대로 복사해서 사용(의역/요약/새 주장 추가 금지).
 5) naver 쿼리에는 '+'를 절대 포함하지 말 것.
 6) user_question_intent가 있으면 다의어/중의성(예: 수도/은행/배터리/애플 등) 해소에 반드시 사용하고,
-   반대 의미로 튀는 naver 쿼리는 만들지 말 것. (필요 시 수식어/괄호로 의미 고정)
+   반대 의미로 튀는 naver 쿼리를 만들지 말 것. (필요 시 수식어/괄호로 의미 고정)
+7) router_plan.plan/runs/primary에는 "auto/overlay/route"를 절대 넣지 말고, "qv" 또는 "fv"만 사용한다.
+
+[router_plan 규칙]
+- 최종 모드는 "qv" 또는 "fv" 중 하나로 결정한다.
+- 기본 판단:
+  - core_text가 충분히 길고(대략 20자 이상) “검증할 주장/문장”처럼 보이면 fv
+  - 그 외(질문/요청/설명 요구)는 qv
+- user_question_intent가 있으면 그 의도를 우선한다(중의성 방지).
+- confidence는 0.0~1.0 (확신 없으면 낮게)
 
 [QV 규칙]
 - 질문에 대해 최선의 한국어 답변(answer_ko)을 6~10문장으로 작성한다.
@@ -6952,6 +6964,14 @@ async function preprocessQVFVOneShot({
 
 [출력 JSON 스키마]
 {
+  "router_plan": {
+    "safe_mode_final": "qv",
+    "primary": "qv",
+    "plan": [{ "mode": "qv", "priority": 1, "reason": "..." }],
+    "runs": ["qv"],
+    "confidence": 0.0,
+    "reason": "..."
+  },
   "answer_ko": "...",          // FV는 ""
   "korean_core": "...",
   "english_core": "...",
@@ -6999,10 +7019,86 @@ async function preprocessQVFVOneShot({
     return out.length >= 8 ? out : raw;
   }
 
-  const __normalizeParsed = (parsedObj, meta) => {
+   const __normalizeParsed = (parsedObj, meta) => {
     const answer_ko0 = String(parsedObj?.answer_ko || "").trim();
     const korean_core0 = String(parsedObj?.korean_core || "").trim() || normalizeKoreanQuestion(baseCore);
     const english_core0 = String(parsedObj?.english_core || "").trim() || String(query || "").trim();
+
+    // ─────────────────────────────
+    // router_plan normalize (preprocess output)
+    // ─────────────────────────────
+    const __normalizePreRouterPlan = (rpRaw) => {
+      try {
+        const m0 = String(mode || "").toLowerCase().trim();
+        const hasSnippetClaim = String(baseCore || "").trim().length >= 20;
+
+        const rp = (rpRaw && typeof rpRaw === "object") ? rpRaw : {};
+        let sf = String(rp.safe_mode_final || rp.primary || "").toLowerCase().trim();
+
+        // enforce qv/fv only
+        if (sf !== "qv" && sf !== "fv") {
+          if (m0 === "qv" || m0 === "fv") sf = m0;
+          else sf = hasSnippetClaim ? "fv" : "qv";
+        }
+
+        // if input explicitly qv/fv, keep it
+        if (m0 === "qv" || m0 === "fv") sf = m0;
+
+        let plan = Array.isArray(rp.plan) ? rp.plan : [];
+        plan = plan
+          .map((x) => ({
+            mode: String(x?.mode || "").toLowerCase().trim(),
+            priority: Number.isFinite(Number(x?.priority)) ? Number(x.priority) : 1,
+            reason: String(x?.reason || "").slice(0, 120),
+          }))
+          .filter((x) => x.mode === "qv" || x.mode === "fv");
+
+        if (!plan.length) plan = [{ mode: sf, priority: 1, reason: "pre_router_missing_or_failed" }];
+
+        let runs = Array.isArray(rp.runs) ? rp.runs : [];
+        runs = runs.map((x) => String(x || "").toLowerCase().trim()).filter((x) => x === "qv" || x === "fv");
+        if (!runs.length) runs = plan.map((x) => x.mode);
+
+        let primary = String(rp.primary || plan?.[0]?.mode || sf).toLowerCase().trim();
+        if (primary !== "qv" && primary !== "fv") primary = sf;
+
+        let confidence = (typeof rp.confidence === "number") ? rp.confidence : null;
+        if (confidence != null) confidence = Math.max(0, Math.min(1, confidence));
+
+        return {
+          raw_mode: m0,
+          safe_mode_final: sf,
+          primary,
+          plan,
+          runs,
+          confidence,
+          reason: String(rp.reason || "").slice(0, 160) || null,
+          model: meta?.model || null,
+          provider: meta?.provider || null,
+          cached: null,
+          lv_extra: false,
+        };
+      } catch (_) {
+        const m0 = String(mode || "").toLowerCase().trim();
+        const hasSnippetClaim = String(baseCore || "").trim().length >= 20;
+        const sf = (m0 === "qv" || m0 === "fv") ? m0 : (hasSnippetClaim ? "fv" : "qv");
+        return {
+          raw_mode: m0,
+          safe_mode_final: sf,
+          primary: sf,
+          plan: [{ mode: sf, priority: 1, reason: "pre_router_normalize_failed" }],
+          runs: [sf],
+          confidence: null,
+          reason: "pre_router_normalize_failed",
+          model: meta?.model || null,
+          provider: meta?.provider || null,
+          cached: null,
+          lv_extra: false,
+        };
+      }
+    };
+
+    const router_plan0 = __normalizePreRouterPlan(parsedObj?.router_plan);
 
     let blocksRaw = Array.isArray(parsedObj?.blocks) ? parsedObj.blocks : [];
 
@@ -7064,10 +7160,12 @@ async function preprocessQVFVOneShot({
     }
 
     return {
-      answer_ko: (mode === "qv" ? (answer_ko0 || "") : ""),
+      // ✅ 최종 answer_ko는 router_plan.safe_mode_final 기준으로 제어
+      answer_ko: (router_plan0.safe_mode_final === "qv" ? (answer_ko0 || "") : ""),
       korean_core: korean_core0,
       english_core: english_core0,
       blocks,
+      router_plan: router_plan0,
       _meta: meta || null,
     };
   };
@@ -8938,7 +9036,11 @@ const groqPreprocessModel =
   (process.env.GROQ_QVFV_PRE_MODEL && process.env.GROQ_QVFV_PRE_MODEL.trim())
     || (typeof GROQ_ROUTER_MODEL !== "undefined" ? String(GROQ_ROUTER_MODEL) : "llama-3.3-70b-versatile");
 
-const qvfvBaseText = (safeMode === "fv" && userCoreText) ? userCoreText : query;
+const __sm0 = String(safeMode || "").toLowerCase();
+const qvfvBaseText =
+  ((__sm0 === "fv" || __sm0 === "auto" || __sm0 === "overlay" || __sm0 === "route" || __sm0 === "") && userCoreText)
+    ? userCoreText
+    : query;
 
 // ✅ QV/FV 전처리 원샷 (답변+블록+블록별 쿼리)
 try {
@@ -8960,6 +9062,35 @@ try {
     authUser,            // ✅ADD
     groq_api_key: groqKeyBody, // ✅ADD (body override)
   });
+
+    // ✅ (NEW) one-shot preprocess가 router_plan을 같이 반환하면 우선 기록/반영
+  try {
+    const __rpPre = pre?.router_plan;
+    if (__rpPre && typeof __rpPre === "object") {
+      // 1) partial_scores에 저장(진단/비교용)
+      try {
+        if (partial_scores && typeof partial_scores === "object") {
+          partial_scores.router_plan_pre = __rpPre;
+        }
+      } catch {}
+
+      // 2) 기존 __routerPlan이 없거나, 실패/폴백 상태면 one-shot 결과로 대체(보수적)
+      try {
+        if (typeof __routerPlan === "undefined" || !__routerPlan || (__routerPlan && String(__routerPlan?.reason || "").includes("router_missing"))) {
+          __routerPlan = __rpPre;
+        }
+      } catch {}
+
+      // 3) 요청 모드가 auto/overlay/route/빈값이면 safeMode를 qv/fv로 확정
+      try {
+        const __sm = String(safeMode || "").toLowerCase();
+        if (__sm === "auto" || __sm === "overlay" || __sm === "route" || __sm === "") {
+          const __sf = String(__rpPre?.safe_mode_final || "").toLowerCase();
+          safeMode = (__sf === "fv") ? "fv" : "qv";
+        }
+      } catch {}
+    }
+  } catch {}
 
   const ms_pre = Date.now() - t_pre;
   recordTime(geminiTimes, "qvfv_preprocess_ms", ms_pre);
