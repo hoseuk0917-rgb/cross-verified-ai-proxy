@@ -6739,9 +6739,18 @@ const numTokensCompact = numTokens.map(normalizeNumToken);
   const kw = extractKeywords([query, blockText, ...(naverQueries || [])].join(" "), 14);
   const needNum = hasNumberLike(blockText) || hasNumberLike(query);
 
-  // tier1(core) 도메인 1개는 최소 포함되도록(가능하면)
+    // tier1(core) 도메인 1개는 최소 포함되도록(가능하면)
   const wl = loadNaverWhitelist();
-  const tier1Domains = Array.isArray(wl?.tiers?.tier1?.domains) ? wl.tiers.tier1.domains : [];
+  const tiersObj =
+    wl && typeof wl === "object" && wl.tiers && typeof wl.tiers === "object" ? wl.tiers : {};
+
+  const tier1Domains = Array.isArray(tiersObj?.tier1?.domains) ? tiersObj.tier1.domains : [];
+
+  // ✅ tiers 전체 도메인(whitelist 여부 판정용)
+  const allTierDomains = Object.values(tiersObj)
+    .flatMap((t) => (Array.isArray(t?.domains) ? t.domains : []))
+    .map((d) => String(d || "").toLowerCase())
+    .filter(Boolean);
 
   const __getHostFromUrl = (u = "") => {
     try {
@@ -6753,6 +6762,10 @@ const numTokensCompact = numTokens.map(normalizeNumToken);
 
   const __isCoreHost = (host = "") =>
     tier1Domains.some((d) => host.endsWith(String(d || "").toLowerCase()));
+
+  // ✅ host가 whitelist tiers 중 어디든 매칭되면 whitelisted로 간주(업스트림 누락 방어)
+  const __isWhitelistedHost = (host = "") =>
+    !!host && allTierDomains.some((d) => host.endsWith(d));
 
   const __hitCount = (haystack, keywords) => {
     const text = String(haystack || "").toLowerCase();
@@ -6785,8 +6798,14 @@ const numTokensCompact = numTokens.map(normalizeNumToken);
     const isDisplayOnly = (it?.display_only === true) || (it?._whitelist_display_only === true);
     if (isDisplayOnly) continue;
 
-    // whitelist-only: 비화이트리스트는 제외
-    const isWhitelisted = (it?.whitelisted === true) || !!it?.tier;
+        // whitelist-only: 비화이트리스트는 제외
+    // - 업스트림에서 tier/whitelisted 누락되어도 host로 재판정
+    const __host0 =
+      String(it?.host || it?.source_host || "").toLowerCase() || __getHostFromUrl(urlCand);
+
+    const isWhitelisted =
+      it?.whitelisted === true || !!it?.tier || (__host0 && __isWhitelistedHost(__host0));
+
     if (!isWhitelisted) continue;
 
     // ✅ "한국" 1개만 맞아도 통과" 문제 해결: 최소 키워드 히트 수 요구
@@ -10099,7 +10118,8 @@ for (const b of __blocksInput) {
     minRelevance: NAVER_RELEVANCE_MIN,
   });
 
-  // ----- fallback: strict 필터로 0개 나오면 그래도 뭔가 채워주기 -----
+    // ----- fallback: strict 필터로 0개 나오면 그래도 뭔가 채워주기 -----
+  // ✅ 변경: whitelist-only 정책을 유지한다. (비화이트리스트 전체로 fallback 금지)
   if (
     (!Array.isArray(naverItemsForVerify) || naverItemsForVerify.length === 0) &&
     Array.isArray(naverItemsAll) &&
@@ -10113,10 +10133,16 @@ for (const b of __blocksInput) {
         })
       : [];
 
-    const __poolPrefer = (__poolNoNews.length ? __poolNoNews : naverItemsAll).filter((r) => !!(r?.tier || r?.whitelisted));
-    const __poolFinal = __poolPrefer.length > 0 ? __poolPrefer : naverItemsAll;
+    const __poolBase = __poolNoNews.length ? __poolNoNews : naverItemsAll;
 
-    naverItemsForVerify = topArr(__poolFinal, BLOCK_NAVER_EVIDENCE_TOPK);
+    // display-only 제외 + whitelist/tier 있는 것만
+    const __poolPrefer = __poolBase.filter((r) => {
+      if ((r?.display_only === true) || (r?._whitelist_display_only === true)) return false;
+      return !!(r?.tier || r?.whitelisted);
+    });
+
+    // ✅ 여기서도 비면 그냥 빈 배열 유지 (whitelist-only)
+    naverItemsForVerify = topArr(__poolPrefer, BLOCK_NAVER_EVIDENCE_TOPK);
   }
 
     // ----- gdelt / external / blocksForVerify -----
