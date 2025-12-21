@@ -7325,11 +7325,16 @@ async function preprocessQVFVOneShot({
     }
   }
 
-    // ─────────────────────────────
-  // 2) Gemini fallback
-  //   - GROQ key가 아예 없으면, Gemini 전처리에서 60s+ 잡아먹는 케이스가 많아서 기본 스킵
-  //   - 필요하면 env로 강제 허용 가능
   // ─────────────────────────────
+  // 2) Gemini fallback (옵션)
+  //   - 기본 OFF: Groq 전처리 one-shot을 기본 경로로 유지하고, 실패 시 manual fallback으로 즉시 전환
+  //   - 필요하면 env로만 활성화 가능: QVFV_PRE_ENABLE_GEMINI_FALLBACK=1
+  //   - Groq key missing 상황에서는 Gemini 전처리 fallback 기본 스킵(느림/비용)이며,
+  //     필요 시 QVFV_PRE_ALLOW_GEMINI_FALLBACK_IF_GROQ_KEY_MISSING=1 로 강제 허용 가능
+  // ─────────────────────────────
+  const __enableGeminiFallback =
+    String(process.env.QVFV_PRE_ENABLE_GEMINI_FALLBACK || "0") === "1";
+
   const __allowGeminiIfGroqKeyMissing =
     String(process.env.QVFV_PRE_ALLOW_GEMINI_FALLBACK_IF_GROQ_KEY_MISSING || "0") === "1";
 
@@ -7337,7 +7342,12 @@ async function preprocessQVFVOneShot({
     (__groqPreError?.stage === "groq_pre_call") &&
     /GROQ_KEY_MISSING_FOR_PRE/i.test(String(__groqPreError?.message || ""));
 
-  const __skipGeminiFallback = (__groqKeyMissing && !__allowGeminiIfGroqKeyMissing);
+  const __geminiKeyMissing = !String(gemini_key || "").trim();
+
+  const __skipGeminiFallback =
+    !__enableGeminiFallback ||
+    __geminiKeyMissing ||
+    (__groqKeyMissing && !__allowGeminiIfGroqKeyMissing);
 
   if (!__skipGeminiFallback) {
     try {
@@ -7364,17 +7374,30 @@ async function preprocessQVFVOneShot({
       try {
         const msg = String(e?.message || e || "gemini_pre_failed").slice(0, 220);
         if (!__groqPreError) {
-          __groqPreError = { stage: "gemini_pre_call", message: msg, status: Number(e?._http_status || e?.response?.status || 0) || null };
+          __groqPreError = {
+            stage: "gemini_pre_call",
+            message: msg,
+            status: Number(e?._http_status || e?.response?.status || 0) || null,
+          };
         } else {
-          __groqPreError._gemini_pre_error = { message: msg, status: Number(e?._http_status || e?.response?.status || 0) || null };
+          __groqPreError._gemini_pre_error = {
+            message: msg,
+            status: Number(e?._http_status || e?.response?.status || 0) || null,
+          };
         }
       } catch (_) {}
     }
   } else {
     // 진단용: 스킵 사유를 남김
     try {
-      if (!__groqPreError) __groqPreError = { stage: "gemini_pre_skipped", message: "skip_gemini_fallback_due_to_groq_key_missing", status: null };
-      else __groqPreError._gemini_pre_skipped = "skip_gemini_fallback_due_to_groq_key_missing";
+      const _reason = !__enableGeminiFallback
+        ? "skip_gemini_fallback_disabled_by_env"
+        : (__geminiKeyMissing
+            ? "skip_gemini_fallback_due_to_gemini_key_missing"
+            : "skip_gemini_fallback_due_to_groq_key_missing");
+
+      if (!__groqPreError) __groqPreError = { stage: "gemini_pre_skipped", message: _reason, status: null };
+      else __groqPreError._gemini_pre_skipped = _reason;
     } catch (_) {}
   }
 
