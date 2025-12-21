@@ -8639,9 +8639,9 @@ if (!allowedModes.includes(safeMode)) {
 if (safeMode === "qv" || safeMode === "fv" || safeMode === "dv") {
   const g = String(geminiModelRaw || "");
   if (g === "flash-lite" || g === "lite" || /flash-lite/i.test(g)) {
-    verifyModel = GEMINI_VERIFY_LITE_MODEL || GEMINI_QVFV_PRE_MODEL || "gemini-2.5-flash-lite";
+    verifyModel = GEMINI_VERIFY_LITE_MODEL || GEMINI_QVFV_PRE_MODEL || GEMINI_VERIFY_MODEL;
   } else {
-    verifyModel = GEMINI_VERIFY_MODEL || "gemini-2.5-flash";
+    verifyModel = GEMINI_VERIFY_MODEL;
   }
 }
 
@@ -11038,27 +11038,23 @@ let flash = "";
 let verify = "";
 let verifyMeta = null;
 
-// ✅ verify 단계에서 쓸 Gemini 모델 (flash / flash-lite만 허용)
-if (verifyModel && /flash-lite/i.test(String(verifyModel))) {
-  // 예: "flash-lite", "gemini-2.5-flash-lite"
-  verifyModelUsed = "gemini-2.5-flash-lite";
-} else {
-  // null / "flash" / "pro" / 기타 → 전부 flash로 통일
-  verifyModelUsed = "gemini-2.5-flash";
-}
+// ✅ verifyModelUsed는 기본적으로 선택된 verifyModel에서 시작.
+//    (실제 성공 모델은 아래 Gemini fallback 루프에서 성공 시점에 갱신됨)
+verifyModelUsed = verifyModelUsed || verifyModel;
 
 // ✅ flash(요약/답변) 단계에서 쓸 모델 (flash / flash-lite만 허용)
-let answerModelUsed = "gemini-2.5-flash"; // 기본값
+// - 기본은 env 상수(GEMINI_QVFV_PRE_MODEL), 없으면 verifyModel/verify 상수로 폴백
+let answerModelUsed = GEMINI_QVFV_PRE_MODEL || GEMINI_VERIFY_MODEL || verifyModel;
 
 if (safeMode === "qv" || safeMode === "fv") {
   // QV/FV에서도 이제 flash / flash-lite만 허용
   const gRaw = String(geminiModelRaw || "").toLowerCase();
 
-  if (gRaw === "flash-lite" || gRaw === "lite") {
-    answerModelUsed = "gemini-2.5-flash-lite";
+  if (gRaw === "flash-lite" || gRaw === "lite" || /flash-lite/i.test(gRaw)) {
+    answerModelUsed =
+      GEMINI_VERIFY_LITE_MODEL || GEMINI_QVFV_PRE_MODEL || GEMINI_VERIFY_MODEL || verifyModel;
   } else {
-    // "" / "flash" / "pro" / 기타 → 모두 flash 고정
-    answerModelUsed = "gemini-2.5-flash";
+    answerModelUsed = GEMINI_QVFV_PRE_MODEL || GEMINI_VERIFY_MODEL || verifyModel;
   }
 }
 
@@ -12391,12 +12387,12 @@ if (GROQ_VERIFY_ENABLE) {
 
 // 2) Groq로 성공 못 했으면 Gemini 후보로 fallback
 if (!groqVerifyUsed) {
-  // 1순위: verifyModel, 2순위: flash, 3순위: flash-lite
-  const verifyModelCandidates = [
-    verifyModel,
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-  ].filter((v, i, a) => v && a.indexOf(v) === i);
+  // 1순위: verifyModel, 2순위: env verify, 3순위: env verify-lite
+const verifyModelCandidates = [
+  verifyModel,
+  GEMINI_VERIFY_MODEL,
+  GEMINI_VERIFY_LITE_MODEL,
+].filter((v, i, a) => v && a.indexOf(v) === i);
 
   const t_verify = Date.now();
   try {
