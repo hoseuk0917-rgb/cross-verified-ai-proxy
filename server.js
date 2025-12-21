@@ -159,16 +159,16 @@ const GEMINI_TIMEOUT_MS = parseInt(process.env.GEMINI_TIMEOUT_MS || "45000", 10)
 
 // ✅ Gemini model knobs (single source of truth)
 // - pre(qv/fv preprocess) and verify can be controlled independently
-// - defaults intentionally match the /api/verify stage hardcoding you had (2.5 flash family)
+// - defaults set to 2.0 flash family to reduce rate-limit risk (env can override)
 const GEMINI_QVFV_PRE_MODEL =
-  process.env.GEMINI_QVFV_PRE_MODEL || "gemini-2.5-flash-lite";
+  process.env.GEMINI_QVFV_PRE_MODEL || "gemini-2.0-flash-lite";
 
 const GEMINI_VERIFY_MODEL =
-  process.env.GEMINI_VERIFY_MODEL || "gemini-2.5-flash";
+  process.env.GEMINI_VERIFY_MODEL || "gemini-2.0-flash";
 
 // verify에서 “lite”를 요청했을 때 쓰는 모델(verify 전용). 없으면 pre 모델로 fallback.
 const GEMINI_VERIFY_LITE_MODEL =
-  process.env.GEMINI_VERIFY_LITE_MODEL || GEMINI_QVFV_PRE_MODEL || "gemini-2.5-flash-lite";
+  process.env.GEMINI_VERIFY_LITE_MODEL || GEMINI_QVFV_PRE_MODEL || "gemini-2.0-flash-lite";
 
 const ENGINE_RETRY_MAX = parseInt(process.env.ENGINE_RETRY_MAX || "1", 10); // 0~1 권장
 const ENGINE_RETRY_BASE_MS = parseInt(process.env.ENGINE_RETRY_BASE_MS || "350", 10);
@@ -6041,7 +6041,7 @@ ${JSON.stringify(githubData).slice(0, 2500)}
   gemini_key,
   keyHint: gemini_key,
     // ✅ pro 금지 → flash 계열만 사용 (env 단일화)
-  model: GEMINI_VERIFY_MODEL || "gemini-2.5-flash",
+  model: modelFinal || GEMINI_VERIFY_MODEL || "gemini-2.0-flash",
   payload: { contents: [{ parts: [{ text: prompt }] }] },
 });
 
@@ -6123,7 +6123,7 @@ ${baseText}
       userId,
       gemini_key,
       keyHint: gemini_key,
-        model: GEMINI_VERIFY_MODEL || "gemini-2.5-flash",
+      model: modelFinal || GEMINI_VERIFY_MODEL || "gemini-2.0-flash",
       payload: { contents: [{ parts: [{ text: prompt }] }] },
     });
 
@@ -10498,7 +10498,7 @@ if (
         ) +
         "\n```",
 
-      gemini_verify_model: "gemini-2.5-flash", // 분류/쿼리빌더 호출 모델(참고용)
+      gemini_verify_model: GEMINI_VERIFY_MODEL || "gemini-2.0-flash", // 참고용(verify 기본)
       engine_times: {},
       engine_metrics: {},
       gemini_times: {},
