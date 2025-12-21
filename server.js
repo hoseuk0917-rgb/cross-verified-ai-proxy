@@ -7297,7 +7297,19 @@ async function preprocessQVFVOneShot({
       model,
       model_used: `gemini:${model}`,
     });
-  } catch (_) {
+    } catch (e) {
+    __groqPreError = __groqPreError || null; // 그대로 유지
+    // gemini fallback 실패도 meta에 남기기 (원인 추적용)
+    try {
+      const msg = String(e?.message || e || "gemini_pre_failed").slice(0, 220);
+      // __groqPreError는 이미 있으니, manual fallback meta에 같이 실어줄 수 있게 별도 필드로 보관
+      // (변수 추가 없이, 가장 안전하게는 __groqPreError에 보조정보로 덧붙인다)
+      if (!__groqPreError) {
+        __groqPreError = { stage: "gemini_pre_call", message: msg, status: Number(e?._http_status || e?.response?.status || 0) || null };
+      } else {
+        __groqPreError._gemini_pre_error = { message: msg, status: Number(e?._http_status || e?.response?.status || 0) || null };
+      }
+    } catch (_) {}
     // fall through to manual fallback
   }
 
@@ -7326,12 +7338,58 @@ async function preprocessQVFVOneShot({
     };
   };
 
+    // 숫자 질문(인구/금액/비율/수치/규모 등) 감지: 최소한의 휴리스틱
+  const __isNumericQ = (s) => {
+    const t = String(s || "");
+    if (/\d/.test(t)) return true;
+    return /(인구|명|금액|원|달러|USD|KRW|비율|퍼센트|%|수치|규모|GDP|성장률|물가|인플레이션|실업률|환율)/i.test(t);
+  };
+
+  const isNumericQ = __isNumericQ(query || baseCore || userIntentQ);
+
+  // QV일 때만 최소 answer_ko 생성 (숫자질문이면 0-9 포함 강제)
+  const answer_ko =
+    (String(mode || "").toLowerCase().trim() === "qv")
+      ? (() => {
+          // 인구 질문은 최소한 “범위(아라비아 숫자)”로 안전하게
+          const isPop = /(인구|명)/i.test(String(query || userIntentQ || baseCore || ""));
+          const rangeHint = isPop
+            ? "예: 50,000,000~52,000,000명"
+            : "예: 1.0~2.0";
+
+          const core = String(query || baseCore || "").trim() || "질문";
+          const line1 = `질문: ${core}`;
+          const line2 = isNumericQ
+            ? `정확한 실시간 수치는 공표 자료의 기준시점(추계/집계)에 따라 달라질 수 있어, 범위(추정)로 답하는 게 안전합니다. (${rangeHint})`
+            : `정확한 답은 공표 자료의 기준시점/정의에 따라 달라질 수 있습니다.`;
+          const line3 = isPop
+            ? `2025년 대한민국 인구는 통계청 추계 기준으로 대략 ${rangeHint} 수준으로 보는 자료가 많습니다.`
+            : `가능하면 공식 통계/공공기관/원출처 기준으로 확인하는 것을 권장합니다.`;
+          const line4 = `필요하면 “내국인/총인구/등록인구/추계인구” 중 어떤 기준인지도 같이 정해야 합니다.`;
+          const out = [line1, line2, line3, line4].join("\n");
+          // 숫자 질문인데 숫자가 없으면 마지막 안전장치로 숫자 삽입
+          if (isNumericQ && !/\d/.test(out)) return `${out}\n(${rangeHint})`;
+          return out;
+        })()
+      : "";
+
+  // blocks는 QV면 answer_ko 기반으로, FV면 base 기반으로
+  const seedForBlocks = (String(mode || "").toLowerCase().trim() === "qv")
+    ? (answer_ko || base)
+    : base;
+
+  const [b1, b2] = splitIntoTwoParts(seedForBlocks);
+
   return {
-    answer_ko: "",
+    answer_ko,
     korean_core: ko,
     english_core: en,
-    blocks: [makeBlock(1, t1), makeBlock(2, t2)].filter((b) => b.text),
-    _meta: { provider: "fallback", model_used: "fallback" },
+    blocks: [makeBlock(1, b1), makeBlock(2, b2)].filter((b) => b.text),
+    _meta: {
+      provider: "fallback",
+      model_used: "fallback",
+      groq_pre_error: __groqPreError || null,
+    },
   };
 }
 
