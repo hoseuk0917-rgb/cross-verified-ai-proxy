@@ -7408,8 +7408,8 @@ async function preprocessQVFVOneShot({
     const __officialSeeds = __isPop
   ? [
       // cap=2에서 이 2개가 먼저 나가게 해서 "숫자 포함 표/공식 집계" 쪽으로 강제 유도
-      "KOSIS statHtml DT_1BPA002 총인구 통계표",
-      "행정안전부 주민등록인구",
+      "site:kosis.kr DT_1BPA002 2025 총인구 statHtml",
+      "site:jumin.mois.go.kr 2025 주민등록인구",
 
       // 뒤는 여유분(혹시 cap 늘릴 때 대비)
       "통계청 장래인구추계 총인구",
