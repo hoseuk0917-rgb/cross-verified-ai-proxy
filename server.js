@@ -7359,18 +7359,55 @@ async function preprocessQVFVOneShot({
     let seed = __cleanNaverSeed(text || ko);
     let naverQ = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
 
-    // 인구/총인구류는 “통계청/KOSIS/주민등록/추계”를 강제로 섞어서 질을 올림
-    const __isPop = /(인구|총인구|명)/i.test(String(query || userIntentQ || baseCore || ""));
-    if (__isPop) {
-      const fixed = [
-  "KOSIS 총인구 2025 표",
-  "DT_1BPA002 총인구 2025",
-  "KOSIS statHtml 총인구 2025",
-  "2025년 주민등록인구 행정안전부",
-  "2025년 장래인구추계 통계청",
-];
-      // '+' 금지 규칙 준수(여긴 없음)
-      naverQ = fixed.slice(0, BLOCK_NAVER_MAX_QUERIES);
+        // 공식 통계/공공기관 seed는 "덮어쓰기"가 아니라 "append" (화이트리스트 기반 운영과 일관)
+    const __baseForDetect = String(query || userIntentQ || baseCore || "");
+    const __isPop = /(인구|총인구|주민등록인구|명)/i.test(__baseForDetect);
+
+    // 숫자/통계류를 아주 가볍게만 감지(여기서는 __isNumericQ를 아직 선언 전이라 로컬 휴리스틱 사용)
+    const __isNumericLike =
+      /\d/.test(__baseForDetect) ||
+      /(인구|명|금액|원|달러|USD|KRW|비율|퍼센트|%|수치|규모|GDP|성장률|물가|인플레이션|실업률|환율|통계|추계|집계)/i.test(__baseForDetect);
+
+    // 연도(예: 2025) 자동 추출해서 seed에 붙임 (없으면 빈 문자열)
+    const __year = (() => {
+      const m = __baseForDetect.match(/\b(19|20)\d{2}\b/);
+      return m ? m[0] : "";
+    })();
+
+    const __dedupeQ = (arr) => {
+      const seen = new Set();
+      const out = [];
+      for (const it of (arr || [])) {
+        const s = String(it || "").trim();
+        if (!s) continue;
+        const k = s.toLowerCase();
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push(s);
+      }
+      return out;
+    };
+
+    // ✅ “필수 키워드 고정” 대신 “공식 seed 추가” (화이트리스트로 도메인 품질은 이미 보장)
+    // - 인구류면 KOSIS/통계청/행안부 중심 seed
+    // - 그 외 숫자성 질문이면 KOSIS/통계청 일반 seed만 약하게 추가
+    const __officialSeeds = __isPop
+      ? [
+          "KOSIS 총인구",
+          "DT_1BPA002 총인구",
+          "통계청 장래인구추계",
+          "행정안전부 주민등록인구",
+        ]
+      : __isNumericLike
+      ? [
+          "KOSIS 통계표",
+          "통계청 통계",
+        ]
+      : [];
+
+    if (__officialSeeds.length) {
+      const __officialQ = __officialSeeds.map((s) => (__year ? `${__year}년 ${s}` : s));
+      naverQ = __dedupeQ([...(naverQ || []), ...__officialQ]).slice(0, BLOCK_NAVER_MAX_QUERIES);
     }
 
     return {
