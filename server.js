@@ -7915,6 +7915,10 @@ const rawMode = safeMode; // ✅ 요청된 원래 mode를 보존(뒤에서 fallb
 const __isVerifySnippetPath = String(req.path || "") === "/api/verify-snippet";
 const __isSnippetPayload = !!(snippet_meta && snippet_meta.is_snippet === true);
 
+// ✅ router_plan.is_snippet 진단용 단일 플래그
+// - __buildRouterPlanPublicFinal()이 이 변수를 참조함
+const __isSnippetEndpoint = (__isVerifySnippetPath || __isSnippetPayload);
+
 if (__isVerifySnippetPath) {
   safeMode = "fv";
 }
