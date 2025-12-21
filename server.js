@@ -6898,17 +6898,20 @@ async function preprocessQVFVOneShot({
   core_text,
   question,     // ✅ADD
   gemini_key,
-  modelName,
+  geminiModelName,
+  groqModelName,
   userId,
+  authUser,     // ✅ADD (per-user groq key)
+  groq_api_key, // ✅ADD (body override)
 }) {
   // mode: "qv" | "fv"
   // QV: 답변 생성 + 답변 기준 블록/쿼리 생성
   // FV: core_text(사실문장) 기준 블록/쿼리 생성 (답변 생성 X)
 
-const baseCore = (core_text || query || "").toString().trim();
-const userIntentQ = String(question || "").trim();
+  const baseCore = (core_text || query || "").toString().trim();
+  const userIntentQ = String(question || "").trim();
 
- const prompt = `
+  const prompt = `
 너는 Cross-Verified AI의 "전처리 엔진"이다.
 목표: (QV) 답변 생성 + 의미블록 분해 + 블록별 외부검증 엔진 쿼리 생성을 한 번에 수행한다.
 
@@ -6968,121 +6971,266 @@ const userIntentQ = String(question || "").trim();
 }
 `.trim();
 
-  const text = await fetchGeminiSmart({
-    userId,
-    gemini_key,
-    keyHint: gemini_key,
-    model: modelName || "gemini-2.5-flash",
-    payload: { contents: [{ parts: [{ text: prompt }] }] },
-  });
+  // ─────────────────────────────
+  // helpers
+  // ─────────────────────────────
+  const __extractJsonText = (s) => {
+    const trimmed = String(s || "").trim();
+    const m = trimmed.match(/\{[\s\S]*\}/);
+    return m ? m[0] : trimmed;
+  };
 
-  const trimmed = (text || "").trim();
-  const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
-  const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
+  function __cleanAcademicQuery(s) {
+    const raw = String(s || "")
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
 
-  let parsed = null;
-  try { parsed = JSON.parse(jsonText); } catch { parsed = null; }
+    if (raw.length < 8) return raw;
 
-  const answer_ko = String(parsed?.answer_ko || "").trim();
-  const korean_core = String(parsed?.korean_core || "").trim() || normalizeKoreanQuestion(baseCore);
-  const english_core = String(parsed?.english_core || "").trim() || String(query || "").trim();
+    const stop = new Set(["is","are","was","were","the","a","an","of","to","in","on","and","or","for","with","as","by","from"]);
+    const toks = raw.split(" ").filter(w => {
+      const lw = w.toLowerCase();
+      if (stop.has(lw)) return false;
+      return lw.length >= 2;
+    });
 
-   let blocksRaw = Array.isArray(parsed?.blocks) ? parsed.blocks : [];
+    const out = toks.join(" ").trim();
+    return out.length >= 8 ? out : raw;
+  }
 
-let blocks = blocksRaw
-  .slice(0, QVFV_MAX_BLOCKS)
-  .map((b, idx) => {
-    const eq = b?.engine_queries || {};
+  const __normalizeParsed = (parsedObj, meta) => {
+    const answer_ko0 = String(parsedObj?.answer_ko || "").trim();
+    const korean_core0 = String(parsedObj?.korean_core || "").trim() || normalizeKoreanQuestion(baseCore);
+    const english_core0 = String(parsedObj?.english_core || "").trim() || String(query || "").trim();
 
-    function __cleanAcademicQuery(s) {
-  const raw = String(s || "")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+    let blocksRaw = Array.isArray(parsedObj?.blocks) ? parsedObj.blocks : [];
 
-  // 너무 짧으면 원문 유지
-  if (raw.length < 8) return raw;
+    let blocks = blocksRaw
+      .slice(0, QVFV_MAX_BLOCKS)
+      .map((b, idx) => {
+        const eq = b?.engine_queries || {};
 
-  // 간단 stopwords 제거(영문)
-  const stop = new Set(["is","are","was","were","the","a","an","of","to","in","on","and","or","for","with","as","by","from"]);
-  const toks = raw.split(" ").filter(w => {
-    const lw = w.toLowerCase();
-    if (stop.has(lw)) return false;
-    return lw.length >= 2;
-  });
+        const crossrefQ = limitChars(__cleanAcademicQuery(eq.crossref || english_core0), 90);
+        const openalexQ = limitChars(__cleanAcademicQuery(eq.openalex || english_core0), 90);
+        const wikidataQ = limitChars(eq.wikidata || korean_core0, 50);
+        const gdeltQ    = limitChars(eq.gdelt   || english_core0, 120);
 
-  const out = toks.join(" ").trim();
-  return out.length >= 8 ? out : raw;
-}
+        let naverArr = Array.isArray(eq.naver)
+          ? eq.naver
+          : (typeof eq.naver === "string" ? [eq.naver] : []);
 
-    // ✅ engine query 기본값/길이제한 강제
-    const crossrefQ = limitChars(__cleanAcademicQuery(eq.crossref || english_core), 90);
-    const openalexQ = limitChars(__cleanAcademicQuery(eq.openalex || english_core), 90);
-    const wikidataQ = limitChars(eq.wikidata || korean_core, 50);
-    const gdeltQ    = limitChars(eq.gdelt   || english_core, 120);
+        naverArr = naverArr
+          .map((s) => limitChars(buildNaverAndQuery(s), 30))
+          .filter(Boolean)
+          .slice(0, BLOCK_NAVER_MAX_QUERIES);
 
-    // ✅ naver는 배열/문자열 모두 수용 + '+' 제거 + 30자 제한
-    let naverArr = Array.isArray(eq.naver)
-      ? eq.naver
-      : (typeof eq.naver === "string" ? [eq.naver] : []);
+        if (naverArr.length === 0) {
+          const seed = String(b?.text || "").trim() || korean_core0;
+          naverArr = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
+        }
 
-    naverArr = naverArr
-      .map((s) => limitChars(buildNaverAndQuery(s), 30))
-      .filter(Boolean)
-      .slice(0, BLOCK_NAVER_MAX_QUERIES);
+        const text = clipBlockText(String(b?.text || "").trim(), 260);
 
-    // ✅ 핵심: 전처리 결과가 비어도 naver 쿼리 1개는 보장
-    // (block.text → korean_core 순으로 seed)
-    if (naverArr.length === 0) {
-      const seed = String(b?.text || "").trim() || korean_core;
-      naverArr = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
+        return {
+          id: Number.isFinite(Number(b?.id)) ? Number(b.id) : (idx + 1),
+          text,
+          engine_queries: {
+            crossref: crossrefQ,
+            openalex: openalexQ,
+            wikidata: wikidataQ,
+            gdelt: gdeltQ,
+            naver: naverArr,
+          },
+        };
+      })
+      .filter((b) => b && b.text);
+
+    if (blocks.length === 0) {
+      const seedText = (mode === "qv") ? (answer_ko0 || baseCore || "") : (baseCore || "");
+      const t1 = String(seedText || "").trim();
+
+      blocks = [{
+        id: 1,
+        text: t1,
+        engine_queries: {
+          crossref: english_core0,
+          openalex: english_core0,
+          wikidata: korean_core0,
+          gdelt: english_core0,
+          naver: [korean_core0],
+        },
+      }].filter((b) => b.text);
     }
 
-    const text = clipBlockText(String(b?.text || "").trim(), 260);
-
     return {
-      id: Number.isFinite(Number(b?.id)) ? Number(b.id) : (idx + 1),
+      answer_ko: (mode === "qv" ? (answer_ko0 || "") : ""),
+      korean_core: korean_core0,
+      english_core: english_core0,
+      blocks,
+      _meta: meta || null,
+    };
+  };
+
+  // ─────────────────────────────
+  // 1) Groq first (optional)
+  // ─────────────────────────────
+  const GROQ_QVFV_PRE_ENABLE =
+    String(process.env.GROQ_QVFV_PRE_ENABLE ?? process.env.GROQ_PREPROCESS_ENABLE ?? "1") !== "0";
+
+  const __getGroqKeyForPre = async () => {
+    const kBody = String(groq_api_key || "").trim();
+    if (kBody) return kBody;
+
+    try {
+      if (authUser && typeof _getGroqApiKeyForUser === "function") {
+        const kUser = await _getGroqApiKeyForUser(authUser);
+        const kk = String(kUser || "").trim();
+        if (kk) return kk;
+      }
+    } catch (_) {}
+
+    try {
+      const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+      if (__allowEnvFallback) {
+        const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+        if (envK) return envK;
+      }
+    } catch (_) {}
+
+    return "";
+  };
+
+  const __fetchGroqPre = async ({ model, promptText, timeoutMs }) => {
+    const key = await __getGroqKeyForPre();
+    if (!key) throw Object.assign(new Error("GROQ_KEY_MISSING_FOR_PRE"), { code: "GROQ_KEY_MISSING_FOR_PRE" });
+
+    const base =
+      String(process.env.GROQ_API_BASE || (typeof GROQ_API_BASE !== "undefined" ? GROQ_API_BASE : "https://api.groq.com/openai/v1"))
+        .replace(/\/+$/, "");
+
+    const url = `${base}/chat/completions`;
+
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 12000));
+
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.0,
+          messages: [{ role: "user", content: promptText }],
+          max_tokens: 4096,
+          response_format: { type: "json_object" },
+        }),
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = json?.error?.message || `GROQ_HTTP_${res.status}`;
+        throw Object.assign(new Error(msg), { response: { status: res.status, data: json } });
+      }
+
+      const content = json?.choices?.[0]?.message?.content;
+      if (!content || !String(content).trim()) throw new Error("GROQ_PRE_EMPTY");
+      return String(content);
+    } finally {
+      clearTimeout(t);
+    }
+  };
+
+  if (GROQ_QVFV_PRE_ENABLE) {
+    const groqModel =
+      String(groqModelName || "").trim() ||
+      String(process.env.GROQ_QVFV_PRE_MODEL || "").trim() ||
+      (typeof GROQ_ROUTER_MODEL !== "undefined" ? String(GROQ_ROUTER_MODEL) : "llama-3.3-70b-versatile");
+
+    try {
+      const t0 = Date.now();
+      const txt = await __fetchGroqPre({
+        model: groqModel,
+        promptText: prompt,
+        timeoutMs: parseInt(process.env.GROQ_QVFV_PRE_TIMEOUT_MS || "12000", 10),
+      });
+
+      const jsonText = __extractJsonText(txt);
+      const parsed = JSON.parse(jsonText);
+
+      return __normalizeParsed(parsed, {
+        provider: "groq",
+        model: groqModel,
+        ms: Date.now() - t0,
+        model_used: `groq:${groqModel}`,
+      });
+    } catch (_) {
+      // fall through to Gemini/manual fallback
+    }
+  }
+
+  // ─────────────────────────────
+  // 2) Gemini fallback
+  // ─────────────────────────────
+  try {
+    const model = geminiModelName || "gemini-2.0-flash-lite";
+
+    const text = await fetchGeminiSmart({
+      userId,
+      gemini_key,
+      keyHint: gemini_key,
+      model,
+      payload: { contents: [{ parts: [{ text: prompt }] }] },
+    });
+
+    const jsonText = __extractJsonText(text);
+    const parsed = JSON.parse(jsonText);
+
+    return __normalizeParsed(parsed, {
+      provider: "gemini",
+      model,
+      model_used: `gemini:${model}`,
+    });
+  } catch (_) {
+    // fall through to manual fallback
+  }
+
+  // ─────────────────────────────
+  // 3) Manual fallback (최후 안전망)
+  // ─────────────────────────────
+  const base = baseCore || query || "";
+  const [t1, t2] = splitIntoTwoParts(base);
+
+  const ko = normalizeKoreanQuestion(base);
+  const en = String(base).trim();
+
+  const makeBlock = (id, txt) => {
+    const text = clipBlockText(txt, 260);
+    const naverQ = fallbackNaverQueryFromText(text || ko);
+    return {
+      id,
       text,
       engine_queries: {
-        crossref: crossrefQ,
-        openalex: openalexQ,
-        wikidata: wikidataQ,
-        gdelt: gdeltQ,
-        naver: naverArr,
+        crossref: limitChars(en, 90),
+        openalex: limitChars(en, 90),
+        wikidata: limitChars(ko, 50),
+        gdelt: limitChars(en, 120),
+        naver: naverQ.slice(0, BLOCK_NAVER_MAX_QUERIES),
       },
     };
-  })
-  .filter((b) => b.text);
-
- // ✅ 최종 안전망: 0개면 base 텍스트로 1개 생성
-if (blocks.length === 0) {
-  const seedText =
-    (mode === "qv")
-      ? (answer_ko || baseCore || "")
-      : (baseCore || "");
-
-  const t1 = String(seedText || "").trim();
-
-  blocks = [
-    {
-      id: 1,
-      text: t1,
-      engine_queries: {
-        crossref: english_core,
-        openalex: english_core,
-        wikidata: korean_core,
-        gdelt: english_core,
-        naver: [korean_core],
-      },
-    },
-  ].filter((b) => b.text);
-}
+  };
 
   return {
-    answer_ko: (mode === "qv" ? (answer_ko || "") : ""),
-    korean_core,
-    english_core,
-    blocks, // ✅ 여기서 항상 2개 이상이 되도록 보장됨
+    answer_ko: "",
+    korean_core: ko,
+    english_core: en,
+    blocks: [makeBlock(1, t1), makeBlock(2, t2)].filter((b) => b.text),
+    _meta: { provider: "fallback", model_used: "fallback" },
   };
 }
 
@@ -8669,8 +8817,22 @@ if (!logUserId) {
   );
 }
 
-// ✅ ADD: Gemini 키는 (1) body로 오거나 (2) DB keyring에 있어야 함
-if (safeMode !== "lv") {
+// ✅ ADD: Gemini 키 필요조건(기본: QV/FV에서만)
+// - 옵션: ALLOW_GROQ_ONLY_NO_GEMINI=1 이고 Groq 전처리+검증이 켜져 있으면 Gemini 키 없이도 진행
+const __needGeminiKey = (() => {
+  if (!(safeMode === "qv" || safeMode === "fv")) return false;
+
+  const allowGroqOnly = String(process.env.ALLOW_GROQ_ONLY_NO_GEMINI || "0") === "1";
+  if (!allowGroqOnly) return true;
+
+  const preOn = String(process.env.GROQ_QVFV_PRE_ENABLE ?? process.env.GROQ_PREPROCESS_ENABLE ?? "1") !== "0";
+  const verifyOn = String(process.env.GROQ_VERIFY_ENABLE || "1") !== "0";
+
+  // Groq-only로 안전하게 갈 수 있을 때만 Gemini 키 requirement 해제
+  return !(preOn && verifyOn);
+})();
+
+if (__needGeminiKey) {
   const hasHint = !!(gemini_key && String(gemini_key).trim());
   if (!hasHint) {
     const keysCount = geminiKeysCount;
@@ -8764,27 +8926,37 @@ switch (safeMode) {
         // QV/FV 전처리는 항상 lite 계열 모델 사용
     //   - 기본값: gemini-2.0-flash-lite
     //   - 필요하면 환경변수 GEMINI_QVFV_PRE_MODEL 로 override 가능
-    const preprocessModel =
-      (process.env.GEMINI_QVFV_PRE_MODEL && process.env.GEMINI_QVFV_PRE_MODEL.trim())
-        || "gemini-2.0-flash-lite";
+    // QV/FV 전처리: 기본은 Gemini lite, 하지만 preprocessQVFVOneShot 내부에서 Groq-first(옵션) 후 Gemini fallback
+const geminiPreprocessModel =
+  (process.env.GEMINI_QVFV_PRE_MODEL && process.env.GEMINI_QVFV_PRE_MODEL.trim())
+    || "gemini-2.0-flash-lite";
 
-    const qvfvBaseText = (safeMode === "fv" && userCoreText) ? userCoreText : query;
+const groqPreprocessModel =
+  (process.env.GROQ_QVFV_PRE_MODEL && process.env.GROQ_QVFV_PRE_MODEL.trim())
+    || (typeof GROQ_ROUTER_MODEL !== "undefined" ? String(GROQ_ROUTER_MODEL) : "llama-3.3-70b-versatile");
 
-    // ✅ QV/FV 전처리 원샷 (답변+블록+블록별 쿼리)
-    // ??QV/FV ?꾩쿂由??먯꺑 (?듬?+釉붾줉+釉붾줉蹂?荑쇰━)
+const qvfvBaseText = (safeMode === "fv" && userCoreText) ? userCoreText : query;
+
+// ✅ QV/FV 전처리 원샷 (답변+블록+블록별 쿼리)
 try {
   const t_pre = Date.now();
   const userQuestion = String(req?.body?.question || "").trim();
+  const groqKeyBody = String(req?.body?.groq_api_key || req?.body?.groq_key || "").trim();
 
-let pre = await preprocessQVFVOneShot({
-  mode: safeMode,
-  query,
-  core_text: qvfvBaseText,
-  question: userQuestion, // ✅ADD
-  gemini_key,
-  modelName: preprocessModel,
-  userId: logUserId, // ✅ADD
-});
+  let pre = await preprocessQVFVOneShot({
+    mode: safeMode,
+    query,
+    core_text: qvfvBaseText,
+    question: userQuestion, // ✅ADD
+
+    gemini_key,
+    geminiModelName: geminiPreprocessModel,
+    groqModelName: groqPreprocessModel,
+
+    userId: logUserId,   // ✅ADD
+    authUser,            // ✅ADD
+    groq_api_key: groqKeyBody, // ✅ADD (body override)
+  });
 
   const ms_pre = Date.now() - t_pre;
   recordTime(geminiTimes, "qvfv_preprocess_ms", ms_pre);
@@ -8833,11 +9005,11 @@ let pre = await preprocessQVFVOneShot({
   qvfvPreDone = true;
 
   partial_scores.qvfv_pre = {
-    korean_core: pre.korean_core,
-    english_core: pre.english_core,
-    blocks_count: pre.blocks.length,
-    model_used: preprocessModel,
-  };
+  korean_core: pre.korean_core,
+  english_core: pre.english_core,
+  blocks_count: pre.blocks.length,
+  model_used: (pre?._meta?.model_used || pre?._meta?.model || geminiPreprocessModel),
+};
   partial_scores.qv_answer = safeMode === "qv" ? pre.answer_ko : null;
 } catch (e) {
       if (
