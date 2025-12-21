@@ -7181,7 +7181,7 @@ async function preprocessQVFVOneShot({
           openalex: english_core0,
           wikidata: korean_core0,
           gdelt: english_core0,
-          naver: [korean_core0],
+          naver: fallbackNaverQueryFromText(korean_core0).slice(0, BLOCK_NAVER_MAX_QUERIES),
         },
       }].filter((b) => b.text);
     }
@@ -9391,20 +9391,85 @@ try {
       const __en = String(pre?.english_core || "").trim() || String(__core).trim();
 
       const __makeBlock = (id, txt) => {
-        const text = clipBlockText(txt, 260);
-        const naverQ = fallbackNaverQueryFromText(text || __ko);
-        return {
-          id,
-          text,
-          engine_queries: {
-            crossref: limitChars(__en, 90),
-            openalex: limitChars(__en, 90),
-            wikidata: limitChars(__ko, 50),
-            gdelt: limitChars(__en, 120),
-            naver: naverQ.slice(0, BLOCK_NAVER_MAX_QUERIES),
-          },
-        };
-      };
+  const text = clipBlockText(txt, 260);
+
+  const __baseForDetect = String(query || __core || "").trim();
+  const __isPop = /(인구|총인구|주민등록인구|명)/i.test(__baseForDetect);
+
+  const __isNumericLike =
+    /\d/.test(__baseForDetect) ||
+    /(인구|명|금액|원|달러|USD|KRW|비율|퍼센트|%|수치|규모|GDP|성장률|물가|인플레이션|실업률|환율|통계|추계|집계)/i.test(__baseForDetect);
+
+  const __year = (() => {
+    const m = __baseForDetect.match(/\b(19|20)\d{2}\b/);
+    return m ? m[0] : "";
+  })();
+
+  const __dedupeQ = (arr) => {
+    const seen = new Set();
+    const out = [];
+    for (const it of (arr || [])) {
+      const s = String(it || "").trim();
+      if (!s) continue;
+      const k = s.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(s);
+    }
+    return out;
+  };
+
+  const __cleanSeed = (s) => {
+    let t = String(s || "").trim();
+    t = t.replace(/^질문:\s*/g, "");
+    t = t.replace(/예:\s*/g, "");
+    t = t.replace(/[()]/g, " ");
+    t = t.replace(/\s+/g, " ").trim();
+    if (t.length > 60) t = t.slice(0, 60).trim();
+    return t;
+  };
+
+  // 숫자/인구류는 블록텍스트(text)보다 "질문(query)" 기반 seed가 더 안전
+  let seed = (__isPop || __isNumericLike)
+    ? __cleanSeed(__baseForDetect || __ko || text)
+    : __cleanSeed(text || __ko);
+
+  let naverQ = fallbackNaverQueryFromText(seed);
+
+  // ✅ official seed prepend (cap가 작을수록 효과 큼)
+  const __officialSeeds = __isPop
+    ? [
+        "site:kosis.kr DT_1BPA002 2025 총인구 statHtml",
+        "site:jumin.mois.go.kr 2025 주민등록인구",
+        "통계청 장래인구추계 총인구",
+        "DT_1BPA002 총인구",
+      ]
+    : __isNumericLike
+    ? [
+        "KOSIS 통계표",
+        "통계청 통계",
+      ]
+    : [];
+
+  if (__officialSeeds.length) {
+    const __officialQ = __officialSeeds.map((s) => (__year ? `${__year}년 ${s}` : s));
+    naverQ = __dedupeQ([ ...__officialQ, ...(naverQ || []) ]);
+  }
+
+  naverQ = __dedupeQ(naverQ).slice(0, BLOCK_NAVER_MAX_QUERIES);
+
+  return {
+    id,
+    text,
+    engine_queries: {
+      crossref: limitChars(__en, 90),
+      openalex: limitChars(__en, 90),
+      wikidata: limitChars(__ko, 50),
+      gdelt: limitChars(__en, 120),
+      naver: naverQ,
+    },
+  };
+};
 
       pre = {
         ...pre,
