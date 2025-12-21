@@ -9010,7 +9010,15 @@ try {
   blocks_count: pre.blocks.length,
   model_used: (pre?._meta?.model_used || pre?._meta?.model || geminiPreprocessModel),
 };
-  partial_scores.qv_answer = safeMode === "qv" ? pre.answer_ko : null;
+  const __modeForQVAnswer = String(safeMode || "").trim().toLowerCase();
+partial_scores.qv_answer =
+  (__modeForQVAnswer === "qv" ||
+    __modeForQVAnswer === "auto" ||
+    __modeForQVAnswer === "overlay" ||
+    __modeForQVAnswer === "route" ||
+    __modeForQVAnswer === "")
+    ? (pre?.answer_ko ?? null)
+    : null;
 } catch (e) {
       if (
   e?.code === "INVALID_GEMINI_KEY" ||
@@ -11060,56 +11068,48 @@ if (safeMode === "qv" || safeMode === "fv") {
 
     try {
       // 4-1) Flash 단계
-      if (safeMode === "qv") {
-  flash = (partial_scores.qv_answer || "").toString();
+const effMode = (() => {
+  const m = String(safeMode || "").trim().toLowerCase();
+  if (!m || m === "auto" || m === "overlay" || m === "route") return "qv";
+  if (m === "qv" || m === "fv" || m === "dv" || m === "cv") return m;
+  return "qv";
+})();
 
-  // 전처리 실패 시: 여기서라도 답변 생성
-  if (!flash.trim()) {
-    const flashPrompt = `[QV] ${query}\n한국어로 6~10문장으로 답변만 작성하세요.`;
-    const t_flash = Date.now();
-    flash = await fetchGeminiSmart({
-  userId: logUserId,
-  keyHint: gemini_key,
-  model: answerModelUsed,
-  payload: { contents: [{ parts: [{ text: flashPrompt }] }] },
-});
-    const ms_flash = Date.now() - t_flash;
-    recordTime(geminiTimes, "flash_ms", ms_flash);
-    recordMetric(geminiMetrics, "flash", ms_flash);
-  }
+if (effMode === "qv") {
+  flash = String(partial_scores?.qv_answer || "");
+  // ✅ 전처리(one-shot)에서 answer_ko가 비어 있으면 flash도 빈값으로 두고 진행한다.
+} else if (effMode === "fv") {
+  // ✅ FV: 검증 대상은 사용자가 준 사실 문장(core_text)이므로 별도 flash 불필요
+  flash = "";
+} else {
+  // ✅ DV/CV: external을 포함한 1차 요약/설명 생성 (기존 로직 유지)
+  const flashPrompt =
+    `[${effMode.toUpperCase()}] ${query}\n` +
+    `참조자료:\n${JSON.stringify(external).slice(0, FLASH_REF_CHARS)}`;
+
+  const t_flash = Date.now();
+  flash = await fetchGeminiSmart({
+    userId: logUserId,
+    keyHint: gemini_key,
+    model: answerModelUsed,
+    payload: { contents: [{ parts: [{ text: flashPrompt }] }] },
+  });
+  const ms_flash = Date.now() - t_flash;
+  recordTime(geminiTimes, "flash_ms", ms_flash);
+  recordMetric(geminiMetrics, "flash", ms_flash);
 }
- else if (safeMode === "fv") {
-        // ✅ FV: 검증 대상은 사용자가 준 사실 문장(core_text)이므로 별도 flash 불필요
-        flash = "";
-      } else {
-        // ✅ DV/CV: external을 포함한 1차 요약/설명 생성 (기존 로직 유지)
-        const flashPrompt =
-          `[${safeMode.toUpperCase()}] ${query}\n` +
-          `참조자료:\n${JSON.stringify(external).slice(0, FLASH_REF_CHARS)}`;
-
-        const t_flash = Date.now();
-        flash = await fetchGeminiSmart({
-  userId: logUserId,
-  keyHint: gemini_key,
-  model: answerModelUsed,
-  payload: { contents: [{ parts: [{ text: flashPrompt }] }] },
-});
-        const ms_flash = Date.now() - t_flash;
-        recordTime(geminiTimes, "flash_ms", ms_flash);
-        recordMetric(geminiMetrics, "flash", ms_flash);
-      }
 
       // 4-2) verify 입력 패키지 구성
       const blocksForVerify =
-        (safeMode === "qv" || safeMode === "fv") &&
-        Array.isArray(qvfvBlocksForVerifyFull)
-          ? qvfvBlocksForVerifyFull
-          : [];
+  (effMode === "qv" || effMode === "fv") &&
+  Array.isArray(qvfvBlocksForVerifyFull)
+    ? qvfvBlocksForVerifyFull
+    : [];
       // ✅ (패치) 숫자 블록이면: 선택된 Naver evidence URL을 열어 "숫자 포함 발췌(evidence_text)"를 채움
       // - 특정 사이트 고정 없이 동작
       // - 숫자 블록일 때만, TOPK URL만, 총 fetch 수 제한
             // ✅ (패치) 숫자/연도 블록이면: 블록별로 "가장 맞는" Naver URL을 골라 evidence_text를 채움
-            if (NAVER_NUMERIC_FETCH && (safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
+    if (NAVER_NUMERIC_FETCH && (effMode === "qv" || effMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
   let budget = NAVER_NUMERIC_FETCH_MAX;
 
   // 이미 본 URL 중복 fetch 방지(성능/부하)
