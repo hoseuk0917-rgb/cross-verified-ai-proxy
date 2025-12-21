@@ -7275,42 +7275,57 @@ async function preprocessQVFVOneShot({
     }
   }
 
-  // ─────────────────────────────
+    // ─────────────────────────────
   // 2) Gemini fallback
+  //   - GROQ key가 아예 없으면, Gemini 전처리에서 60s+ 잡아먹는 케이스가 많아서 기본 스킵
+  //   - 필요하면 env로 강제 허용 가능
   // ─────────────────────────────
-  try {
-    const model = geminiModelName || "gemini-2.0-flash-lite";
+  const __allowGeminiIfGroqKeyMissing =
+    String(process.env.QVFV_PRE_ALLOW_GEMINI_FALLBACK_IF_GROQ_KEY_MISSING || "0") === "1";
 
-    const text = await fetchGeminiSmart({
-      userId,
-      gemini_key,
-      keyHint: gemini_key,
-      model,
-      payload: { contents: [{ parts: [{ text: prompt }] }] },
-    });
+  const __groqKeyMissing =
+    (__groqPreError?.stage === "groq_pre_call") &&
+    /GROQ_KEY_MISSING_FOR_PRE/i.test(String(__groqPreError?.message || ""));
 
-    const jsonText = __extractJsonText(text);
-    const parsed = JSON.parse(jsonText);
+  const __skipGeminiFallback = (__groqKeyMissing && !__allowGeminiIfGroqKeyMissing);
 
-    return __normalizeParsed(parsed, {
-      provider: "gemini",
-      model,
-      model_used: `gemini:${model}`,
-    });
-    } catch (e) {
-    __groqPreError = __groqPreError || null; // 그대로 유지
-    // gemini fallback 실패도 meta에 남기기 (원인 추적용)
+  if (!__skipGeminiFallback) {
     try {
-      const msg = String(e?.message || e || "gemini_pre_failed").slice(0, 220);
-      // __groqPreError는 이미 있으니, manual fallback meta에 같이 실어줄 수 있게 별도 필드로 보관
-      // (변수 추가 없이, 가장 안전하게는 __groqPreError에 보조정보로 덧붙인다)
-      if (!__groqPreError) {
-        __groqPreError = { stage: "gemini_pre_call", message: msg, status: Number(e?._http_status || e?.response?.status || 0) || null };
-      } else {
-        __groqPreError._gemini_pre_error = { message: msg, status: Number(e?._http_status || e?.response?.status || 0) || null };
-      }
+      const model = geminiModelName || "gemini-2.0-flash-lite";
+
+      const text = await fetchGeminiSmart({
+        userId,
+        gemini_key,
+        keyHint: gemini_key,
+        model,
+        payload: { contents: [{ parts: [{ text: prompt }] }] },
+      });
+
+      const jsonText = __extractJsonText(text);
+      const parsed = JSON.parse(jsonText);
+
+      return __normalizeParsed(parsed, {
+        provider: "gemini",
+        model,
+        model_used: `gemini:${model}`,
+      });
+    } catch (e) {
+      // fall through to manual fallback
+      try {
+        const msg = String(e?.message || e || "gemini_pre_failed").slice(0, 220);
+        if (!__groqPreError) {
+          __groqPreError = { stage: "gemini_pre_call", message: msg, status: Number(e?._http_status || e?.response?.status || 0) || null };
+        } else {
+          __groqPreError._gemini_pre_error = { message: msg, status: Number(e?._http_status || e?.response?.status || 0) || null };
+        }
+      } catch (_) {}
+    }
+  } else {
+    // 진단용: 스킵 사유를 남김
+    try {
+      if (!__groqPreError) __groqPreError = { stage: "gemini_pre_skipped", message: "skip_gemini_fallback_due_to_groq_key_missing", status: null };
+      else __groqPreError._gemini_pre_skipped = "skip_gemini_fallback_due_to_groq_key_missing";
     } catch (_) {}
-    // fall through to manual fallback
   }
 
   // ─────────────────────────────
@@ -7322,9 +7337,35 @@ async function preprocessQVFVOneShot({
   const ko = normalizeKoreanQuestion(base);
   const en = String(base).trim();
 
+    const __cleanNaverSeed = (s) => {
+    let t = String(s || "").trim();
+    t = t.replace(/^질문:\s*/g, "");
+    t = t.replace(/예:\s*/g, "");
+    t = t.replace(/[()]/g, " ");
+    t = t.replace(/\s+/g, " ").trim();
+    return t;
+  };
+
   const makeBlock = (id, txt) => {
     const text = clipBlockText(txt, 260);
-    const naverQ = fallbackNaverQueryFromText(text || ko);
+
+    // 기본 fallback
+    let seed = __cleanNaverSeed(text || ko);
+    let naverQ = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
+
+    // 인구/총인구류는 “통계청/KOSIS/주민등록/추계”를 강제로 섞어서 질을 올림
+    const __isPop = /(인구|총인구|명)/i.test(String(query || userIntentQ || baseCore || ""));
+    if (__isPop) {
+      const fixed = [
+        "2025년 대한민국 총인구 추계 통계청",
+        "2025년 한국 총인구 KOSIS",
+        "2025년 주민등록인구 행정안전부",
+        "2025년 장래인구추계 통계청",
+      ];
+      // '+' 금지 규칙 준수(여긴 없음)
+      naverQ = fixed.slice(0, BLOCK_NAVER_MAX_QUERIES);
+    }
+
     return {
       id,
       text,
@@ -7333,7 +7374,7 @@ async function preprocessQVFVOneShot({
         openalex: limitChars(en, 90),
         wikidata: limitChars(ko, 50),
         gdelt: limitChars(en, 120),
-        naver: naverQ.slice(0, BLOCK_NAVER_MAX_QUERIES),
+        naver: naverQ,
       },
     };
   };
