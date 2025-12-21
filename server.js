@@ -644,41 +644,43 @@ const SESSION_STORE_SCHEMA =
 const SESSION_STORE_TABLE =
   String(process.env.SESSION_STORE_TABLE || "session_store").trim() || "session_store";
 
-// ✅ connect-pg-simple session store 생성 (session() mount 전에 반드시 정의되어야 함)
+// ✅ Session store mode
+// - "auto"(default): 빠른 체크 성공이면 PgStore, 실패(특히 transient)면 MemoryStore로 폴백
+// - "pg": 무조건 PgStore 사용(기존 동작)
+// - "memory": 무조건 MemoryStore 사용(가장 안정적, 다중 인스턴스/재시작 시 세션 유지 안 됨)
+const SESSION_STORE_MODE = String(process.env.SESSION_STORE_MODE || "auto").toLowerCase().trim();
+
+// ✅ auto 모드에서 "빠른 체크" 타임아웃(ms)
+// - Render cold start/DB 흔들림에서 부팅/요청 지연을 막기 위해 짧게 가져간다.
+const SESSION_STORE_BOOT_FAST_MS = parseInt(
+  process.env.SESSION_STORE_BOOT_FAST_MS || (isProd ? "1200" : "3000"),
+  10
+);
+
+// ✅ auto 모드에서 테이블 미존재(SESSION_STORE_MISSING)면 PROD에서 죽일지 여부
+// - 기본 0: 죽이지 않고 memory로 폴백(운영 부팅루프 방지)
+// - 1: 테이블 없으면 프로세스 종료(엄격 운영)
+const SESSION_STORE_HARD_FAIL_IF_MISSING = String(
+  process.env.SESSION_STORE_HARD_FAIL_IF_MISSING || "0"
+).trim() === "1";
+
 const PgStore = connectPgSimple(session);
-const sessionStore = new PgStore({
-  pool: pgPool,
-  schemaName: SESSION_STORE_SCHEMA,
-  tableName: SESSION_STORE_TABLE,
-  createTableIfMissing: !isProd, // ✅ DEV에서는 자동생성 허용, PROD는 고정
-  pruneSessionInterval: 60 * 10,
-});
 
-// ✅ PROD 부팅 가드: session_store 테이블 존재 확인
-// - "테이블이 진짜 없음"이면 종료
-// - 그 외(일시 타임아웃/네트워크 흔들림)는 경고만 찍고 부팅 계속(Render cold start 보호)
-const SESSION_STORE_BOOTSTRAP_TRIES = parseInt(
-  process.env.SESSION_STORE_BOOTSTRAP_TRIES || (isProd ? "8" : "2"),
-  10
-);
-
-const SESSION_STORE_BOOTSTRAP_DELAY_MS = parseInt(
-  process.env.SESSION_STORE_BOOTSTRAP_DELAY_MS || (isProd ? "600" : "200"),
-  10
-);
-
-function _sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function _ensureSessionStoreTableOnce() {
+// ✅ session_store 테이블 존재 확인(빠른 체크용)
+// - pool reset/retry(느림/증폭) 대신 "원풀(_pgPool)"로 1회만 시도 + 짧은 타임아웃
+async function _ensureSessionStoreTableOnceFast() {
   const q = `
-    select 1 as ok
+    select 1
     from information_schema.tables
-    where table_schema = $1 and table_name = $2
+    where table_schema = $1
+      and table_name = $2
     limit 1
   `;
-  const r = await pgPool.query(q, [SESSION_STORE_SCHEMA, SESSION_STORE_TABLE]);
+  const r = await _withTimeout(
+    _pgPool.query(q, [SESSION_STORE_SCHEMA, SESSION_STORE_TABLE]),
+    Math.max(200, SESSION_STORE_BOOT_FAST_MS),
+    "SESSION_STORE_FAST_TIMEOUT"
+  );
   const ok = Array.isArray(r?.rows) && r.rows.length > 0;
   if (!ok) {
     const err = new Error(
@@ -687,164 +689,123 @@ async function _ensureSessionStoreTableOnce() {
     err.code = "SESSION_STORE_MISSING";
     throw err;
   }
+  return true;
 }
 
-async function _bootstrapSessionStoreTable() {
-  let lastErr = null;
+// ✅ 어떤 에러를 "transient(일시)"로 볼지(= auto 모드에서 memory 폴백 트리거)
+function _isPgSessionTransientError(err) {
+  const msg = String(err?.message || "");
+  const code = String(err?.code || "");
+  if (/SESSION_STORE_FAST_TIMEOUT/i.test(msg)) return true;
 
-  for (let i = 1; i <= SESSION_STORE_BOOTSTRAP_TRIES; i++) {
+  // 네가 본 케이스 포함
+  if (/timeout exceeded when trying to connect/i.test(msg)) return true;
+  if (/connection terminated due to connection timeout/i.test(msg)) return true;
+  if (/connection terminated|server closed the connection|terminating connection/i.test(msg)) return true;
+
+  // 일반 네트워크/타임아웃
+  if (/connect timed out|ETIMEDOUT|ECONNRESET|EPIPE|ENETUNREACH|EHOSTUNREACH/i.test(msg)) return true;
+
+  // auth/권한/스키마 같은 "확정 오류"는 transient로 보지 않음
+  if (code === "28P01") return false; // invalid_password
+  if (code === "28000") return false; // invalid_authorization_specification
+  if (code === "3D000") return false; // invalid_catalog_name
+  if (code === "3F000") return false; // invalid_schema_name
+
+  // 나머지는 기본적으로 transient 취급 X
+  return false;
+}
+
+// ✅ Session Store 빌더(동기 반환)
+// - PROD auto: 빠른 체크 성공 → PgStore / 실패 → MemoryStore
+function _buildSessionStore() {
+  // 강제 memory
+  if (SESSION_STORE_MODE === "memory") {
+    console.warn("⚠️ SESSION_STORE_MODE=memory → using MemoryStore");
+    return new session.MemoryStore();
+  }
+
+  // DEV는 기존처럼 pg store 유지(자동 테이블 생성 허용)
+  if (!isProd) {
+    return new PgStore({
+      pool: pgPool,
+      schemaName: SESSION_STORE_SCHEMA,
+      tableName: SESSION_STORE_TABLE,
+      createTableIfMissing: true,
+      pruneSessionInterval: 60 * 10,
+    });
+  }
+
+  // PROD: 강제 pg
+  if (SESSION_STORE_MODE === "pg") {
+    console.warn("⚠️ SESSION_STORE_MODE=pg → forcing PgStore (no fallback)");
+    return new PgStore({
+      pool: pgPool,
+      schemaName: SESSION_STORE_SCHEMA,
+      tableName: SESSION_STORE_TABLE,
+      createTableIfMissing: false,
+      pruneSessionInterval: 60 * 10,
+    });
+  }
+
+  // PROD auto(default)
+  // - 여기서 "빠른 체크"는 비동기인데, app.use(session(...)) 전에 결정을 내려야 하므로
+  //   "즉시 memory로 시작"하고, 성공하면 pg로 시작하도록 하면 세션 불일치가 생길 수 있어.
+  // - 그래서: 부팅 시점에 1회만 "동기처럼" 결정하기 위해,
+  //   아래에서 "fire"로 빠른 체크를 하고, 결과가 나오기 전까지는 memory를 선택하지 않는다.
+  //   => 하지만 JS는 await 없이 즉시 반환해야 하므로, auto 모드는 아래 IIFE에서 미리 결정해둔다.
+  //   (이 함수는 아래 sessionStoreFinal을 반환하기만 한다.)
+  return null;
+}
+
+// ✅ PROD auto 결정(부팅 시 1회)
+// - session middleware mount 전에 결정되어야 하므로 여기서 미리 구한다.
+let sessionStore = _buildSessionStore();
+
+if (isProd && SESSION_STORE_MODE === "auto") {
+  // 기본값: PgStore를 "가능하면" 쓰되, 빠른 체크 실패면 MemoryStore
+  // => 여기서 결정이 끝나야 app.use(session(...))가 안정적으로 동작한다.
+  sessionStore = new session.MemoryStore(); // default safe
+  void (async () => {
     try {
-      await _ensureSessionStoreTableOnce();
-      return true;
+      await _ensureSessionStoreTableOnceFast();
+
+      // ✅ 성공 → PgStore 사용으로 확정
+      sessionStore = new PgStore({
+        pool: pgPool,
+        schemaName: SESSION_STORE_SCHEMA,
+        tableName: SESSION_STORE_TABLE,
+        createTableIfMissing: false,
+        pruneSessionInterval: 60 * 10,
+      });
+
+      console.log(`✅ session store ready (auto→pg): ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}`);
     } catch (e) {
-      lastErr = e;
-
-      // 테이블이 진짜 없으면 재시도 의미 없음 → 즉시 throw
-      if (String(e?.code || "") === "SESSION_STORE_MISSING") throw e;
-
       const code = String(e?.code || "");
       const msg = String(e?.message || e);
 
-      console.error(
-        `❌ session store bootstrap failed (${i}/${SESSION_STORE_BOOTSTRAP_TRIES}):`,
+      if (code === "SESSION_STORE_MISSING" && SESSION_STORE_HARD_FAIL_IF_MISSING) {
+        console.error("❌ session store missing and hard-fail enabled:", msg);
+        process.exit(1);
+      }
+
+      const transient = _isPgSessionTransientError(e);
+      console.warn(
+        `⚠️ session store auto-check failed; using MemoryStore (transient=${transient}):`,
         code,
         msg
       );
 
-      if (i < SESSION_STORE_BOOTSTRAP_TRIES) {
-        await _sleep(SESSION_STORE_BOOTSTRAP_DELAY_MS);
-        continue;
-      }
+      // 그대로 MemoryStore 유지
     }
-  }
-
-  // 여기까지 오면 "테이블은 있을 가능성이 높지만" 연결/타임아웃 류로 실패
-  // → PROD라도 Render cold start 보호 위해 부팅은 계속
-  console.warn(
-    "⚠️ session store bootstrap gave up; continuing without hard-fail (cold start / transient DB issue)."
-  );
-  return false;
+  })();
 }
 
-void (async () => {
-  try {
-    await _bootstrapSessionStoreTable();
-    if (!isProd) {
-      console.log(
-        `✅ session store table ok: ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}`
-      );
-    }
-  } catch (e) {
-    console.error("❌ session store table check failed:", e?.code || "", e?.message || e);
-
-    // "테이블이 없음"은 PROD에서 정상 운영 불가 → 종료 유지
-    if (isProd && String(e?.code || "") === "SESSION_STORE_MISSING") {
-      process.exit(1);
-    }
-
-    // 그 외(타임아웃/일시 장애)는 종료하지 않음
-  }
-})();
-
-function _isPgTransientBootstrapError(err) {
-  const code = String(err?.code || "");
-  const msg = String(err?.message || "");
-
-  // 네가 본 케이스(“timeout4” 류 포함) + 일반 네트워크/타임아웃
-  if (/timeout4/i.test(msg)) return true;
-  if (/connection terminated due to connection timeout/i.test(msg)) return true;
-  if (/connection terminated|server closed the connection|terminating connection/i.test(msg)) return true;
-  if (/connect timed out|ETIMEDOUT|ECONNRESET|EPIPE|ENETUNREACH|EHOSTUNREACH/i.test(msg)) return true;
-
-  // PG 에러코드 중 “일시 장애”에 가까운 것들(너무 보수적으로만)
-  if (code === "57P03") return true; // cannot_connect_now
-  if (code === "53300") return true; // too_many_connections
-
-  return false;
+// ✅ 최종 보정(혹시라도 null이면 memory로)
+if (!sessionStore) {
+  sessionStore = new session.MemoryStore();
+  console.warn("⚠️ session store was null → fallback to MemoryStore");
 }
-
-function _isPgFatalBootstrapError(err) {
-  const code = String(err?.code || "");
-  // ✅ 확정적 설정/권한 오류는 PROD에서 바로 죽이는 게 맞음
-  if (code === "SESSION_STORE_MISSING") return true;
-  if (code === "28P01") return true; // invalid_password
-  if (code === "28000") return true; // invalid_authorization_specification
-  if (code === "3D000") return true; // invalid_catalog_name (db does not exist)
-  if (code === "3F000") return true; // invalid_schema_name
-  return false;
-}
-
-async function _sleepMs(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-// ✅ session_store 존재 확인(없으면 SESSION_STORE_MISSING 던짐)
-async function _ensureSessionStoreTable() {
-  const q = `
-    select 1 as ok
-    from information_schema.tables
-    where table_schema = $1 and table_name = $2
-    limit 1
-  `;
-  const r = await pgPool.query(q, [SESSION_STORE_SCHEMA, SESSION_STORE_TABLE]);
-  const ok = Array.isArray(r?.rows) && r.rows.length > 0;
-  if (!ok) {
-    const err = new Error(
-      `Missing ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}. Create it in Supabase before running in production.`
-    );
-    err.code = "SESSION_STORE_MISSING";
-    throw err;
-  }
-}
-
-void (async () => {
-  const maxTry = parseInt(process.env.SESSION_STORE_BOOTSTRAP_TRIES || "6", 10);
-  const baseDelay = parseInt(process.env.SESSION_STORE_BOOTSTRAP_DELAY_MS || "500", 10);
-
-  for (let i = 1; i <= Math.max(1, maxTry); i++) {
-    try {
-      await _ensureSessionStoreTable();
-      if (!isProd) {
-        console.log(`✅ session store table ok: ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}`);
-      } else {
-        console.log(`✅ session store table ok: ${SESSION_STORE_SCHEMA}.${SESSION_STORE_TABLE}`);
-      }
-      return;
-    } catch (e) {
-      const code = e?.code || "";
-      const msg = e?.message || e;
-
-      console.error("❌ session store table check failed:", code, msg);
-
-      if (isProd && _isPgFatalBootstrapError(e)) {
-        process.exit(1);
-      }
-
-      // PROD에서는 “일시 장애”면 재시도 후에도 죽이지 않고 서비스 계속(부팅루프 방지)
-      const transient = _isPgTransientBootstrapError(e);
-      if (!transient) {
-        if (isProd) {
-          // 비일시적이지만 fatal로 분류되지 않은 케이스는 안전하게 계속(필요시 로그 보고 env로 조정)
-          console.error("⚠️ session store bootstrap: non-transient but non-fatal → continue without exit");
-          return;
-        }
-        return;
-      }
-
-      if (i < maxTry) {
-        const delay = Math.min(8000, baseDelay * Math.pow(2, i - 1));
-        console.warn(`⚠️ session store bootstrap retry ${i}/${maxTry} after ${delay}ms`);
-        await _sleepMs(delay);
-        continue;
-      }
-
-      if (isProd) {
-        console.error("⚠️ session store bootstrap exhausted retries → continue without exit (avoid boot loop)");
-      }
-      return;
-    }
-  }
-})();
 
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "cva.sid";
 const SESSION_SAMESITE_RAW = (process.env.SESSION_SAMESITE || "lax").toLowerCase();
@@ -4870,7 +4831,29 @@ async function callNaver(query, clientId, clientSecret, ctx = {}) {
     .map(normalizeNaverToken)
     .filter((t) => t.length > 1);
 
-  const requiredHits = tokens.length <= 2 ? 1 : (tokens.length - 1);
+    // ✅ Naver 결과 토큰 필터 완화:
+  // - site:/도메인/테이블ID(DT_*) 같은 "구조화 쿼리"는 title/desc에 토큰이 안 박히는 경우가 많아
+  //   requiredHits를 낮춰서 "0건 드랍"을 방지한다.
+  const requiredHits = (() => {
+    const n = tokens.length;
+
+    if (n <= 2) return 1;
+    if (n <= 4) return 2;
+
+    const ql = String(q || "").toLowerCase();
+    const structured =
+      ql.includes("site:") ||
+      ql.includes(".go.kr") ||
+      ql.includes(".kosis") ||
+      ql.includes("kosis") ||
+      ql.includes("dt_") ||
+      ql.includes("table");
+
+    if (structured) return 2; // 구조화 쿼리면 2개 히트만 요구
+
+    // 일반 쿼리는 토큰의 50% 정도 히트 요구하되 상한 4
+    return Math.min(4, Math.max(2, Math.ceil(n * 0.5)));
+  })();
 
   const all = [];
   let lastErr = null;
@@ -4879,7 +4862,7 @@ async function callNaver(query, clientId, clientSecret, ctx = {}) {
     try {
       const { data } = await axios.get(ep.url, {
         headers,
-        params: { query: q, display: 3 },
+        params: { query: q, display: 10 },
         timeout: HTTP_TIMEOUT_MS,
         signal,
       });
