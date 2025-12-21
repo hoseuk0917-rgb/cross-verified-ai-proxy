@@ -7202,28 +7202,45 @@ async function preprocessQVFVOneShot({
     }
   } catch (_) {}
 
-  // 1) ✅ SAME AS VERIFY/ROUTER: resolve via user_secrets (DB)
-try {
-  const uid =
-    (authUser && authUser.id) ? authUser.id :
-    (userId ? String(userId).trim() : null);
-
-  if (uid && typeof __getGroqApiKeyForUser === "function") {
-    const k1 = await __getGroqApiKeyForUser({ supabase, userId: uid });
-    const kk1 = String(k1 || "").trim();
-    if (kk1) {
-      try { if (req) req._groq_pre_key_cache = kk1; } catch (_) {}
-      return kk1;
+  // 1) ✅ SAME AS VERIFY/ROUTER: resolve via request (JWT/session -> user_secrets)
+  try {
+    if (req && typeof __getUserGroqKey === "function") {
+      const kReq = await __getUserGroqKey(req);
+      const kkReq = String(kReq || "").trim();
+      if (kkReq) {
+        try { req._groq_pre_key_cache = kkReq; } catch (_) {}
+        return kkReq;
+      }
     }
+  } catch (e) {
+    __groqPreError = {
+      stage: "get_user_key_req",
+      message: String(e?.message || e || "get_user_key_req_failed").slice(0, 200),
+    };
   }
-} catch (e) {
-  __groqPreError = {
-    stage: "get_user_key_db",
-    message: String(e?.message || e || "get_user_key_db_failed").slice(0, 200),
-  };
-}
 
-  // 2) userId direct (users.id) fallback
+  // 2) user_secrets (DB) via explicit uid (authUser/userId)
+  try {
+    const uid =
+      (authUser && authUser.id) ? authUser.id :
+      (userId ? String(userId).trim() : null);
+
+    if (uid && typeof __getGroqApiKeyForUser === "function") {
+      const k1 = await __getGroqApiKeyForUser({ supabase, userId: uid });
+      const kk1 = String(k1 || "").trim();
+      if (kk1) {
+        try { if (req) req._groq_pre_key_cache = kk1; } catch (_) {}
+        return kk1;
+      }
+    }
+  } catch (e) {
+    __groqPreError = {
+      stage: "get_user_key_db",
+      message: String(e?.message || e || "get_user_key_db_failed").slice(0, 200),
+    };
+  }
+
+  // 3) userId direct (users.id) fallback
   try {
     if (userId && typeof __getGroqApiKeyForUser === "function") {
       const kUser1 = await __getGroqApiKeyForUser({ supabase, userId });
@@ -7234,7 +7251,7 @@ try {
       }
     }
 
-    // 3) legacy auth uid fallback (rare)
+    // 4) legacy auth uid fallback (rare)
     if (authUser && typeof _getGroqApiKeyForUser === "function") {
       const kUser2 = await _getGroqApiKeyForUser(authUser);
       const kk2 = String(kUser2 || "").trim();
@@ -7250,7 +7267,7 @@ try {
     };
   }
 
-  // 4) env fallback (optional)
+  // 5) env fallback (optional)
   try {
     const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
     if (__allowEnvFallback) {
