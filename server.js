@@ -6936,6 +6936,12 @@ async function preprocessQVFVOneShot({
 - 숫자가 확실하지 않으면 "범위/추정/잠정/전망" 형태로 제시하라.
   예: "약 50,000,000~52,000,000명", "약 3.1~3.3%", "약 1.2조~1.4조 원"
 - '불확실'만 말하고 숫자를 전혀 제시하지 않는 답변은 실패로 간주한다.
++ 사용자의 질문이 "인구/금액/비율/수치/연도별 값/규모" 등 숫자 답을 요구하면,
++  (QV) 가능하면 숫자를 제시하되, **확실한 근거/기준(원출처·기준시점·정의)** 없이 숫자를 만들어내지 말라.
++ - 숫자가 불확실하면 “대략/추정/잠정/전망” 같은 표현으로 말하되,
++   **아라비아 숫자(0-9)를 강제로 넣지 말라.**
++ - 이 경우엔 “~대/내외/수준”처럼 정성적 크기와, 어떤 기준이 필요한지(예: 총인구/주민등록/추계)를 명시하라.
++ - “근거 없이 숫자 예시를 넣는 행위”가 가장 큰 실패다.
 
 [QV 규칙]
 - 질문에 대해 최선의 한국어 답변(answer_ko)을 6~10문장으로 작성한다.
@@ -7357,11 +7363,12 @@ async function preprocessQVFVOneShot({
     const __isPop = /(인구|총인구|명)/i.test(String(query || userIntentQ || baseCore || ""));
     if (__isPop) {
       const fixed = [
-        "2025년 대한민국 총인구 추계 통계청",
-        "2025년 한국 총인구 KOSIS",
-        "2025년 주민등록인구 행정안전부",
-        "2025년 장래인구추계 통계청",
-      ];
+  "KOSIS 총인구 2025 표",
+  "DT_1BPA002 총인구 2025",
+  "KOSIS statHtml 총인구 2025",
+  "2025년 주민등록인구 행정안전부",
+  "2025년 장래인구추계 통계청",
+];
       // '+' 금지 규칙 준수(여긴 없음)
       naverQ = fixed.slice(0, BLOCK_NAVER_MAX_QUERIES);
     }
@@ -7392,25 +7399,22 @@ async function preprocessQVFVOneShot({
   const answer_ko =
     (String(mode || "").toLowerCase().trim() === "qv")
       ? (() => {
-          // 인구 질문은 최소한 “범위(아라비아 숫자)”로 안전하게
-          const isPop = /(인구|명)/i.test(String(query || userIntentQ || baseCore || ""));
-          const rangeHint = isPop
-            ? "예: 50,000,000~52,000,000명"
-            : "예: 1.0~2.0";
+          // 숫자/통계 질문 fallback: 숫자를 "예시"로 만들어 넣지 말고, 기준/정의 확인을 유도
+const isPop = /(인구|총인구|주민등록인구|명)/i.test(String(query || userIntentQ || baseCore || ""));
+const magnitudeHint = isPop ? "대략 5천만 명대" : "대략 큰 규모/수준";
 
-          const core = String(query || baseCore || "").trim() || "질문";
-          const line1 = `질문: ${core}`;
-          const line2 = isNumericQ
-            ? `정확한 실시간 수치는 공표 자료의 기준시점(추계/집계)에 따라 달라질 수 있어, 범위(추정)로 답하는 게 안전합니다. (${rangeHint})`
-            : `정확한 답은 공표 자료의 기준시점/정의에 따라 달라질 수 있습니다.`;
-          const line3 = isPop
-            ? `2025년 대한민국 인구는 통계청 추계 기준으로 대략 ${rangeHint} 수준으로 보는 자료가 많습니다.`
-            : `가능하면 공식 통계/공공기관/원출처 기준으로 확인하는 것을 권장합니다.`;
-          const line4 = `필요하면 “내국인/총인구/등록인구/추계인구” 중 어떤 기준인지도 같이 정해야 합니다.`;
-          const out = [line1, line2, line3, line4].join("\n");
-          // 숫자 질문인데 숫자가 없으면 마지막 안전장치로 숫자 삽입
-          if (isNumericQ && !/\d/.test(out)) return `${out}\n(${rangeHint})`;
-          return out;
+const core = String(query || baseCore || "").trim() || "질문";
+const line1 = `질문: ${core}`;
+const line2 = isNumericQ
+  ? `정확한 값은 공표 자료의 기준시점(집계/추계)과 정의에 따라 달라질 수 있어, 기준을 먼저 확인하는 게 안전합니다.`
+  : `정확한 답은 공표 자료의 기준시점/정의에 따라 달라질 수 있습니다.`;
+const line3 = isPop
+  ? `이 질문은 ${magnitudeHint}로만 말하면 안전하며, 정확한 수치는 KOSIS/통계청 자료(해당 기준시점)를 확인해야 합니다.`
+  : `가능하면 공식 통계/공공기관/원출처 기준으로 확인하는 것을 권장합니다.`;
+const line4 = `필요하면 “총인구/주민등록인구/추계인구” 중 어떤 기준인지도 같이 정해야 합니다.`;
+
+const out = [line1, line2, line3, line4].join("\n");
+return out;
         })()
       : "";
 
