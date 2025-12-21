@@ -9427,27 +9427,104 @@ const qvfvBaseText =
 // ✅ QV/FV 전처리 원샷 (답변+블록+블록별 쿼리)
 try {
   const t_pre = Date.now();
-  const userQuestion = String(req?.body?.question || "").trim();
+    const userQuestion = String(req?.body?.question || "").trim();
   const groqKeyBody = String(req?.body?.groq_api_key || req?.body?.groq_key || "").trim();
 
   // ✅ one-shot에게도 raw 힌트를 줌 (auto/overlay/route/빈값이면 그대로 전달)
   const __preModeHint = (__reqMode0 || __sm0 || "qv");
 
+  // ✅ RESOLVE GROQ KEY HERE (body > req-cache > user_secrets(req) > user_secrets(uid) > legacy > env(opt))
+  let groqKeyForPre = String(groqKeyBody || "").trim();
+  let groqKeyForPreSrc = groqKeyForPre ? "body" : "none";
+
+  // 0) request cache
+  try {
+    if (!groqKeyForPre && req && Object.prototype.hasOwnProperty.call(req, "_groq_pre_key_cache")) {
+      const kk = String(req._groq_pre_key_cache || "").trim();
+      if (kk) {
+        groqKeyForPre = kk;
+        groqKeyForPreSrc = "req_cache";
+      }
+    }
+  } catch (_) {}
+
+  // 1) user_secrets via req helper (router/verify path)
+  try {
+    if (!groqKeyForPre && req && typeof __getUserGroqKey === "function") {
+      const kReq = await __getUserGroqKey(req);
+      const kkReq = String(kReq || "").trim();
+      if (kkReq) {
+        groqKeyForPre = kkReq;
+        groqKeyForPreSrc = "user_secrets:req";
+      }
+    }
+  } catch (_) {}
+
+  // 2) userId direct fallback (supabase helper)
+  try {
+    if (!groqKeyForPre && logUserId && typeof __getGroqApiKeyForUser === "function") {
+      const k1 = await __getGroqApiKeyForUser({ supabase, userId: String(logUserId).trim() });
+      const kk1 = String(k1 || "").trim();
+      if (kk1) {
+        groqKeyForPre = kk1;
+        groqKeyForPreSrc = "user_secrets:uid";
+      }
+    }
+  } catch (_) {}
+
+  // 3) legacy auth uid fallback (rare)
+  try {
+    if (!groqKeyForPre && authUser && typeof _getGroqApiKeyForUser === "function") {
+      const k2 = await _getGroqApiKeyForUser(authUser);
+      const kk2 = String(k2 || "").trim();
+      if (kk2) {
+        groqKeyForPre = kk2;
+        groqKeyForPreSrc = "user_secrets:legacy";
+      }
+    }
+  } catch (_) {}
+
+  // 4) env fallback (optional)
+  try {
+    const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+    if (!groqKeyForPre && __allowEnvFallback) {
+      const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+      if (envK) {
+        groqKeyForPre = envK;
+        groqKeyForPreSrc = "env";
+      }
+    }
+  } catch (_) {}
+
+  // cache back
+  try {
+    if (groqKeyForPre && req) req._groq_pre_key_cache = groqKeyForPre;
+  } catch (_) {}
+
+  // diag
+  try {
+    if (partial_scores && typeof partial_scores === "object") {
+      partial_scores.groq_pre_key_source = groqKeyForPreSrc;
+      partial_scores.groq_pre_key_present = !!groqKeyForPre;
+    }
+  } catch (_) {}
+
   let pre = await preprocessQVFVOneShot({
-  req, // ✅ NEW: unify key resolution with verify/router
-  mode: __preModeHint,
-  query,
-  core_text: qvfvBaseText,
-  question: userQuestion, // ✅ADD
+    req,
+    mode: __preModeHint,
+    query,
+    core_text: qvfvBaseText,
+    question: userQuestion,
 
-  gemini_key,
-  geminiModelName: geminiPreprocessModel,
-  groqModelName: groqPreprocessModel,
+    gemini_key,
+    geminiModelName: geminiPreprocessModel,
+    groqModelName: groqPreprocessModel,
 
-  userId: logUserId,   // ✅ADD
-  authUser,            // ✅ADD
-  groq_api_key: groqKeyBody, // ✅ADD (body override)
-});
+    userId: logUserId,
+    authUser,
+
+    groq_api_key: groqKeyForPre,
+  });
 
     // ✅ (NEW) one-shot preprocess가 router_plan을 같이 반환하면 우선 기록/반영
   try {
