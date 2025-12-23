@@ -14929,10 +14929,10 @@ try {
   // verdict 계산 실패해도 전체 응답은 그대로 유지
 }
 
-// ✅ (필수) QV/FV/DV/CV에서 LLM이 통째로 스킵인데 success:true로 나가는 것 방지
+// ✅ (필수) QV/FV는 최종 LLM(flash/verify 또는 groq_verify)이 반드시 있어야 함
+// - DV/CV는 GitHub 근거 수집만으로도 응답 가능(최종 LLM 출력이 없을 수 있음) → LLM_SKIPPED 가드 제외
 // - 기존은 500을 냈는데, 프론트/로그 안정 위해 200 + code 로 통일
-const NEED_LLM =
-  safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "cv";
+const NEED_LLM = (safeMode === "qv" || safeMode === "fv");
 
 if (NEED_LLM) {
   const gemMs = Number(payload?.partial_scores?.gemini_total_ms || 0);
