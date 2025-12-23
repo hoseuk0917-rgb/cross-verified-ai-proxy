@@ -8963,31 +8963,64 @@ function _normalizeRouterPlan(obj) {
 
 async function _getGroqApiKeyForUser(authUser) {
   // authUser 없으면 null
-  if (!authUser?.id) return null;
+  if (!authUser) return null;
+
+  // ✅ 핵심: user_secrets.user_id 는 "users" 테이블 id 기준
+  // - authUser.id(=au.id)로만 조회하면 키를 못 찾는 케이스가 발생
+  let usersId = null;
+
+  // 0) users.id resolve (best-effort)
+  try {
+    if (typeof resolveLogUserId === "function") {
+      usersId = await resolveLogUserId({
+        user_id: null,
+        user_email: authUser?.email || null,
+        user_name: authUser?.user_metadata?.full_name || authUser?.user_metadata?.name || null,
+        auth_user: authUser,
+        bearer_token: null,
+      });
+    }
+  } catch (_) {
+    usersId = null;
+  }
 
   // ✅ 1) 단일 소스: user_secrets(integrations.groq.api_key_enc) 우선
+  // - users.id → (fallback) au.id 순서
   try {
     if (typeof __getGroqApiKeyForUser === "function") {
-      const k1 = await __getGroqApiKeyForUser({ supabase, userId: authUser.id });
-      const kk1 = String(k1 || "").trim();
-      if (kk1) return kk1;
+      const tryIds = [];
+      if (usersId) tryIds.push(String(usersId).trim());
+      if (authUser?.id) tryIds.push(String(authUser.id).trim());
+
+      for (const uid of tryIds) {
+        const k1 = await __getGroqApiKeyForUser({ supabase, userId: uid });
+        const kk1 = String(k1 || "").trim();
+        if (kk1) return kk1;
+      }
     }
   } catch (_) {}
 
-  // ✅ 2) 레거시(있으면만): loadUserSecretsRow + decryptIntegrationsSecrets 방식도 fallback으로 유지
+  // ✅ 2) 레거시(있으면만): loadUserSecretsRow + decryptIntegrationsSecrets fallback
+  // - users.id → (fallback) au.id 순서
   try {
     if (typeof loadUserSecretsRow === "function" && typeof decryptIntegrationsSecrets === "function") {
-      const row = await loadUserSecretsRow(authUser.id);
-      const secrets = row?.secrets || {};
-      const dec = decryptIntegrationsSecrets(secrets);
-      const k2 = String(dec?.groq_key || dec?.groq_api_key || "").trim();
-      if (k2) return k2;
+      const tryIds = [];
+      if (usersId) tryIds.push(String(usersId).trim());
+      if (authUser?.id) tryIds.push(String(authUser.id).trim());
+
+      for (const uid of tryIds) {
+        const row = await loadUserSecretsRow(uid);
+        const secrets = row?.secrets || {};
+        const dec = decryptIntegrationsSecrets(secrets);
+        const k2 = String(dec?.groq_key || dec?.groq_api_key || "").trim();
+        if (k2) return k2;
+      }
     }
   } catch (_) {}
 
   // ✅ 3) (선택) env fallback
   try {
-        const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+    const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
     if (__allowEnvFallback) {
       const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
       if (envK) return envK;
@@ -9187,8 +9220,8 @@ async function __getGroqApiKeyForUser({ supabase, userId }) {
   // 2) env fallback (옵션)
     const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
   if (__allowEnvFallback) {
-    const envKey = String(process.env.GROQ_API_KEY || "").trim();
-    if (envKey) return envKey;
+    const envKey = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+if (envKey) return envKey;
   }
   return null;
 }
