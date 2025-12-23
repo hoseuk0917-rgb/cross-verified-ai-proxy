@@ -11297,7 +11297,8 @@ if (naverPool.length > 0) {
     partial_scores.naver_tier_factor = Math.max(0.9, Math.min(1.05, avg));
   }
 }
-    break;
+        break;
+  } catch (_) {}
   }
 
   case "dv":
