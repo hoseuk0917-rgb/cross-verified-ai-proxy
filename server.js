@@ -5167,21 +5167,30 @@ async function fetchGitHub(q, token, ctx = {}) {
     Math.max(1, Number(ctx?.per_page || ctx?.perPage || process.env.GITHUB_SEARCH_PER_PAGE || 50))
   );
 
-// DV/CV ... sanitize (caller에서 이미 sanitize 했으면 skip 가능)
-const rawQ = String(q ?? "").trim();
-const q2 = ctx?.skipSanitize ? rawQ : sanitizeGithubQuery(rawQ, userText);
-if (!q2) return [];
+  // DV/CV ... sanitize (caller에서 이미 sanitize 했으면 skip 가능)
+  const rawQ = String(q ?? "").trim();
 
-    const url = "https://api.github.com/search/repositories";
+  // ✅ 고급 GitHub search qualifier가 들어있는 쿼리는 절대 깨지면 안 됨
+  const __hasGithubQualifiers = (s) => {
+    const t = String(s || "");
+    return /(^|\s)(in:|stars:|language:|topic:|org:|user:|repo:|is:|fork:|archived:|created:|pushed:|size:|sort:)/i.test(t);
+  };
 
-  // ✅ GitHub repo search query 정규화:
-  // - 질문문 그대로 넣으면 0건 뜨는 케이스가 많아서 (how to use ... ?) → 핵심 토큰만 남김
-  // - 너무 공격적으로 줄이지 않고, 최소 2토큰은 유지
-  const __normalizeGithubRepoQuery = (q) => {
-    const s0 = String(q || "").trim().toLowerCase();
+  const hasQualifiers = __hasGithubQualifiers(rawQ);
+
+  // qualifier가 있으면 sanitize/normalize를 기본적으로 스킵
+  const q2 = (ctx?.skipSanitize || hasQualifiers) ? rawQ : sanitizeGithubQuery(rawQ, userText);
+  if (!q2) return [];
+
+  const url = "https://api.github.com/search/repositories";
+
+  // ✅ GitHub repo search query 정규화 (자연어 질문용)
+  // - qualifier 있는 쿼리는 normalize하지 않는다.
+  const __normalizeGithubRepoQuery = (qq) => {
+    const s0 = String(qq || "").trim().toLowerCase();
     if (!s0) return "";
 
-    // 기호 제거/공백 정리
+    // 기호 제거/공백 정리 (자연어용)
     const cleaned = s0
       .replace(/[`~!@#$%^&*()_+\-={}\[\]|\\:;"'<>,.?/]+/g, " ")
       .replace(/\s+/g, " ")
@@ -5194,34 +5203,34 @@ if (!q2) return [];
       "node","nodejs","express","next","react","vue","angular"
     ]);
 
-    // 핵심 토큰 뽑기
     const tokens = cleaned
       .split(" ")
       .map((t) => t.trim())
       .filter(Boolean);
 
-    // express/node 같은 핵심은 “살려두는” 방향 (단, stop에 넣어둔 핵심들도 필요하면 다시 살림)
     const keepAlways = new Set(["express", "node", "nodejs", "koa", "nestjs", "fastify", "hapi"]);
 
     let core = tokens.filter((t) => (t.length >= 3 && !stop.has(t)) || keepAlways.has(t));
 
-    // 너무 줄어들면(= stop 제거로 텅 비면) 원본에서 길이>=3만이라도 유지
     if (core.length < 2) {
       core = tokens.filter((t) => t.length >= 3);
     }
 
-    // 그래도 비면 원문 반환
     const qCore = core.length ? core.slice(0, 6).join(" ") : cleaned;
-
-    // repo 검색 범위를 넓히기 위해 in:name,description,readme 추가
-    // (qualifier는 토큰에 섞여도 GitHub search가 잘 처리함)
     return `${qCore} in:name,description,readme`.trim();
   };
 
-  const run = async (pageNo) => {
-    const qNorm = __normalizeGithubRepoQuery(q2);
+  const run = async (pageNo, opts = {}) => {
+    const forceRaw = !!opts?.forceRaw;
+    const forceQuery = String(opts?.forceQuery || "").trim();
 
-    // ✅ GitHub API는 UA가 있으면 안정적 (axios 기본 UA가 있어도 명시해둠)
+    // ✅ qualifier 쿼리는 원문 그대로, 자연어는 normalize 버전 우선
+    const qNorm = (!hasQualifiers && !ctx?.skipNormalize && !forceRaw)
+      ? __normalizeGithubRepoQuery(q2)
+      : "";
+
+    const qFinal = forceQuery || (forceRaw ? rawQ : (qNorm || q2));
+
     const h2 = {
       ...(headers || {}),
       "User-Agent": (headers && (headers["User-Agent"] || headers["user-agent"])) || "cross-verified-ai-proxy",
@@ -5230,17 +5239,29 @@ if (!q2) return [];
 
     const resp = await axios.get(url, {
       headers: h2,
-      params: { q: qNorm || q2, per_page: perPage, page: pageNo },
+      params: { q: qFinal, per_page: perPage, page: pageNo },
       timeout: HTTP_TIMEOUT_MS,
       signal,
     });
 
-    return Array.isArray(resp?.data?.items) ? resp.data.items : [];
+    return {
+      items: Array.isArray(resp?.data?.items) ? resp.data.items : [],
+      total_count: Number(resp?.data?.total_count ?? 0),
+      qFinal,
+    };
   };
 
   let items = [];
   try {
-    items = await run(page);
+    // 1) 기본 실행
+    let r1 = await run(page);
+    items = r1.items || [];
+
+    // ✅ 0건이면 raw로 1회 폴백 (sanitize/normalize 영향을 제거)
+    if (page === 1 && items.length === 0) {
+      const rRaw = await run(1, { forceRaw: true });
+      if ((rRaw.items || []).length) items = rRaw.items;
+    }
 
     // ✅ 1) 1페이지가 curated/awesome으로만 꽉 찼으면 2페이지 1회 보강(정확히 1번)
     if (page === 1 && items.length > 0) {
@@ -5253,14 +5274,15 @@ if (!q2) return [];
       });
 
       if (onlyCurated) {
-        const items2 = await run(2);
-        if (items2.length) items = [...items, ...items2];
+        const r2 = await run(2);
+        if ((r2.items || []).length) items = [...items, ...(r2.items || [])];
       }
     }
 
     // ✅ 2) 아예 0개면(일시/검색특이) 2페이지 1회 보강
     if (page === 1 && items.length === 0) {
-      items = await run(2);
+      const r2 = await run(2);
+      items = r2.items || [];
     }
   } catch (e) {
     const s = e?.response?.status ?? null;
@@ -5279,7 +5301,6 @@ if (!q2) return [];
         ra != null
       );
 
-    // ✅ rate limit은 auth error로 취급하지 말고 429로 올려서 원인/복구가 보이게
     if (isRateLimit) {
       const err = new Error("GITHUB_RATE_LIMIT");
       err.code = "GITHUB_RATE_LIMIT";
@@ -5298,7 +5319,6 @@ if (!q2) return [];
       throw err;
     }
 
-    // ✅ 토큰 불량/만료/권한없음 → 치명 오류로 중단
     if (s === 401 || s === 403) {
       const err = new Error("GITHUB_AUTH_ERROR");
       err.code = "GITHUB_AUTH_ERROR";
