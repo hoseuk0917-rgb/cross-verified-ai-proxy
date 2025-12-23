@@ -11201,6 +11201,12 @@ try {
     return out;
   };
 
+    const __TOPK = Math.max(1, Number(process.env.BLOCK_EVIDENCE_TOPK || 3));
+  const __NAVER_TOPK = Math.max(
+    1,
+    Number(process.env.BLOCK_NAVER_EVIDENCE_TOPK || __TOPK)
+  );
+
   partial_scores.evidence_digest = {
     totals: {
       crossref: _safeCount(external?.crossref),
@@ -11211,11 +11217,11 @@ try {
       klaw: external?.klaw ? 1 : 0,
     },
     top: {
-      crossref: __digestTop(external?.crossref, 3, "crossref"),
-      openalex: __digestTop(external?.openalex, 3, "openalex"),
-      wikidata: __digestTop(external?.wikidata, 3, "wikidata"),
-      gdelt: __digestTop(external?.gdelt, 3, "gdelt"),
-      naver: __digestTop(external?.naver, 3, "naver"),
+      crossref: __digestTop(external?.crossref, __TOPK, "crossref"),
+      openalex: __digestTop(external?.openalex, __TOPK, "openalex"),
+      wikidata: __digestTop(external?.wikidata, __TOPK, "wikidata"),
+      gdelt: __digestTop(external?.gdelt, __TOPK, "gdelt"),
+      naver: __digestTop(external?.naver, __NAVER_TOPK, "naver"),
     },
     blocks: blockCounts,
     early_stop: partial_scores?.call_caps?.early_stop ? true : false,
@@ -12174,37 +12180,41 @@ try {
 
     // ✅ 기존 digest를 덮어쓰지 말고 github만 병합(merge)
   const __prevDigest =
-    (partial_scores && typeof partial_scores.evidence_digest === "object" && partial_scores.evidence_digest)
-      ? partial_scores.evidence_digest
-      : {};
+  (partial_scores && partial_scores.evidence_digest && typeof partial_scores.evidence_digest === "object")
+    ? partial_scores.evidence_digest
+    : {};
 
-  const __prevTotals =
-    (__prevDigest && typeof __prevDigest.totals === "object" && __prevDigest.totals)
-      ? __prevDigest.totals
-      : {};
+const __prevTotals =
+  (__prevDigest && __prevDigest.totals && typeof __prevDigest.totals === "object")
+    ? __prevDigest.totals
+    : {};
 
-  const __prevTop =
-    (__prevDigest && typeof __prevDigest.top === "object" && __prevDigest.top)
-      ? __prevDigest.top
-      : {};
+const __prevTop =
+  (__prevDigest && __prevDigest.top && typeof __prevDigest.top === "object")
+    ? __prevDigest.top
+    : {};
 
-  partial_scores.evidence_digest = {
-    ...__prevDigest,
-    totals: { ...__prevTotals, github: gh.length },
-    top: {
-      ...__prevTop,
-      github: gh.slice(0, 3)
-        .map((it) => ({
-          title: _pickTitle(it),
-          repo: _pickRepo(it),
-          link: _pickLink(it),
-          host: _pickHost(it),
-          stars: _pickStars(it),
-          updated: _pickUpdated(it),
-        }))
-        .filter((x) => x.title || x.link),
-    },
-  };
+const __TOPK = Math.max(1, Number(process.env.BLOCK_EVIDENCE_TOPK || 3));
+
+// ✅ object spread는 반드시 "객체"만 펼치도록 (|| {}) 가드
+partial_scores.evidence_digest = {
+  ...(__prevDigest || {}),
+  totals: { ...(__prevTotals || {}), github: gh.length },
+  top: {
+    ...(__prevTop || {}),
+    github: gh
+      .slice(0, __TOPK)
+      .map((it) => ({
+        title: _pickTitle(it),
+        repo: _pickRepo(it),
+        link: _pickLink(it),
+        host: _pickHost(it),
+        stars: _pickStars(it),
+        updated: _pickUpdated(it),
+      }))
+      .filter((x) => x.title || x.link),
+  },
+};
 } catch {}
 
 // ✅ 요청 body.engines(또는 engines_requested/enginesRequested)가 있으면 그걸 우선 반영
@@ -14116,6 +14126,19 @@ const E_eff = effEngines.length;
 
 // (로그) 최종 산출 근거도 남김(나중에 디버깅/어드민 UI에서 유용)
 partial_scores.engine_evidence_counts_final = engineEvidenceCountsFinal;
+
+// ✅ kept evidence 기준 totals_used도 evidence_digest에 같이 기록
+try {
+  if (
+    partial_scores &&
+    partial_scores.evidence_digest &&
+    typeof partial_scores.evidence_digest === "object" &&
+    engineEvidenceCountsFinal &&
+    typeof engineEvidenceCountsFinal === "object"
+  ) {
+    partial_scores.evidence_digest.totals_used = { ...engineEvidenceCountsFinal };
+  }
+} catch (_) {}
 
 // ✅ coverage factor (QV/FV에만 의미있게 적용, DV/CV는 1.0 유지)
 // ✅ coverage factor (QV/FV에만 의미있게 적용, DV/CV는 1.0 유지)
