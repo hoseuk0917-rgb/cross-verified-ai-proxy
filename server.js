@@ -11055,6 +11055,116 @@ try {
     })).filter((x) => x.id);
   })();
 
+  try {
+  // ✅ evidence_digest: 엔진별 결과를 UI-friendly하게 요약(링크/호스트/날짜/네이버 메타 포함)
+  const __pickTitleAny = (x) => {
+    try {
+      if (typeof _pickTitle === "function") return _pickTitle(x);
+    } catch {}
+    if (x == null) return null;
+    if (typeof x === "string") return x;
+    if (typeof x !== "object") return null;
+    return x.title || x.name || x.headline || x.display_name || x.label || null;
+  };
+
+  const __pickLinkAny = (x) => {
+    try {
+      if (typeof _pickLink === "function") return _pickLink(x);
+    } catch {}
+    if (x == null) return null;
+    if (typeof x === "string") return null;
+    if (typeof x !== "object") return null;
+    // 흔한 후보들
+    return (
+      x.link ||
+      x.url ||
+      x.html_url ||
+      x.source_url ||
+      x.originallink ||
+      x.doi_url ||
+      x.doi ||
+      null
+    );
+  };
+
+  const __pickDateAny = (x) => {
+    try {
+      if (typeof _pickDate === "function") return _pickDate(x);
+    } catch {}
+    if (!x || typeof x !== "object") return null;
+    return (
+      x.date ||
+      x.published ||
+      x.pubDate ||
+      x.published_at ||
+      x.updated ||
+      x.updated_at ||
+      x.year ||
+      null
+    );
+  };
+
+  const __hostFrom = (u) => {
+    try {
+      if (typeof hostFromUrl === "function") return hostFromUrl(u);
+    } catch {}
+    try {
+      if (!u) return null;
+      return new URL(String(u)).hostname || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const __digestTop = (arr, K, engine) => {
+    if (!Array.isArray(arr) || !arr.length) return [];
+
+    const out = [];
+    for (const it of arr) {
+      const title0 = __pickTitleAny(it);
+      const link0 = __pickLinkAny(it);
+
+      // url은 최대한 pickUrl까지 동원해서 채움
+      let url0 = link0 || null;
+      try {
+        if (!url0 && typeof pickUrl === "function") url0 = pickUrl(it) || null;
+      } catch {}
+
+      const host0 =
+        (it && typeof it === "object" && (it.host || it.hostname)) ||
+        __hostFrom(url0);
+
+      const date0 = __pickDateAny(it);
+
+      const row = {
+        title: title0 || null,
+        // ✅ UI 호환: link 우선(없으면 url)
+        link: link0 || url0 || null,
+        date: date0 || null,
+      };
+
+      // ✅ 추가 호환/정보: url/host
+      if (url0 && row.link !== url0) row.url = url0;
+      if (host0) row.host = host0;
+
+      // ✅ naver 메타(있으면 포함)
+      if (engine === "naver" && it && typeof it === "object") {
+        if (it.tier != null) row.tier = it.tier;
+        if (it.naver_type) row.naver_type = it.naver_type;
+      }
+
+      // null/빈값 제거
+      for (const k of Object.keys(row)) {
+        if (row[k] == null || row[k] === "") delete row[k];
+      }
+
+      if (row.title || row.link || row.url) out.push(row);
+      if (out.length >= K) break;
+    }
+
+    return out;
+  };
+
   partial_scores.evidence_digest = {
     totals: {
       crossref: _safeCount(external?.crossref),
@@ -11065,11 +11175,11 @@ try {
       klaw: external?.klaw ? 1 : 0,
     },
     top: {
-      crossref: _digestItems(external?.crossref, 3),
-      openalex: _digestItems(external?.openalex, 3),
-      wikidata: _digestItems(external?.wikidata, 3),
-      gdelt: _digestItems(external?.gdelt, 3),
-      naver: _digestItems(external?.naver, 3),
+      crossref: __digestTop(external?.crossref, 3, "crossref"),
+      openalex: __digestTop(external?.openalex, 3, "openalex"),
+      wikidata: __digestTop(external?.wikidata, 3, "wikidata"),
+      gdelt: __digestTop(external?.gdelt, 3, "gdelt"),
+      naver: __digestTop(external?.naver, 3, "naver"),
     },
     blocks: blockCounts,
     early_stop: partial_scores?.call_caps?.early_stop ? true : false,
@@ -11996,19 +12106,52 @@ try {
     if (!s) return "";
     return s.length > n ? (s.slice(0, n - 1) + "…") : s;
   };
-  const _pickTitle = (it) => _trim(it?.title ?? it?.name ?? it?.full_name ?? it?.repo ?? "", 160);
-  const _pickLink  = (it) => _trim(it?.url ?? it?.html_url ?? it?.link ?? "", 260);
-  const _pickDate  = (it) => _trim(it?.updated_at ?? it?.created_at ?? it?.date ?? "", 40);
+
+  const _pickLink = (it) => _trim(it?.html_url ?? it?.url ?? it?.link ?? "", 260);
+
+  const _pickHost = (it) => {
+    const u = String(it?.html_url ?? it?.url ?? it?.link ?? "").trim();
+    if (!u) return null;
+    try { return (new URL(u)).hostname; } catch { return null; }
+  };
+
+  const _pickTitle = (it) =>
+    _trim(it?.title ?? it?.name ?? it?.full_name ?? it?.repo ?? "", 160);
+
+  const _pickRepo = (it) =>
+    _trim(it?.full_name ?? it?.name ?? it?.repo ?? "", 140);
+
+  const _pickStars = (it) => {
+    const n = Number(it?.stars ?? it?.stargazers_count ?? it?.stargazers ?? 0);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const _pickUpdated = (it) =>
+    _trim(
+      it?.updated_at ??
+        it?.updated ??
+        it?.pushed_at ??
+        it?.created_at ??
+        it?.date ??
+        "",
+      40
+    );
 
   const gh = Array.isArray(external?.github) ? external.github : [];
+
   partial_scores.evidence_digest = {
     totals: { github: gh.length },
     top: {
-      github: gh.slice(0, 3).map((it) => ({
-        title: _pickTitle(it),
-        link: _pickLink(it),
-        date: _pickDate(it),
-      })).filter((x) => x.title || x.link),
+      github: gh.slice(0, 3)
+        .map((it) => ({
+          title: _pickTitle(it),
+          repo: _pickRepo(it),
+          link: _pickLink(it),
+          host: _pickHost(it),
+          stars: _pickStars(it),
+          updated: _pickUpdated(it),
+        }))
+        .filter((x) => x.title || x.link),
     },
   };
 } catch {}
