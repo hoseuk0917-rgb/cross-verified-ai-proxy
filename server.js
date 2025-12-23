@@ -7934,7 +7934,308 @@ function normalizeEnginesRequested(engines_requested, engine_metrics) {
 // ─────────────────────────────
 const verifyCoreHandler = async (req, res) => {
   // ✅ answerText 공용 선선언 (ReferenceError 방지)
-  const __b0 = (req && req.body && typeof req.body === "object") ? req.body : {};
+      // ✅ normalize request body (supports legacy + schema_version=1 payload)
+  const __b0 = await (async () => {
+    const __raw = getJsonBody(req);
+    const b = (__raw && typeof __raw === "object") ? __raw : {};
+    const sv = (b.schema_version ?? b.schemaVersion ?? b.v ?? null);
+    const isV1 =
+      (String(sv || "").trim() === "1" || String(sv || "").toLowerCase() === "v1") &&
+      (b.input && typeof b.input === "object");
+
+    if (!isV1) {
+      try { if (req && req.body !== b) req.body = b; } catch (_) {}
+      return b;
+    }
+
+    const input = (b.input && typeof b.input === "object") ? b.input : {};
+    const options = (b.options && typeof b.options === "object") ? b.options : {};
+    const clientPre =
+      (b.client_pre && typeof b.client_pre === "object") ? b.client_pre :
+      ((b.clientPre && typeof b.clientPre === "object") ? b.clientPre : {});
+
+    const q0 = String(
+      input.question ??
+      options.question ??
+      b.question ??
+      input.query ??
+      input.text ??
+      b.query ??
+      ""
+    ).trim();
+
+    const core0 = String(
+      input.core_text ??
+      input.coreText ??
+      input.snippet ??
+      input.snippet_text ??
+      input.snippetText ??
+      input.claim ??
+      b.core_text ??
+      b.coreText ??
+      b.snippet ??
+      b.snippet_text ??
+      b.snippetText ??
+      ""
+    ).trim();
+
+    const ua0 = String(
+      input.user_answer ??
+      input.userAnswer ??
+      b.user_answer ??
+      b.userAnswer ??
+      clientPre.user_answer ??
+      clientPre.userAnswer ??
+      ""
+    ).trim();
+
+    const ans0 = String(
+      clientPre.answer_text ??
+      clientPre.answerText ??
+      input.answer_text ??
+      input.answerText ??
+      b.answerText ??
+      b.answer_text ??
+      ""
+    ).trim();
+
+    const mode0 = String(
+      options.mode ??
+      options.safeMode ??
+      options.raw_mode ??
+      options.rawMode ??
+      input.mode_hint ??
+      input.modeHint ??
+      b.mode ??
+      b.safeMode ??
+      b.raw_mode ??
+      b.rawMode ??
+      ""
+    ).trim();
+
+    const rawQuery0 = String(
+      input.raw_query ??
+      input.rawQuery ??
+      b.rawQuery ??
+      q0 ??
+      ""
+    ).trim();
+
+    const snippetProvided =
+      (input.snippet != null || input.snippet_text != null || input.snippetText != null || input.claim != null);
+
+    // start from legacy-compatible clone
+    const out = { ...b };
+
+    // ✅ map to legacy fields used by verifyCoreHandler
+    if (q0) out.query = q0;
+    else if (!out.query && core0) out.query = core0; // fallback
+
+    if (rawQuery0) out.rawQuery = rawQuery0;
+    if (mode0) out.mode = mode0;
+    if (core0) out.core_text = core0;
+    if (ua0) out.user_answer = ua0;
+    if (ans0) out.answerText = ans0;
+
+    // ✅ propagate optional engines list (accept several aliases)
+    try {
+      const eng =
+        options.engines ??
+        options.engines_requested ??
+        options.enginesRequested ??
+        options.engines_used ??
+        options.enginesUsed ??
+        input.engines ??
+        input.engines_requested ??
+        input.enginesRequested ??
+        null;
+
+      if (Array.isArray(eng) && eng.length > 0) {
+        out.engines = eng;
+      }
+    } catch (_) {}
+
+    // ✅ snippet_meta mapping (do not force endpoint; only metadata)
+    if (snippetProvided && core0) {
+      const prev = (out.snippet_meta && typeof out.snippet_meta === "object") ? out.snippet_meta : {};
+      out.snippet_meta = {
+        ...prev,
+        is_snippet: true,
+        snippet_core: core0,
+        snippet_id: input.snippet_id ?? input.snippetId ?? prev.snippet_id ?? prev.snippetId ?? null,
+        snippet_hash: input.snippet_hash ?? input.snippetHash ?? prev.snippet_hash ?? prev.snippetHash ?? null,
+        question: q0 || prev.question || null,
+        source_url: input.url ?? input.source_url ?? input.sourceUrl ?? prev.source_url ?? prev.sourceUrl ?? null,
+        input_type: input.input_type ?? input.inputType ?? prev.input_type ?? prev.inputType ?? null,
+      };
+    }
+
+    // ✅ v1 url input: safe fetch -> core_text inject (only when core_text missing)
+    try {
+      const url0 = String(
+        input.url ??
+        input.source_url ??
+        input.sourceUrl ??
+        options.url ??
+        options.source_url ??
+        options.sourceUrl ??
+        ""
+      ).trim();
+
+      const __URL_FETCH_ENABLE =
+        String(process.env.URL_FETCH_ENABLE ?? "true").toLowerCase() !== "false";
+
+      const __URL_FETCH_TIMEOUT_MS = (() => {
+        const v = parseInt(process.env.URL_FETCH_TIMEOUT_MS || "0", 10);
+        return Math.max(500, Number.isFinite(v) && v > 0 ? v : 4500);
+      })();
+
+      const __URL_FETCH_MAX_BYTES = (() => {
+        const v = parseInt(process.env.URL_FETCH_MAX_BYTES || "0", 10);
+        const d = 1024 * 1024; // 1MB
+        return Math.max(64 * 1024, Number.isFinite(v) && v > 0 ? v : d);
+      })();
+
+      const __URL_FETCH_MAX_REDIRECTS = (() => {
+        const v = parseInt(process.env.URL_FETCH_MAX_REDIRECTS || "0", 10);
+        return Math.max(0, Number.isFinite(v) ? v : 3) || 3;
+      })();
+
+      function __isSafePublicHost(h0) {
+        try {
+          const h = String(h0 || "").trim().toLowerCase();
+          if (!h) return false;
+          if (h === "localhost" || h.endsWith(".localhost")) return false;
+          if (h.endsWith(".local")) return false;
+          if (h === "0.0.0.0") return false;
+          if (h === "::1") return false;
+
+          // basic private-range guards (SSRF 최소 방지)
+          if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) {
+            if (/^(10\.|127\.|169\.254\.|192\.168\.)/.test(h)) return false;
+            if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(h)) return false;
+          }
+          if (h.startsWith("::1") || h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return false;
+
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
+      async function __fetchUrlToTextSafe(u0) {
+        try {
+          let cur = String(u0 || "").trim();
+          if (!cur) return null;
+
+          // scheme + host validate
+          let u = null;
+          try { u = new URL(cur); } catch { return null; }
+          if (!u || !/^https?:$/.test(String(u.protocol || ""))) return null;
+          if (!__isSafePublicHost(u.hostname)) return null;
+
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), __URL_FETCH_TIMEOUT_MS);
+
+          const headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; CrossVerifiedAI/1.0)",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
+          };
+
+          let redirects = 0;
+
+          while (true) {
+            const resp = await axios.get(cur, {
+              timeout: __URL_FETCH_TIMEOUT_MS,
+              signal: ctrl.signal,
+              maxRedirects: 0, // we handle ourselves to re-check host each hop
+              maxContentLength: __URL_FETCH_MAX_BYTES,
+              maxBodyLength: __URL_FETCH_MAX_BYTES,
+              headers,
+              responseType: "text",
+              validateStatus: () => true,
+            });
+
+            const st = resp?.status || 0;
+
+            // redirect handling
+            if (st >= 300 && st < 400) {
+              const loc = resp?.headers?.location || resp?.headers?.Location || null;
+              if (!loc) break;
+              if (redirects >= __URL_FETCH_MAX_REDIRECTS) break;
+
+              let next = null;
+              try { next = new URL(String(loc), cur).toString(); } catch { break; }
+
+              // validate hop
+              let u2 = null;
+              try { u2 = new URL(next); } catch { break; }
+              if (!u2 || !/^https?:$/.test(String(u2.protocol || ""))) break;
+              if (!__isSafePublicHost(u2.hostname)) break;
+
+              cur = next;
+              redirects += 1;
+              continue;
+            }
+
+            if (!(st >= 200 && st < 300)) break;
+
+            const ct = String(resp?.headers?.["content-type"] || resp?.headers?.["Content-Type"] || "").toLowerCase();
+            // allow only text-like responses
+            if (ct && !/text\/html|text\/plain|application\/xhtml\+xml|application\/xml|application\/json/.test(ct)) {
+              break;
+            }
+
+            const data = (resp && typeof resp.data === "string") ? resp.data : "";
+            if (!data) break;
+
+            const txt =
+              (typeof stripHtmlToText === "function")
+                ? stripHtmlToText(data)
+                : String(data).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+
+            const outTxt = String(txt || "").trim();
+            return outTxt ? outTxt : null;
+          }
+
+          return null;
+        } catch {
+          return null;
+        }
+      }
+
+      const needCore = !String(out.core_text || "").trim();
+      if (__URL_FETCH_ENABLE && url0 && needCore) {
+        const fetched = await __fetchUrlToTextSafe(url0);
+        if (fetched) {
+          const clippedCore = String(fetched).slice(0, VERIFY_MAX_CORE_TEXT_CHARS).trim();
+          if (clippedCore) out.core_text = clippedCore;
+
+          // query/rawQuery fallback when question missing
+          if (!String(out.query || "").trim() && clippedCore) {
+            const qClip = String(clippedCore).slice(0, VERIFY_MAX_QUERY_CHARS || 5000).trim();
+            if (qClip) out.query = qClip;
+          }
+          if (!String(out.rawQuery || "").trim() && String(out.query || "").trim()) {
+            out.rawQuery = String(out.query || "").trim();
+          }
+
+          // keep metadata (NOT a snippet)
+          const prev = (out.snippet_meta && typeof out.snippet_meta === "object") ? out.snippet_meta : {};
+          out.snippet_meta = {
+            ...prev,
+            source_url: prev.source_url ?? url0,
+            input_type: prev.input_type ?? (input.input_type ?? input.inputType ?? "url"),
+          };
+        }
+      }
+    } catch (_) {}
+
+    // ✅ keep compat: many paths read req.body directly
+    try { if (req) req.body = out; } catch (_) {}
+    return out;
+  })();
+
   const __answerText0 = String((__b0.answerText ?? __b0.user_answer ?? __b0.query ?? "")).trim();
   let answerText = __answerText0;
 
