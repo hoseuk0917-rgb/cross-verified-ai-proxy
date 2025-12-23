@@ -9452,7 +9452,7 @@ const engine_metrics = engineMetrics;
 // - place here (right above qvfvBlocksForVerifyFull) so it's easy to find
 // =======================================================
 
-function __uniqStrings(arr) {
+function __uniqStrings(arr, maxN = 0) {
   const out = [];
   const seen = new Set();
   for (const v of arr || []) {
@@ -9462,6 +9462,8 @@ function __uniqStrings(arr) {
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(s);
+
+    if (maxN > 0 && out.length >= maxN) break;
   }
   return out;
 }
@@ -9488,13 +9490,11 @@ function __expandNaverQueries(baseQueries, seedInfo = {}) {
 
     // 괄호, 중복 공백 제거한 버전도 한 번 더 추가
     const stripped = s.replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
-    if (stripped && stripped !== s) {
-      expanded.push(stripped);
-    }
+    if (stripped && stripped !== s) expanded.push(stripped);
   }
 
-  // uniqStrings는 이미 서버에 있는 헬퍼 그대로 사용
-  return uniqStrings(expanded, 12);
+  // ✅ 이 스코프에서는 항상 __uniqStrings로 정규화/상한 적용
+  return __uniqStrings(expanded, 12);
 }
 
   let qvfvBlocksForVerifyFull = null; // [{id,text,queries,evidence...}, ...]
@@ -12172,9 +12172,27 @@ try {
 
   const gh = Array.isArray(external?.github) ? external.github : [];
 
+    // ✅ 기존 digest를 덮어쓰지 말고 github만 병합(merge)
+  const __prevDigest =
+    (partial_scores && typeof partial_scores.evidence_digest === "object" && partial_scores.evidence_digest)
+      ? partial_scores.evidence_digest
+      : {};
+
+  const __prevTotals =
+    (__prevDigest && typeof __prevDigest.totals === "object" && __prevDigest.totals)
+      ? __prevDigest.totals
+      : {};
+
+  const __prevTop =
+    (__prevDigest && typeof __prevDigest.top === "object" && __prevDigest.top)
+      ? __prevDigest.top
+      : {};
+
   partial_scores.evidence_digest = {
-    totals: { github: gh.length },
+    ...__prevDigest,
+    totals: { ...__prevTotals, github: gh.length },
     top: {
+      ...__prevTop,
       github: gh.slice(0, 3)
         .map((it) => ({
           title: _pickTitle(it),
