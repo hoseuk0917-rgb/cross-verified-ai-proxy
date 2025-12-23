@@ -9718,7 +9718,9 @@ const __reqMode0 = String(
   req?.body?.mode ?? req?.body?.safeMode ?? req?.body?.raw_mode ?? ""
 ).toLowerCase().trim();
 
-const __modeForBase = (__reqMode0 || __sm0);
+// ✅ baseText 선택에서 safeMode 기본값(qv)이 끼어들면 core_text를 잃는다.
+//    req raw mode가 없으면 ""로 두고, core_text(userCoreText)가 있으면 우선 사용할 수 있게 한다.
+const __modeForBase = (__reqMode0 || "");
 
 const qvfvBaseText =
   (((__modeForBase === "fv" ||
@@ -9732,11 +9734,12 @@ const qvfvBaseText =
 // ✅ QV/FV 전처리 원샷 (답변+블록+블록별 쿼리)
 try {
   const t_pre = Date.now();
-    const userQuestion = String(req?.body?.question || "").trim();
+  const userQuestion = String(req?.body?.question || "").trim();
   const groqKeyBody = String(req?.body?.groq_api_key || req?.body?.groq_key || "").trim();
 
-  // ✅ one-shot에게도 raw 힌트를 줌 (auto/overlay/route/빈값이면 그대로 전달)
-  const __preModeHint = (__reqMode0 || __sm0 || "qv");
+  // ✅ 요청이 mode를 명시하지 않았으면 one-shot이 qv/fv를 결정하도록 auto로 넘긴다.
+//    (빈값일 때 "qv"로 주면 프롬프트 규칙상 safe_mode_final이 qv로 강제됨)
+  const __preModeHint = (__reqMode0 || "auto");
 
   // ✅ RESOLVE GROQ KEY HERE (body > req-cache > user_secrets(req) > user_secrets(uid) > legacy > env(opt))
   let groqKeyForPre = String(groqKeyBody || "").trim();
