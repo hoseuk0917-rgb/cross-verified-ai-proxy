@@ -11701,14 +11701,108 @@ recordMetric(geminiMetrics, "github_query_builder", ms_q);
 // NOTE: buildGithubQueriesFromGemini는 항상 "배열"을 리턴한다고 가정
 let ghQueries = Array.isArray(ghQueriesRaw)
   ? ghQueriesRaw
-      .map(x =>
+      .map((x) =>
         String(x || "")
-          .replace(/["']/g, "")   // ✅ 따옴표 제거(검색 0건 방지)
+          .replace(/["']/g, "") // ✅ 따옴표 제거(검색 0건 방지)
+          .replace(/[?!"“”‘’(){}\[\];]/g, " ") // ✅ 질문/문장부호 제거(검색 0건 방지)
           .replace(/\s+/g, " ")
           .trim()
       )
       .filter(Boolean)
   : [];
+
+// ✅ DV/CV: 질문형 문장을 GitHub repo search 친화 키워드로 압축 + query 확장
+const __cleanGithubSearchQuery = (s) => {
+  const raw = String(s || "")
+    .replace(/[?!"“”‘’(){}\[\];]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!raw) return "";
+
+  // keep qualifiers if already present (in:, user:, org:, repo:, stars:, etc.)
+  const hasQualifier = /(?:\b(in|user|org|repo|language|stars|forks|topic)\s*:)/i.test(raw);
+  if (hasQualifier) return raw;
+
+  const stop = new Set([
+    "how","what","why","when","where","which","who",
+    "can","could","should","would","do","does","did",
+    "is","are","was","were","be","been","being",
+    "the","a","an","of","to","in","on","at","and","or","for","with","as","by","from",
+    "please","help","example","examples","use","using","usage","guide","tutorial","getting","start","started",
+  ]);
+
+  const toks = raw
+    .split(" ")
+    .map((w) => w.trim())
+    .filter(Boolean)
+    .map((w) => w.replace(/^[^A-Za-z0-9_.-]+|[^A-Za-z0-9_.-]+$/g, "")) // trim edge punct
+    .filter(Boolean)
+    .filter((w) => !stop.has(w.toLowerCase()))
+    .filter((w) => w.length >= 2);
+
+  if (!toks.length) return raw;
+
+  // keep only first N tokens to avoid over-specific “sentence” queries
+  const out = toks.slice(0, 8).join(" ").trim();
+  return out.length >= 3 ? out : raw;
+};
+
+const __uniqCI = (arr, cap = 10) => {
+  const out = [];
+  const seen = new Set();
+  for (const x of arr || []) {
+    const s = String(x || "").trim();
+    if (!s) continue;
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+    if (out.length >= cap) break;
+  }
+  return out;
+};
+
+const __expandGithubQueries = (arr0) => {
+  const baseText = String(`${rawQuery || ""} ${ghUserText || ""} ${answerText || ""}`).trim();
+  const kw0 = __cleanGithubSearchQuery((arr0 && arr0[0]) ? arr0[0] : baseText);
+  const kw = __cleanGithubSearchQuery(baseText) || kw0;
+
+  const list = [];
+  for (const q of (arr0 || [])) {
+    const qq = __cleanGithubSearchQuery(q);
+    if (qq) list.push(qq);
+  }
+  if (kw) list.push(kw);
+
+  // express/node 보정(검색 recall 상승)
+  const blob = ` ${list.join(" ")} `.toLowerCase();
+  const hasExpress = /\bexpress\b/.test(blob);
+  const hasNode = /\bnode\b|\bnodejs\b/.test(blob);
+
+  // repo search용 기본 확장(qualifier 부착)
+  const expanded = [];
+  for (const q of list) {
+    expanded.push(`${q} in:name,description,readme`);
+    expanded.push(`${q} stars:>20 in:name,description,readme`);
+  }
+
+  if (hasExpress) {
+    expanded.push(`expressjs in:name,description,readme stars:>50`);
+    if (hasNode) expanded.push(`express nodejs in:name,description,readme stars:>50`);
+  }
+  if (hasNode && !/\bnodejs\b/.test(blob)) {
+    expanded.push(`nodejs in:name,description,readme stars:>50`);
+  }
+
+  // cap + dedupe
+  return __uniqCI(expanded, 8);
+};
+
+// ghQueries 최종 확정(질문형 -> 키워드형 확장)
+try {
+  ghQueries = __expandGithubQueries(ghQueries);
+} catch {}
 
 // ✅ (B안) sentinel 규칙: ["__NON_CODE__::<reason>::<confidence>"] 면 DV/CV 종료
 let github_classifier = { is_code_query: true, reason: "", confidence: null };
@@ -11907,7 +12001,13 @@ const allowCurated = Boolean(allowCuratedLists || wantCurated);
 // (이미 상단에서 ghSeen을 만들었으므로 여기서는 재선언하지 않음)
 
 for (const q of ghQueries) {
-  const q1 = sanitizeGithubQuery(q, ghUserText);
+  // ✅ 질문형/장문을 1회 더 압축해서 GitHub repo search recall 확보
+  const q0 =
+    (typeof __cleanGithubSearchQuery === "function")
+      ? __cleanGithubSearchQuery(q)
+      : String(q || "").trim();
+
+  const q1 = sanitizeGithubQuery(q0 || q, ghUserText);
   if (!q1) continue;
 
   // engine_queries.github (있을 때만 push + 중복 방지)
