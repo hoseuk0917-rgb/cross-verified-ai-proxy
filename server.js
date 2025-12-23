@@ -5172,15 +5172,69 @@ const rawQ = String(q ?? "").trim();
 const q2 = ctx?.skipSanitize ? rawQ : sanitizeGithubQuery(rawQ, userText);
 if (!q2) return [];
 
-  const url = "https://api.github.com/search/repositories";
+    const url = "https://api.github.com/search/repositories";
+
+  // ✅ GitHub repo search query 정규화:
+  // - 질문문 그대로 넣으면 0건 뜨는 케이스가 많아서 (how to use ... ?) → 핵심 토큰만 남김
+  // - 너무 공격적으로 줄이지 않고, 최소 2토큰은 유지
+  const __normalizeGithubRepoQuery = (q) => {
+    const s0 = String(q || "").trim().toLowerCase();
+    if (!s0) return "";
+
+    // 기호 제거/공백 정리
+    const cleaned = s0
+      .replace(/[`~!@#$%^&*()_+\-={}\[\]|\\:;"'<>,.?/]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const stop = new Set([
+      "how","to","use","using","in","on","for","with","without","from",
+      "a","an","the","and","or","of","is","are","was","were","be","been","being",
+      "please","help","example","examples","tutorial","guide","getting","start","starter",
+      "node","nodejs","express","next","react","vue","angular"
+    ]);
+
+    // 핵심 토큰 뽑기
+    const tokens = cleaned
+      .split(" ")
+      .map((t) => t.trim())
+      .filter(Boolean);
+
+    // express/node 같은 핵심은 “살려두는” 방향 (단, stop에 넣어둔 핵심들도 필요하면 다시 살림)
+    const keepAlways = new Set(["express", "node", "nodejs", "koa", "nestjs", "fastify", "hapi"]);
+
+    let core = tokens.filter((t) => (t.length >= 3 && !stop.has(t)) || keepAlways.has(t));
+
+    // 너무 줄어들면(= stop 제거로 텅 비면) 원본에서 길이>=3만이라도 유지
+    if (core.length < 2) {
+      core = tokens.filter((t) => t.length >= 3);
+    }
+
+    // 그래도 비면 원문 반환
+    const qCore = core.length ? core.slice(0, 6).join(" ") : cleaned;
+
+    // repo 검색 범위를 넓히기 위해 in:name,description,readme 추가
+    // (qualifier는 토큰에 섞여도 GitHub search가 잘 처리함)
+    return `${qCore} in:name,description,readme`.trim();
+  };
 
   const run = async (pageNo) => {
+    const qNorm = __normalizeGithubRepoQuery(q2);
+
+    // ✅ GitHub API는 UA가 있으면 안정적 (axios 기본 UA가 있어도 명시해둠)
+    const h2 = {
+      ...(headers || {}),
+      "User-Agent": (headers && (headers["User-Agent"] || headers["user-agent"])) || "cross-verified-ai-proxy",
+      "Accept": (headers && (headers["Accept"] || headers["accept"])) || "application/vnd.github+json",
+    };
+
     const resp = await axios.get(url, {
-      headers,
-      params: { q: q2, per_page: perPage, page: pageNo },
+      headers: h2,
+      params: { q: qNorm || q2, per_page: perPage, page: pageNo },
       timeout: HTTP_TIMEOUT_MS,
       signal,
     });
+
     return Array.isArray(resp?.data?.items) ? resp.data.items : [];
   };
 
@@ -5209,19 +5263,51 @@ if (!q2) return [];
       items = await run(2);
     }
   } catch (e) {
-    const s = e?.response?.status;
+    const s = e?.response?.status ?? null;
+    const msg = String(e?.response?.data?.message || e?.message || "");
+    const h = e?.response?.headers || {};
+
+    const rlRemain = h["x-ratelimit-remaining"] ?? h["X-RateLimit-Remaining"];
+    const rlReset  = h["x-ratelimit-reset"] ?? h["X-RateLimit-Reset"]; // epoch sec
+    const ra       = h["retry-after"] ?? h["Retry-After"]; // sec (있을 때만)
+
+    const isRateLimit =
+      (s === 403 || s === 429) &&
+      (
+        /rate limit/i.test(msg) ||
+        String(rlRemain ?? "") === "0" ||
+        ra != null
+      );
+
+    // ✅ rate limit은 auth error로 취급하지 말고 429로 올려서 원인/복구가 보이게
+    if (isRateLimit) {
+      const err = new Error("GITHUB_RATE_LIMIT");
+      err.code = "GITHUB_RATE_LIMIT";
+      err.httpStatus = 429;
+      err.detail = {
+        status: s,
+        message: msg,
+        rate_limit_remaining: rlRemain ?? null,
+        rate_limit_reset: rlReset ?? null,
+        retry_after_sec: ra ?? null,
+      };
+      err.publicMessage =
+        "GitHub Search API rate limit(403/429)에 걸렸습니다. Render 환경에서는 공유 IP 때문에 자주 발생합니다. " +
+        "해결: Render 환경변수에 GITHUB_TOKEN(또는 GH_TOKEN)을 설정해 인증 호출로 전환하세요.";
+      err._fatal = true;
+      throw err;
+    }
 
     // ✅ 토큰 불량/만료/권한없음 → 치명 오류로 중단
     if (s === 401 || s === 403) {
       const err = new Error("GITHUB_AUTH_ERROR");
       err.code = "GITHUB_AUTH_ERROR";
       err.httpStatus = 401;
-      err.detail = { status: s };
+      err.detail = { status: s, message: msg };
       err.publicMessage = "GitHub token 인증에 실패했습니다. (토큰 만료/권한/형식 확인)";
       err._fatal = true;
       throw err;
     }
-
     throw e;
   }
 
