@@ -11301,9 +11301,8 @@ if (naverPool.length > 0) {
   } catch (_) {}
   }
 
-  case "dv":
-  case "cv": {
-        engines.push("github");
+    case "dv": {
+    engines.push("github");
     external.github = [];
 
     // ✅ GitHub 결과 누적: 중복 방지 + 상한(cap)
@@ -11331,13 +11330,10 @@ if (naverPool.length > 0) {
       }
     }
 
-    const answerText =
-  (safeMode === "cv" && user_answer && user_answer.trim().length > 0)
-    ? user_answer
-    : query;
+    const answerText = query;
 
-// ✅ GitHub 관련 로직에서 항상 쓰는 텍스트(= TDZ 방지)
-ghUserText = String(query || "").trim();
+    // ✅ GitHub 관련 로직에서 항상 쓰는 텍스트(= TDZ 방지)
+    ghUserText = String(query || "").trim();
 
 // ✅ S-17 cache key (only QV/FV) — must be defined before cache get/set
 // - __cacheKey is declared once near rawMode (var). Here we only assign.
@@ -14679,17 +14675,37 @@ var truthscore_01 = __truthscore_01_raw; // ✅ smoothing에서 참조/대입할
       partial_scores.engines_requested.length > 0)
       ? partial_scores.engines_requested
       : (Array.isArray(engines) ? engines : []),
-  engines_used: (Array.isArray(partial_scores.engines_used)
-    ? partial_scores.engines_used
-    : (Array.isArray(partial_scores.engines_used_pre) ? partial_scores.engines_used_pre : [])),
+    engines_used: (
+    (Array.isArray(partial_scores.engines_used) && partial_scores.engines_used.length > 0)
+      ? partial_scores.engines_used
+      : (
+          (Array.isArray(partial_scores.engines_used_pre) && partial_scores.engines_used_pre.length > 0)
+            ? partial_scores.engines_used_pre
+            : (Array.isArray(engines) ? engines : [])
+        )
+  ),
 
-  engines_excluded: (Array.isArray(partial_scores.engines_excluded)
-    ? partial_scores.engines_excluded
-    : (Array.isArray(partial_scores.engines_requested)
-        ? partial_scores.engines_requested.filter(x => x && !(Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : []).includes(x))
-        : (partial_scores.engines_excluded_pre && typeof partial_scores.engines_excluded_pre === "object"
-            ? Object.keys(partial_scores.engines_excluded_pre)
-            : []))),
+  engines_excluded: (
+    (Array.isArray(partial_scores.engines_excluded) && partial_scores.engines_excluded.length > 0)
+      ? partial_scores.engines_excluded
+      : (
+          (Array.isArray(partial_scores.engines_requested) && partial_scores.engines_requested.length > 0)
+            ? partial_scores.engines_requested.filter(x => x && !(
+                (
+                  (Array.isArray(partial_scores.engines_used) && partial_scores.engines_used.length > 0)
+                    ? partial_scores.engines_used
+                    : (
+                        (Array.isArray(partial_scores.engines_used_pre) && partial_scores.engines_used_pre.length > 0)
+                          ? partial_scores.engines_used_pre
+                          : (Array.isArray(engines) ? engines : [])
+                      )
+                ).includes(x)
+              ))
+            : (partial_scores.engines_excluded_pre && typeof partial_scores.engines_excluded_pre === "object"
+                ? Object.keys(partial_scores.engines_excluded_pre)
+                : [])
+        )
+  ),
 
   partial_scores: normalizedPartial,
 
