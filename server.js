@@ -14465,7 +14465,7 @@ await supabase.from("verification_logs").insert([
       // - soft_penalty_factor 곱감점은 (B)에서 1회만 수행
 
       const __truthscore_01_raw = (() => {
-  // 1) Gemini verify 결과의 overall raw(가장 신뢰할 1순위)
+  // 1) Gemini/Groq verify 결과의 overall raw(가장 신뢰할 1순위)
   const v0 = verifyMeta?.overall?.overall_truthscore_raw;
   if (typeof v0 === "number" && Number.isFinite(v0)) return Number(v0);
 
@@ -14473,15 +14473,26 @@ await supabase.from("verification_logs").insert([
   const v1 = verifyMeta?.overall?.overall_truthscore;
   if (typeof v1 === "number" && Number.isFinite(v1)) return Number(v1);
 
-  // 3) 레거시/안전망 (있으면 사용)
   try {
     if (typeof truthscore_01_raw === "number" && Number.isFinite(truthscore_01_raw)) {
       return Number(truthscore_01_raw);
     }
   } catch (_) {}
 
+  // 3) 서버가 직접 기록한 raw (있으면 우선)
   const v2 = partial_scores?.truthscore_01_raw;
   if (typeof v2 === "number" && Number.isFinite(v2)) return Number(v2);
+
+  // ✅ DV/CV: LLM stage가 스킵된 경우(verifyMeta 없음) hybrid로 폴백
+  try {
+    const m = String(safeMode || "").toLowerCase().trim();
+    if (m === "dv" || m === "cv") {
+      if (typeof hybrid === "number" && Number.isFinite(hybrid)) return Number(hybrid);
+
+      const h2 = partial_scores?.hybrid;
+      if (typeof h2 === "number" && Number.isFinite(h2)) return Number(h2);
+    }
+  } catch (_) {}
 
   return 0;
 })();
