@@ -14187,12 +14187,14 @@ const verifyModelCandidates = [
 }
 
 verifyRawJson = ""; // ✅ reset (declared at handler-scope)
+verifyRawJsonSanitized = ""; // ✅ reset (pretty JSON for logs / response)
 
 // ✅ 끝까지 실패했으면 기존 정책대로: verifyMeta 없이 외부엔진 기반으로만 진행
 if (!verify || !String(verify).trim()) {
   verifyMeta = null;
   __irrelevant_urls = [];
   verifyRawJson = ""; // ✅ NEW
+  verifyRawJsonSanitized = ""; // ✅ NEW
   if (DEBUG) console.warn("⚠️ verify failed on all models:", lastVerifyErr?.message || "unknown");
 } else {
   // ✅ JSON만 뽑아내기(코드펜스/잡문 있어도 최대한 복구)
@@ -15208,7 +15210,10 @@ var truthscore_01 = __truthscore_01_raw; // ✅ smoothing에서 참조/대입할
 
   flash_summary: flash,
 verify_raw: verifyRawJson,
-verify_raw_sanitized: verifyRawJsonSanitized || null,
+verify_raw_sanitized:
+  (typeof verifyRawJsonSanitized === "string" && verifyRawJsonSanitized.trim())
+    ? verifyRawJsonSanitized
+    : null,
 gemini_verify_model: verifyModelUsed,
   engine_times: engineTimes,
   engine_metrics: engineMetrics,
