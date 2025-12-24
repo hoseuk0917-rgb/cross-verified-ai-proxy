@@ -5384,6 +5384,13 @@ function isRelevantGithubRepo(r) {
   return true;
 }
 
+// ✅ ADD: DV/CV 전용 relevance 함수가 스코프에 없을 때를 위한 안전 alias
+// - DV/CV 블록 안에서 const isRelevantGithubRepoDV(...)를 따로 선언하면 그게 우선(shadowing)
+// - 선언이 누락/스코프 밖이면 여기 전역 alias가 동작해서 500 방지
+function isRelevantGithubRepoDV(r) {
+  return isRelevantGithubRepo(r);
+}
+
 // ─────────────────────────────
 // ✅ Gemini 호출 공통 유틸 (빈문자 방지 + 원인 로그 + fallback 지원용)
 // ─────────────────────────────
