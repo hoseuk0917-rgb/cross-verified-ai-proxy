@@ -9887,7 +9887,7 @@ if (__needGeminiKey) {
 switch (safeMode) {
   case "qv":
   case "fv": {
-        // ✅ 요청 engines가 있으면 "실제 실행 엔진"을 그걸로 제한
+            // ✅ 요청 engines가 있으면 "실제 실행 엔진"을 그걸로 제한
     const __normEng = (x) => String(x || "").trim().toLowerCase();
 
     // ✅ engines 입력 허용 형태:
@@ -9940,7 +9940,19 @@ switch (safeMode) {
       } catch (_) {}
     }
 
+    // ✅ IMPORTANT: engines 배열이 이미 기본값/플랜으로 채워져 있을 수 있으므로,
+    //    qv/fv에서는 여기서 "실제 실행 엔진"을 확정(초기화 후 주입)한다.
+    try {
+      if (Array.isArray(engines)) engines.length = 0;
+    } catch (_) {}
+
     engines.push(...__final);
+
+    try {
+      if (partial_scores && typeof partial_scores === "object") {
+        partial_scores.engines_effective = __final.slice();
+      }
+    } catch (_) {}
 
     // ✅ qv/fv + legal-ish면 klaw “추가 엔진”으로 1회 실행
     // - 요청 engines가 있으면, 거기에 klaw가 포함된 경우에만 실행
