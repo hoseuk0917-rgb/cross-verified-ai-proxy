@@ -7291,13 +7291,83 @@ async function preprocessQVFVOneShot({
 
    const __normalizeParsed = (parsedObj, meta) => {
     const answer_ko0 = String(parsedObj?.answer_ko || "").trim();
-    const korean_core0 = String(parsedObj?.korean_core || "").trim() || normalizeKoreanQuestion(baseCore);
-    const english_core0 = String(parsedObj?.english_core || "").trim() || String(query || "").trim();
+const korean_core0 = String(parsedObj?.korean_core || "").trim() || normalizeKoreanQuestion(baseCore);
+const english_core0 = String(parsedObj?.english_core || "").trim() || String(query || "").trim();
 
-    // ─────────────────────────────
-    // router_plan normalize (preprocess output)
-    // ─────────────────────────────
-    const __normalizePreRouterPlan = (rpRaw) => {
+// ✅ (server-side) naver query safety net: numeric/pop official seeds + "+" sanitize
+const __baseForDetect = String(query || userIntentQ || baseCore || "").trim();
+const __isPop = /(인구|총인구|주민등록인구|장래인구추계|인구추계)/i.test(__baseForDetect);
+const __isNumericLike =
+  /\d/.test(__baseForDetect) ||
+  /(인구|명|금액|원|달러|USD|KRW|비율|퍼센트|%|수치|규모|GDP|성장률|물가|인플레이션|실업률|환율|통계|추계|집계)/i.test(__baseForDetect);
+
+const __year = (() => {
+  const m = __baseForDetect.match(/\b(19|20)\d{2}\b/);
+  return m ? m[0] : "";
+})();
+
+const __cleanNaverQ = (s) => {
+  let t = String(s || "").trim();
+
+  // prohibit literal '+' (will become %2B after encodeURIComponent)
+  t = t.replace(/[+]/g, " ");
+
+  // optional: 괄호/따옴표 최소 정리
+  t = t.replace(/[()"'`]/g, " ");
+
+  t = t.replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  return t.length <= 30 ? t : t.slice(0, 30).trim();
+};
+
+const __dedupeNaver = (arr) => {
+  const seen = new Set();
+  const out = [];
+  for (const it of (arr || [])) {
+    const s = __cleanNaverQ(it);
+    if (!s) continue;
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out;
+};
+
+const __mkYearNaverQ = (seed) => {
+  const s = __cleanNaverQ(seed);
+  if (!s) return "";
+  const y = String(__year || "").trim();
+  if (y) {
+    const cand1 = __cleanNaverQ(`${y} ${s}`);
+    if (cand1) return cand1;
+  }
+  return s;
+};
+
+const __officialNaverSeedsRaw = __isPop
+  ? [
+      "KOSIS DT_1BPA002 총인구",
+      "통계청 장래인구추계 총인구",
+      "주민등록인구 mois",
+      "KOSIS 인구 통계표",
+    ]
+  : (__isNumericLike
+      ? [
+          "KOSIS 통계표",
+          "통계청 통계",
+        ]
+      : []);
+
+const __officialNaverSeeds =
+  __officialNaverSeedsRaw.length
+    ? __dedupeNaver(__officialNaverSeedsRaw.map(__mkYearNaverQ))
+    : [];
+
+// ─────────────────────────────
+// router_plan normalize (preprocess output)
+// ─────────────────────────────
+const __normalizePreRouterPlan = (rpRaw) => {
       try {
         const m0 = String(mode || "").toLowerCase().trim();
         const hasSnippetClaim = String(baseCore || "").trim().length >= 20;
@@ -7383,18 +7453,22 @@ async function preprocessQVFVOneShot({
         const gdeltQ    = limitChars(eq.gdelt   || english_core0, 120);
 
         let naverArr = Array.isArray(eq.naver)
-          ? eq.naver
-          : (typeof eq.naver === "string" ? [eq.naver] : []);
+  ? eq.naver
+  : (typeof eq.naver === "string" ? [eq.naver] : []);
 
-        naverArr = naverArr
-          .map((s) => limitChars(buildNaverAndQuery(s), 30))
-          .filter(Boolean)
-          .slice(0, BLOCK_NAVER_MAX_QUERIES);
+naverArr = __dedupeNaver(naverArr);
 
-        if (naverArr.length === 0) {
-          const seed = String(b?.text || "").trim() || korean_core0;
-          naverArr = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
-        }
+if (naverArr.length === 0) {
+  const seed = String(b?.text || "").trim() || korean_core0;
+  naverArr = __dedupeNaver(fallbackNaverQueryFromText(seed));
+}
+
+// ✅ official seeds prepend (esp. numeric/pop questions) + cap
+if (__officialNaverSeeds.length) {
+  naverArr = __dedupeNaver([ ...__officialNaverSeeds, ...naverArr ]);
+}
+
+naverArr = naverArr.slice(0, BLOCK_NAVER_MAX_QUERIES);
 
         const text = clipBlockText(String(b?.text || "").trim(), 260);
 
