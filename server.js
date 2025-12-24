@@ -11792,7 +11792,6 @@ if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(query)) {
 
     // ✅ GitHub 쿼리 생성 (Gemini) + (B안) 1-call 분류: 비코드면 sentinel로 종료
 const t_q = Date.now();
-const t_q = Date.now();
 
 const __ghQB = {};
 const ghQueriesRaw = await buildGithubQueriesFromGemini(
