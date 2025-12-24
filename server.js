@@ -11420,6 +11420,9 @@ try {
 // ✅ “쿼리 없으면 제외” + “calls 없으면 제외” + “results 0이면 제외”
 // ✅ 요청 body.engines(또는 engines_requested/enginesRequested)가 있으면 그걸 우선 반영
 const enginesRequested = (() => {
+  // ✅ DV/CV는 GitHub 전용(뉴스/논문 엔진 오용 방지)
+  if (safeMode === "dv" || safeMode === "cv") return ["github"];
+
   const raw =
     (req && req.body && typeof req.body === "object")
       ? (req.body.engines ?? req.body.engines_requested ?? req.body.enginesRequested)
@@ -11488,6 +11491,7 @@ partial_scores.engine_exclusion_reasons_pre = Object.fromEntries(
   naver: external.naver,
   crossref: external.crossref,
   openalex: external.openalex,
+  github: external.github,
 });
 partial_scores.recency = rec.overall;
 partial_scores.recency_detail = rec.detail;
