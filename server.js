@@ -9887,12 +9887,30 @@ if (__needGeminiKey) {
 switch (safeMode) {
   case "qv":
   case "fv": {
-    // ✅ 요청 engines가 있으면 "실제 실행 엔진"을 그걸로 제한
+        // ✅ 요청 engines가 있으면 "실제 실행 엔진"을 그걸로 제한
     const __normEng = (x) => String(x || "").trim().toLowerCase();
-    const __reqArrRaw =
-      Array.isArray(req?.body?.engines) ? req.body.engines
-      : (Array.isArray(req?.body?.engines_requested) ? req.body.engines_requested
-        : (Array.isArray(req?.body?.enginesRequested) ? req.body.enginesRequested : null));
+
+    // ✅ engines 입력 허용 형태:
+    //   - engines: ["crossref","openalex"]
+    //   - engines: "crossref" 또는 "crossref,openalex"
+    //   - engines_requested / enginesRequested 도 동일 지원
+    const __rawEng =
+      (req && req.body && typeof req.body === "object")
+        ? (req.body.engines ?? req.body.engines_requested ?? req.body.enginesRequested)
+        : null;
+
+    let __reqArrRaw = null;
+    if (Array.isArray(__rawEng)) {
+      __reqArrRaw = __rawEng;
+    } else if (typeof __rawEng === "string") {
+      const s = __rawEng.trim();
+      if (s) {
+        __reqArrRaw = s
+          .split(/[,\s]+/g)
+          .map((x) => x.trim())
+          .filter(Boolean);
+      }
+    }
 
     const __reqSet = new Set(
       Array.isArray(__reqArrRaw) ? __reqArrRaw.map(__normEng).filter(Boolean) : []
@@ -9905,6 +9923,22 @@ switch (safeMode) {
     const __final = (__reqSet.size > 0)
       ? __defaults.filter((e) => __reqSet.has(e))
       : __defaults.slice();
+
+    // ✅ 요청이 있었는데 기본 엔진셋에 하나도 매칭 안 되면 "아무것도 실행하지 않음"
+    // (기본값으로 다시 전체 실행되는 사고 방지)
+    if (__reqSet.size > 0 && __final.length === 0) {
+      try {
+        if (partial_scores && typeof partial_scores === "object") {
+          partial_scores.engines_filter_warning = {
+            requested_raw: __rawEng,
+            requested_norm: Array.from(__reqSet),
+            allowed_defaults: __defaults.slice(),
+            final: [],
+            reason: "no_matching_engine_in_defaults",
+          };
+        }
+      } catch (_) {}
+    }
 
     engines.push(...__final);
 
