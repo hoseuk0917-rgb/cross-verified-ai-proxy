@@ -1439,17 +1439,28 @@ function safeVerifyInputForGemini(input, maxLen) {
   const cutArr = (v, n) => (Array.isArray(v) ? v.slice(0, n) : []);
 
   const pickUrl = (x) => {
-    if (!x || typeof x !== "object") return null;
-    return String(
-      x.source_url ||
-      x.url ||
-      x.link ||
-      x.href ||
-      x.naver_url ||
-      x.permalink ||
-      ""
-    ).trim() || null;
-  };
+  if (!x || typeof x !== "object") return null;
+
+  const cand =
+    x.source_url ??
+    x.url ??
+    x.link ??
+    x.href ??
+    x.naver_url ??
+    x.permalink ??
+    null;
+
+  // ✅ 문자열 URL만 허용 (함수/객체/String.prototype.link 방지)
+  if (typeof cand !== "string") return null;
+
+  const u = cand.trim();
+  if (!u) return null;
+
+  // ✅ "function link() { [native code] }" 같은 문자열 방지
+  if (/^function\s+link\s*\(/i.test(u) || /\[native code\]/i.test(u)) return null;
+
+  return u;
+};
 
   const hostFromUrl = (u) => {
     try { return u ? (new URL(u)).hostname : null; } catch { return null; }
@@ -11676,59 +11687,94 @@ try {
   };
 
   const __digestTop = (arr, K, engine) => {
-    if (!Array.isArray(arr) || !arr.length) return [];
+  if (!Array.isArray(arr) || !arr.length) return [];
 
-    const out = [];
-    for (const it of arr) {
-      const title0 = __pickTitleAny(it);
-      const link0 = __pickLinkAny(it);
+  const __sanitizeUrl = (v) => {
+    if (typeof v !== "string") return null;
+    let s = v.trim();
+    if (!s) return null;
 
-      // url은 최대한 pickUrl까지 동원해서 채움
-      let url0 = link0 || null;
-      try {
-        if (!url0 && typeof pickUrl === "function") url0 = pickUrl(it) || null;
-      } catch {}
+    // ✅ String.prototype.link 누수(= native code 함수 문자열) 방지
+    if (/^\s*function\s+link\s*\(/i.test(s) || /\[native code\]/i.test(s)) return null;
 
-      const host0 =
-        (it && typeof it === "object" && (it.host || it.hostname)) ||
-        __hostFrom(url0);
+    // ✅ 따옴표/뒤쪽 구두점 약간 정리
+    s = s.replace(/^["'`]+|["'`]+$/g, "").trim();
+    s = s.replace(/[)\].,;]+$/g, "").trim();
+    if (!s) return null;
 
-      const date0 = __pickDateAny(it);
-
-      const row = {
-        title: title0 || null,
-        // ✅ UI 호환: link 우선(없으면 url)
-        link: link0 || url0 || null,
-        date: date0 || null,
-      };
-
-      // ✅ 추가 호환/정보: url/host
-      if (url0 && row.link !== url0) row.url = url0;
-      if (host0) row.host = host0;
-
-      // ✅ naver 메타(있으면 포함)
-      if (engine === "naver" && it && typeof it === "object") {
-        if (it.tier != null) row.tier = it.tier;
-        if (it.naver_type) row.naver_type = it.naver_type;
-      }
-
-      // null/빈값 제거
-      for (const k of Object.keys(row)) {
-        if (row[k] == null || row[k] === "") delete row[k];
-      }
-
-      if (row.title || row.link || row.url) out.push(row);
-      if (out.length >= K) break;
+    // ✅ URL만 허용(doi는 url로 변환)
+    if (/^https?:\/\//i.test(s)) return s;
+    if (/^doi:\s*/i.test(s)) {
+      const doi = s.replace(/^doi:\s*/i, "").trim();
+      return doi ? `https://doi.org/${doi}` : null;
     }
+    if (/^10\.\d{4,9}\/\S+/i.test(s)) return `https://doi.org/${s}`;
 
-    return out;
+    return null;
   };
 
-    const __TOPK = Math.max(1, Number(process.env.BLOCK_EVIDENCE_TOPK || 3));
-  const __NAVER_TOPK = Math.max(
-    1,
-    Number(process.env.BLOCK_NAVER_EVIDENCE_TOPK || __TOPK)
-  );
+  const out = [];
+  for (const it of arr) {
+    // ✅ string 아이템은 object처럼 다루지 않는다 (여기서 .link 접근 방지)
+    if (typeof it === "string") {
+      const u = __sanitizeUrl(it);
+      const host0 = __hostFrom(u);
+      const row = {};
+      if (u) row.link = u;
+      else row.title = it.length > 180 ? it.slice(0, 180) : it;
+      if (host0) row.host = host0;
+      if (row.title || row.link) out.push(row);
+      if (out.length >= K) break;
+      continue;
+    }
+
+    const title0 = __pickTitleAny(it);
+
+    const link0raw = __pickLinkAny(it);
+    const link0 = __sanitizeUrl(link0raw);
+
+    // url은 최대한 pickUrl까지 동원해서 채움 (단, object에만)
+    let url0 = link0 || null;
+    try {
+      if (!url0 && it && typeof it === "object" && typeof pickUrl === "function") {
+        url0 = __sanitizeUrl(pickUrl(it) || null);
+      }
+    } catch {}
+
+    const host0 =
+      (it && typeof it === "object" && (it.host || it.hostname)) ||
+      __hostFrom(url0);
+
+    const date0 = __pickDateAny(it);
+
+    const row = {
+      title: title0 || null,
+      // ✅ UI 호환: link 우선(없으면 url)
+      link: link0 || url0 || null,
+      date: date0 || null,
+    };
+
+    // ✅ 추가 호환/정보: url/host
+    if (url0 && row.link !== url0) row.url = url0;
+    if (host0) row.host = host0;
+
+    // ✅ naver 메타(있으면 포함)
+    if (engine === "naver" && it && typeof it === "object") {
+      if (it.tier != null) row.tier = it.tier;
+      if (it.naver_type) row.naver_type = it.naver_type;
+    }
+
+    // null/빈값 제거
+    for (const k of Object.keys(row)) {
+      if (row[k] == null || row[k] === "") delete row[k];
+    }
+
+    if (row.title || row.link || row.url) out.push(row);
+    if (out.length >= K) break;
+  }
+
+  return out;
+};
 
   partial_scores.evidence_digest = {
     totals: {
