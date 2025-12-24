@@ -11601,24 +11601,50 @@ try {
   };
 
   const __pickLinkAny = (x) => {
-    try {
-      if (typeof _pickLink === "function") return _pickLink(x);
-    } catch {}
-    if (x == null) return null;
-    if (typeof x === "string") return null;
-    if (typeof x !== "object") return null;
-    // 흔한 후보들
-    return (
-      x.link ||
-      x.url ||
-      x.html_url ||
-      x.source_url ||
-      x.originallink ||
-      x.doi_url ||
-      x.doi ||
-      null
-    );
-  };
+  // 1) 기존 _pickLink가 있으면 쓰되, "문자열 URL"만 허용
+  try {
+    if (typeof _pickLink === "function") {
+      const v = _pickLink(x);
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+  } catch {}
+
+  if (x == null) return null;
+
+  // string이면 링크로 취급하지 않음(대부분 title/doi/키워드일 가능성)
+  if (typeof x === "string") return null;
+
+  // 함수/기타 타입 방어
+  if (typeof x !== "object") return null;
+
+  // 2) 흔한 후보들 (문자열만)
+  const cand =
+    x.link ||
+    x.url ||
+    x.URL ||          // ✅ crossref
+    x.html_url ||
+    x.source_url ||
+    x.originallink ||
+    x.doi_url ||
+    x.doi ||
+    x.id ||
+    null;
+
+  if (typeof cand === "string" && cand.trim()) return cand.trim();
+
+  // 3) 배열 형태 방어 (예: link: [{URL:...}] 같은 케이스)
+  if (Array.isArray(cand) && cand.length > 0) {
+    const first = cand[0];
+    if (typeof first === "string" && first.trim()) return first.trim();
+    if (first && typeof first === "object") {
+      const u = first.URL || first.url || first.link || first.href || null;
+      if (typeof u === "string" && u.trim()) return u.trim();
+    }
+  }
+
+  // 4) link 자체가 함수/객체일 때(지금 네 로그 케이스) → null 처리
+  return null;
+};
 
   const __pickDateAny = (x) => {
     try {
@@ -14841,7 +14867,11 @@ const enginesUsed = Array.from(enginesUsedSet).filter((e) => e && e !== "klaw");
 
 // helper: evidence-like item 판정(엔진별 스키마가 달라도 최대한 안전하게)
 function __isEvidenceLikeItem(x) {
-  if (!x || typeof x !== "object") return false;
+  // ✅ 일부 엔진/변환 단계에서 string evidence가 올 수 있음
+  if (typeof x === "string") return x.trim().length > 0;
+
+  // 함수/기타 타입 방어
+  if (!x || (typeof x !== "object")) return false;
 
   // 명시적으로 버려진/제외된 것들은 제외
   if (x.pruned === true) return false;
@@ -14849,15 +14879,27 @@ function __isEvidenceLikeItem(x) {
   if (x.irrelevant === true) return false;
   if (x.discarded === true) return false;
 
-  const url = String(x.url || x.link || x.source_url || x.sourceUrl || x.href || "").trim();
-  const host = String(x.host || x.source_host || x.sourceHost || x.domain || "").trim();
-  const title = String(x.title || x.source_title || x.name || "").trim();
+  // ✅ URL/DOI 대문자 필드 포함 (crossref/openalex 호환)
+  const url = String(
+    x.url || x.URL || x.link || x.source_url || x.sourceUrl || x.href || ""
+  ).trim();
+
+  const host = String(
+    x.host || x.source_host || x.sourceHost || x.domain || ""
+  ).trim();
+
+  const title = String(
+    x.title || x.source_title || x.name || x.display_name || x.label || ""
+  ).trim();
+
   const text = String(
     x.snippet || x.summary || x.text || x.evidence_text || x.evidenceText || ""
   ).trim();
 
-  // ✅ NEW: academic 엔진(논문/레코드)에서 URL/host가 없어도 DOI/ID만 있는 경우가 많음
-  const doi = String(x.doi || x.DOI || x.doi_url || x.doiUrl || "").trim();
+  const doi = String(
+    x.doi || x.DOI || x.doi_url || x.doiUrl || x["doi-url"] || ""
+  ).trim();
+
   const id = String(
     x.id || x.paper_id || x.paperId || x.work_id || x.workId || x.openalex_id || x.openalexId || ""
   ).trim();
