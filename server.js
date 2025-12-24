@@ -11353,8 +11353,9 @@ for (const b of __blocksInput) {
     minRelevance: NAVER_RELEVANCE_MIN,
   });
 
-    // ----- fallback: strict 필터로 0개 나오면 그래도 뭔가 채워주기 -----
-  // ✅ 변경: whitelist-only 정책을 유지한다. (비화이트리스트 전체로 fallback 금지)
+      // ----- fallback: strict 필터로 0개 나오면 그래도 뭔가 채워주기 -----
+  // ✅ 기본은 whitelist-only 유지
+  // ✅ 단, whitelist/tier가 0개일 때만 "공식처럼 보임(inferred official)"을 최소로 채워 0개를 피한다.
   if (
     (!Array.isArray(naverItemsForVerify) || naverItemsForVerify.length === 0) &&
     Array.isArray(naverItemsAll) &&
@@ -11370,13 +11371,51 @@ for (const b of __blocksInput) {
 
     const __poolBase = __poolNoNews.length ? __poolNoNews : naverItemsAll;
 
-    // display-only 제외 + whitelist/tier 있는 것만
-    const __poolPrefer = __poolBase.filter((r) => {
+    const __strict = __poolBase.filter((r) => {
       if ((r?.display_only === true) || (r?._whitelist_display_only === true)) return false;
       return !!(r?.tier || r?.whitelisted);
     });
 
-    // ✅ 여기서도 비면 그냥 빈 배열 유지 (whitelist-only)
+    let __poolPrefer = __strict;
+    let __fallbackKind = null;
+
+    // ✅ strict가 완전 0일 때만 inferred official 허용 (여전히 non-whitelist 전체 fallback은 금지)
+    if (!__poolPrefer.length) {
+      __poolPrefer = __poolBase.filter((r) => {
+        if ((r?.display_only === true) || (r?._whitelist_display_only === true)) return false;
+
+        // 1) 이미 tier/whitelisted면 OK
+        if (r?.tier || r?.whitelisted) return true;
+
+        // 2) tier_weight가 inferred-official factor 이상이면 OK
+        const tw = Number(r?.tier_weight ?? r?._tier_weight ?? r?.tierWeight ?? r?._tierWeight);
+        if (Number.isFinite(tw) && Number.isFinite(NAVER_INFERRED_OFFICIAL_FACTOR) && tw >= NAVER_INFERRED_OFFICIAL_FACTOR) {
+          return true;
+        }
+
+        // 3) hostLooksOfficial로 다시 판단(아이템에 host가 있으면)
+        const h = String(r?.source_host || r?.host || r?.domain || r?._source_host || "").trim();
+        if (h && typeof hostLooksOfficial === "function" && hostLooksOfficial(h)) return true;
+
+        return false;
+      });
+
+      if (__poolPrefer.length) __fallbackKind = "inferred_official";
+    }
+
+    try {
+      if (__fallbackKind && partial_scores && typeof partial_scores === "object") {
+        partial_scores.naver_fallback = {
+          kind: __fallbackKind,
+          pool_total: __poolBase.length,
+          strict_count: __strict.length,
+          chosen_pool_count: __poolPrefer.length,
+          topK: BLOCK_NAVER_EVIDENCE_TOPK,
+        };
+      }
+    } catch {}
+
+    // ✅ 여기서도 비면 그냥 빈 배열 유지
     naverItemsForVerify = topArr(__poolPrefer, BLOCK_NAVER_EVIDENCE_TOPK);
   }
 
