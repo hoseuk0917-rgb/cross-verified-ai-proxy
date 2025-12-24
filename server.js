@@ -11630,18 +11630,39 @@ partial_scores.engine_exclusion_reasons_pre = Object.fromEntries(
   Object.entries(enginesExcludedPre || {}).map(([k, v]) => [k, v?.reason || "excluded"])
 );
 
-    partial_scores.blocks_for_verify = blocksForVerify.map((x) => ({
-      id: x.id,
-      text: String(x.text || "").slice(0, 400),
-      queries: x.queries,
-      evidence_counts: {
-        crossref: (x.evidence?.crossref || []).length,
-        openalex: (x.evidence?.openalex || []).length,
-        wikidata: (x.evidence?.wikidata || []).length,
-        gdelt: (x.evidence?.gdelt || []).length,
-        naver: (x.evidence?.naver || []).length,
-      },
-    }));
+    try {
+  const __bfv =
+    (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
+      ? blocksForVerify
+      : [];
+
+  const __max = Math.max(
+    0,
+    Math.floor(Number(process.env.BLOCKS_FOR_VERIFY_MAX || 12))
+  );
+
+  const __use = (__max > 0) ? __bfv.slice(0, __max) : __bfv;
+
+  partial_scores.blocks_for_verify = __use.map((x) => ({
+    id: x.id,
+    text: String(x.text || "").slice(0, 400),
+    queries: x.queries,
+    evidence_counts: {
+      crossref: Array.isArray(x?.evidence?.crossref) ? x.evidence.crossref.length : 0,
+      openalex: Array.isArray(x?.evidence?.openalex) ? x.evidence.openalex.length : 0,
+      wikidata: Array.isArray(x?.evidence?.wikidata) ? x.evidence.wikidata.length : 0,
+      gdelt: Array.isArray(x?.evidence?.gdelt) ? x.evidence.gdelt.length : 0,
+      naver: Array.isArray(x?.evidence?.naver) ? x.evidence.naver.length : 0,
+    },
+  }));
+
+  partial_scores.blocks_for_verify_meta = {
+    original: __bfv.length,
+    used: __use.length,
+    truncated: (__max > 0) ? (__bfv.length > __use.length) : false,
+    cap: __max,
+  };
+} catch (_) {}
 
     const rec = calcCompositeRecency({
   mode: safeMode,
@@ -13892,12 +13913,77 @@ try {
     }
   } catch (_) {}
 
-  // 실제 호출된 엔진(=calls>0) 별도 기록
+    // 실제 호출된 엔진(=calls>0) 별도 기록
   try {
-    partial_scores.engines_called = normalizeEnginesRequested(
-      [],
-      partial_scores.engine_metrics
-    );
+    const __m =
+      (partial_scores && typeof partial_scores === "object")
+        ? partial_scores.engine_metrics
+        : null;
+
+    const __calledSet = new Set();
+
+    if (__m && typeof __m === "object") {
+      for (const [k, v] of Object.entries(__m)) {
+        const kk = __norm(k);
+        if (!kk || !__allowed.has(kk)) continue;
+
+        const callsRaw =
+          v?.calls ?? v?.call_count ?? v?.n_calls ?? v?.count ?? 0;
+
+        const calls = Number(callsRaw);
+        if (Number.isFinite(calls) && calls > 0) __calledSet.add(kk);
+      }
+    }
+
+    // fallback: engineTimes(ms) 기반(혹시 metrics에 calls가 없을 때)
+    if (__calledSet.size === 0 && engineTimes && typeof engineTimes === "object") {
+      for (const [k, ms] of Object.entries(engineTimes)) {
+        const kk = __norm(k);
+        const t = Number(ms);
+        if (!kk || !__allowed.has(kk)) continue;
+        if (Number.isFinite(t) && t > 0) __calledSet.add(kk);
+      }
+    }
+
+    try {
+  const __norm = (x) => String(x || "").trim().toLowerCase();
+  const __allowed = new Set((Array.isArray(engines) ? engines : []).map(__norm));
+  const __calledSet = new Set();
+
+  const __m =
+    (partial_scores && partial_scores.engine_metrics && typeof partial_scores.engine_metrics === "object")
+      ? partial_scores.engine_metrics
+      : ((typeof engineMetrics !== "undefined" && engineMetrics && typeof engineMetrics === "object") ? engineMetrics : {});
+
+  for (const [k, v] of Object.entries(__m || {})) {
+    const kk = __norm(k);
+    const calls = Number(v?.calls ?? v?.call_count ?? 0);
+    if (Number.isFinite(calls) && calls > 0) __calledSet.add(kk);
+  }
+
+  for (const [k, v] of Object.entries((typeof engineTimes !== "undefined" && engineTimes && typeof engineTimes === "object") ? engineTimes : {})) {
+    const kk = __norm(k);
+    const ms = Number(v);
+    if (Number.isFinite(ms) && ms > 0) __calledSet.add(kk);
+  }
+
+  const __q =
+    (partial_scores && partial_scores.engine_queries_used && typeof partial_scores.engine_queries_used === "object")
+      ? partial_scores.engine_queries_used
+      : ((typeof engineQueriesUsed !== "undefined" && engineQueriesUsed && typeof engineQueriesUsed === "object") ? engineQueriesUsed : null);
+
+  if (__q) {
+    for (const [k, arr] of Object.entries(__q)) {
+      const kk = __norm(k);
+      if (Array.isArray(arr) && arr.length > 0) __calledSet.add(kk);
+    }
+  }
+
+  const __called = [...__calledSet].filter((e) => (__allowed.size === 0) || __allowed.has(e));
+
+  partial_scores.engines_called = __called;
+  partial_scores.engines_called_source = (__called.length > 0) ? "metrics_or_times_or_queries" : "none";
+} catch (_) {}
   } catch (_) {}
 
   const __requested = partial_scores.engines_requested.slice();
@@ -13906,10 +13992,16 @@ try {
   const __reasons = {};
   const __explain = {};
 
-  const __countBlockEvidence = (engineKey) => {
-    if (!Array.isArray(blocksForVerify)) return 0;
+    const __countBlockEvidence = (engineKey) => {
+    const __bfv =
+      (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
+        ? blocksForVerify
+        : null;
+
+    if (!__bfv) return 0;
+
     let n = 0;
-    for (const b of blocksForVerify) {
+    for (const b of __bfv) {
       const arr = b?.evidence?.[engineKey];
       if (Array.isArray(arr)) n += arr.length;
     }
@@ -13917,7 +14009,7 @@ try {
   };
 
     // ✅ soft penalty/year/num miss 집계(엔진별) — QV/FV blocks evidence 기준
-  const __collectBlockSoftMeta = (engineKey) => {
+   const __collectBlockSoftMeta = (engineKey) => {
     const out = {
       items: 0,
       penalized: 0,
@@ -13926,11 +14018,17 @@ try {
       avg_penalty: null, // geometric mean
       min_penalty: null,
     };
-    if (!Array.isArray(blocksForVerify)) return out;
+
+    const __bfv =
+      (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
+        ? blocksForVerify
+        : null;
+
+    if (!__bfv) return out;
 
     let sumLog = 0;
 
-    for (const b of blocksForVerify) {
+    for (const b of __bfv) {
       const arr = b?.evidence?.[engineKey];
       if (!Array.isArray(arr) || arr.length === 0) continue;
 
@@ -14088,11 +14186,14 @@ if (enginesForCorrection.length > 0) {
   partial_scores.engine_factor_engines = [];
 }
 
-      const __blocksText =
-  (safeMode === "qv" || safeMode === "fv") &&
-  Array.isArray(blocksForVerify) &&
-  blocksForVerify.length > 0
-    ? blocksForVerify.map((b) => String(b?.text || "").trim()).filter(Boolean).join("\n")
+      const __bfvText =
+  (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
+    ? blocksForVerify
+    : [];
+
+const __blocksText =
+  (safeMode === "qv" || safeMode === "fv") && __bfvText.length > 0
+    ? __bfvText.map((b) => String(b?.text || "").trim()).filter(Boolean).join("\n")
     : "";
 
 const coreText =
