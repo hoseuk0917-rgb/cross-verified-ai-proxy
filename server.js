@@ -12632,6 +12632,9 @@ partial_scores.evidence_digest = {
 
 // ✅ 요청 body.engines(또는 engines_requested/enginesRequested)가 있으면 그걸 우선 반영
 const enginesRequestedFinalize = (() => {
+  // ✅ DV/CV는 GitHub 전용(뉴스/논문 엔진 오용 방지)
+  if (safeMode === "dv" || safeMode === "cv") return ["github"];
+
   const raw =
     (req && req.body && typeof req.body === "object")
       ? (req.body.engines ?? req.body.engines_requested ?? req.body.enginesRequested)
@@ -12641,9 +12644,11 @@ const enginesRequestedFinalize = (() => {
   if (Array.isArray(raw)) arr = raw;
   else if (typeof raw === "string") arr = raw.split(/[\s,]+/);
 
+  // normalize
   const norm = (x) => String(x || "").trim().toLowerCase();
   arr = arr.map(norm).filter(Boolean);
 
+  // allow only engines already allowed in this path (the default `engines` list)
   const allowed = new Set((Array.isArray(engines) ? engines : []).map(norm));
 
   if (arr.length > 0) {
@@ -12652,6 +12657,7 @@ const enginesRequestedFinalize = (() => {
     return filtered.length > 0 ? filtered : [...allowed];
   }
 
+  // fallback: if earlier stages already set engines_requested, respect it
   const ps =
     (partial_scores && Array.isArray(partial_scores.engines_requested))
       ? partial_scores.engines_requested.map(norm).filter(Boolean)
