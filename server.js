@@ -8374,7 +8374,13 @@ const verifyCoreHandler = async (req, res) => {
     ghUserText,
   });
 
-  let __irrelevant_urls = [];
+    let __irrelevant_urls = [];
+
+  // ✅ DV/CV GitHub curated 허용 플래그
+  // - 일부 후속 정리/필터 단계에서 DV/CV 블록 밖에서도 참조될 수 있으니
+  //   요청 스코프(핸들러 상단)에 1회만 선언해 둔다.
+  let allowCurated = false;
+
   let verifyRawJson = ""; // ✅ payload.verify_raw로 내려줄 "정제된 JSON 문자열"
   let verifyRawJsonSanitized = ""; // ✅ evidence 정합화된 verify JSON
   let logUserId = null;
@@ -11759,7 +11765,7 @@ const __cleanGithubSearchQuery = (s) => {
     "please","help","example","examples","use","using","usage","guide","tutorial","getting","start","started",
   ]);
 
-  const toks = raw
+    const toks0 = raw
     .split(" ")
     .map((w) => w.trim())
     .filter(Boolean)
@@ -11768,7 +11774,17 @@ const __cleanGithubSearchQuery = (s) => {
     .filter((w) => !stop.has(w.toLowerCase()))
     .filter((w) => w.length >= 2);
 
-  if (!toks.length) return raw;
+  if (!toks0.length) return raw;
+
+  // ✅ 같은 토큰 중복 제거(“awesome … list awesome … list” 같은 케이스 방지)
+  const toks = [];
+  const seenTok = new Set();
+  for (const w of toks0) {
+    const k = w.toLowerCase();
+    if (seenTok.has(k)) continue;
+    seenTok.add(k);
+    toks.push(w);
+  }
 
   // keep only first N tokens to avoid over-specific “sentence” queries
   const out = toks.slice(0, 8).join(" ").trim();
@@ -11791,7 +11807,23 @@ const __uniqCI = (arr, cap = 10) => {
 };
 
 const __expandGithubQueries = (arr0) => {
-  const baseText = String(`${rawQuery || ""} ${ghUserText || ""} ${answerText || ""}`).trim();
+  // ✅ baseText 중복 제거(같은 문장이 query/rawQuery/answerText/ghUserText에 반복으로 들어오는 케이스)
+  const __mergeTextUniq = (parts) => {
+    const out = [];
+    const seen = new Set();
+    for (const p of (parts || [])) {
+      const s = String(p || "").replace(/\s+/g, " ").trim();
+      if (!s) continue;
+      const k = s.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(s);
+    }
+    return out.join(" ").trim();
+  };
+
+  const baseText = __mergeTextUniq([rawQuery, ghUserText, answerText]);
+
   const kw0 = __cleanGithubSearchQuery((arr0 && arr0[0]) ? arr0[0] : baseText);
   const kw = __cleanGithubSearchQuery(baseText) || kw0;
 
@@ -11982,8 +12014,7 @@ const wantsCuratedListsFromText = (t) =>
 ghUserText = String(answerText || query || "").trim();
 const allowCuratedLists = wantsCuratedListsFromText(`${rawQuery || ""} ${answerText || ""} ${query || ""} ${ghUserText || ""}`);
 
-// ✅ ADD: allowCurated는 DV/CV 전체 흐름에서 참조될 수 있으므로 let으로 승격(스코프 이슈 방지)
-let allowCurated = false;
+// ✅ allowCurated는 요청 스코프(상단)에서 let으로 1회 선언됨 (스코프 이슈 방지)
 
 // ✅ (DV/CV 품질) GitHub repo relevance 필터 + 1회 fallback
 const githubRepoBlob = (r) => {
@@ -12066,7 +12097,7 @@ for (const q of ghQueries) {
 let r1 = Array.isArray(pack1?.result) ? pack1.result : [];
 r1 = r1.filter(isRelevantGithubRepoDV);
 
-if (!allowCurated) r1 = r1.filter(r => (allowCurated ? true : !isBigCuratedListRepo(r)));
+if (!allowCurated) r1 = r1.filter(r => !isBigCuratedListRepo(r));
 
 // 2) page 2 (page1이 "필터 후 0"이면 한 번 더)
 if (!r1.length) {
@@ -12080,7 +12111,7 @@ if (!r1.length) {
 
   let r2 = Array.isArray(pack2?.result) ? pack2.result : [];
     r2 = r2.filter(isRelevantGithubRepoDV);
-  if (!allowCurated) r2 = r2.filter(r => (allowCurated ? true : !isBigCuratedListRepo(r)));
+  if (!allowCurated) r2 = r2.filter(r => !isBigCuratedListRepo(r));
 
   if (r2.length) r1 = r2;
 }
