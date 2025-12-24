@@ -12232,10 +12232,9 @@ if (
   needExpressRateLimit
 ) {
   const extraQueries = [
-    // repositories search에서 유효한 qualifier 조합
-    `org:express-rate-limit rate-limit-redis`,
-    `"rate-limit-redis" "express-rate-limit" in:name,description,readme`,
-  ];
+  `org:express-rate-limit rate-limit-redis in:name,description,readme`,
+  `express-rate-limit rate-limit-redis in:name,description,readme`,
+];
 
   for (const q of extraQueries.slice(0, 2)) {
     // engine_queries에도 남기기(있을 때만)
@@ -12246,12 +12245,18 @@ if (
     } catch {}
 
     const { result } = await safeFetchTimed(
-      "github",
-      (qq, ctx) => fetchGitHub(qq, githubTokenFinal, { ...ctx, userText: ghUserText }),
-        sanitizeGithubQuery(q, ghUserText),
-      engineTimes,
-      engineMetrics
-    );
+  "github",
+  (qq, ctx) =>
+    fetchGitHub(qq, githubTokenFinal, {
+      ...ctx,
+      userText: ghUserText,
+      skipSanitize: true,
+      skipNormalize: true,
+    }),
+  String(q || "").trim(),
+  engineTimes,
+  engineMetrics
+);
     if (Array.isArray(result) && result.length) pushGithubRepos(result);
   }
 
