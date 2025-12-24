@@ -13709,14 +13709,42 @@ try {
     partial_scores.engines_requested = Array.isArray(engines) ? engines.slice() : [];
   }
 
+  // ✅ IMPORTANT:
+  // - engines_requested는 "사용자 요청/플랜" 의미를 유지해야 함 (calls>0 엔진을 섞지 말 것)
+  // - 실제 호출된 엔진은 engines_called 로 분리 기록
+  try {
+    const __rawEng =
+      (req && req.body && typeof req.body === "object")
+        ? (req.body.engines ?? req.body.engines_requested ?? req.body.enginesRequested)
+        : null;
+
+    const __norm = (x) => String(x || "").trim().toLowerCase();
+    const __allowed = new Set((Array.isArray(engines) ? engines : []).map(__norm));
+
+    let __explicit = [];
+    if (Array.isArray(__rawEng)) __explicit = __rawEng.map(__norm).filter(Boolean);
+    else if (typeof __rawEng === "string") __explicit = __rawEng.split(/[\s,]+/).map(__norm).filter(Boolean);
+
+    if (__explicit.length > 0) {
+      const __filtered = [...new Set(__explicit)].filter((e) => __allowed.has(e));
+      if (__filtered.length > 0) {
+        partial_scores.engines_requested = __filtered;
+        partial_scores.engines_requested_source = "request";
+      } else {
+        partial_scores.engines_requested_source = "request_invalid";
+      }
+    }
+  } catch (_) {}
+
+  // 실제 호출된 엔진(=calls>0) 별도 기록
+  try {
+    partial_scores.engines_called = normalizeEnginesRequested(
+      [],
+      partial_scores.engine_metrics
+    );
+  } catch (_) {}
+
   const __requested = partial_scores.engines_requested.slice();
-  // ✅ normalize engines_requested: include actually-called engines (calls>0)
-try {
-  partial_scores.engines_requested = normalizeEnginesRequested(
-    partial_scores.engines_requested,
-    partial_scores.engine_metrics
-  );
-} catch (_) {}
 
   const __used = [];
   const __reasons = {};
