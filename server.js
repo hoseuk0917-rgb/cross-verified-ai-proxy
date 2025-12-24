@@ -13913,77 +13913,47 @@ try {
     }
   } catch (_) {}
 
-    // 실제 호출된 엔진(=calls>0) 별도 기록
+      // 실제 호출된 엔진(=calls>0) 별도 기록
   try {
-    const __m =
-      (partial_scores && typeof partial_scores === "object")
+    const __norm2 = (x) => String(x || "").trim().toLowerCase();
+    const __allowed2 = new Set((Array.isArray(engines) ? engines : []).map(__norm2));
+
+    const __calledSet2 = new Set();
+
+    const __m2 =
+      (partial_scores && partial_scores.engine_metrics && typeof partial_scores.engine_metrics === "object")
         ? partial_scores.engine_metrics
+        : ((typeof engineMetrics !== "undefined" && engineMetrics && typeof engineMetrics === "object") ? engineMetrics : null);
+
+    if (__m2 && typeof __m2 === "object") {
+      for (const [k, v] of Object.entries(__m2)) {
+        const kk = __norm2(k);
+        if (!kk || (__allowed2.size > 0 && !__allowed2.has(kk))) continue;
+
+        const calls = Number(v?.calls ?? v?.call_count ?? v?.n_calls ?? v?.count ?? 0);
+        if (Number.isFinite(calls) && calls > 0) __calledSet2.add(kk);
+      }
+    }
+
+    const __t2 =
+      (typeof engineTimes !== "undefined" && engineTimes && typeof engineTimes === "object")
+        ? engineTimes
         : null;
 
-    const __calledSet = new Set();
+    if (__t2 && typeof __t2 === "object") {
+      for (const [k, v] of Object.entries(__t2)) {
+        const kk = __norm2(k);
+        if (!kk || (__allowed2.size > 0 && !__allowed2.has(kk))) continue;
 
-    if (__m && typeof __m === "object") {
-      for (const [k, v] of Object.entries(__m)) {
-        const kk = __norm(k);
-        if (!kk || !__allowed.has(kk)) continue;
-
-        const callsRaw =
-          v?.calls ?? v?.call_count ?? v?.n_calls ?? v?.count ?? 0;
-
-        const calls = Number(callsRaw);
-        if (Number.isFinite(calls) && calls > 0) __calledSet.add(kk);
+        const ms = Number(v);
+        if (Number.isFinite(ms) && ms > 0) __calledSet2.add(kk);
       }
     }
 
-    // fallback: engineTimes(ms) 기반(혹시 metrics에 calls가 없을 때)
-    if (__calledSet.size === 0 && engineTimes && typeof engineTimes === "object") {
-      for (const [k, ms] of Object.entries(engineTimes)) {
-        const kk = __norm(k);
-        const t = Number(ms);
-        if (!kk || !__allowed.has(kk)) continue;
-        if (Number.isFinite(t) && t > 0) __calledSet.add(kk);
-      }
-    }
+    const __called2 = [...__calledSet2].filter((e) => (__allowed2.size === 0) || __allowed2.has(e));
 
-    try {
-  const __norm = (x) => String(x || "").trim().toLowerCase();
-  const __allowed = new Set((Array.isArray(engines) ? engines : []).map(__norm));
-  const __calledSet = new Set();
-
-  const __m =
-    (partial_scores && partial_scores.engine_metrics && typeof partial_scores.engine_metrics === "object")
-      ? partial_scores.engine_metrics
-      : ((typeof engineMetrics !== "undefined" && engineMetrics && typeof engineMetrics === "object") ? engineMetrics : {});
-
-  for (const [k, v] of Object.entries(__m || {})) {
-    const kk = __norm(k);
-    const calls = Number(v?.calls ?? v?.call_count ?? 0);
-    if (Number.isFinite(calls) && calls > 0) __calledSet.add(kk);
-  }
-
-  for (const [k, v] of Object.entries((typeof engineTimes !== "undefined" && engineTimes && typeof engineTimes === "object") ? engineTimes : {})) {
-    const kk = __norm(k);
-    const ms = Number(v);
-    if (Number.isFinite(ms) && ms > 0) __calledSet.add(kk);
-  }
-
-  const __q =
-    (partial_scores && partial_scores.engine_queries_used && typeof partial_scores.engine_queries_used === "object")
-      ? partial_scores.engine_queries_used
-      : ((typeof engineQueriesUsed !== "undefined" && engineQueriesUsed && typeof engineQueriesUsed === "object") ? engineQueriesUsed : null);
-
-  if (__q) {
-    for (const [k, arr] of Object.entries(__q)) {
-      const kk = __norm(k);
-      if (Array.isArray(arr) && arr.length > 0) __calledSet.add(kk);
-    }
-  }
-
-  const __called = [...__calledSet].filter((e) => (__allowed.size === 0) || __allowed.has(e));
-
-  partial_scores.engines_called = __called;
-  partial_scores.engines_called_source = (__called.length > 0) ? "metrics_or_times_or_queries" : "none";
-} catch (_) {}
+    partial_scores.engines_called = __called2;
+    partial_scores.engines_called_source = (__called2.length > 0) ? "metrics_or_times" : "none";
   } catch (_) {}
 
   const __requested = partial_scores.engines_requested.slice();
