@@ -6157,15 +6157,47 @@ async function buildGithubQueriesFromGemini(
   query,
   user_answer,
   gemini_key,
-  userId
+  userId,
+  dbg // ✅ optional diagnostics object (caller can pass {})
 ) {
+  const __setDbg = (k, v) => {
+    try {
+      if (dbg && typeof dbg === "object") dbg[k] = v;
+    } catch {}
+  };
+
+  const __parseQueriesJson = (text) => {
+    const trimmed = (text || "").trim();
+    const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+    const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch {
+      return null;
+    }
+
+    const arr = Array.isArray(parsed.queries) ? parsed.queries : [];
+    const cleaned = arr
+      .map((s) =>
+        String(s || "")
+          .replace(/["']/g, "") // ✅ 따옴표 제거(0 results 방지)
+          .replace(/\s+/g, " ")
+          .trim()
+      )
+      .filter((s) => s.length > 0);
+
+    return cleaned;
+  };
+
   try {
-    let baseText =
+    const baseText =
       user_answer && user_answer.trim().length > 0
         ? `질문:\n${query}\n\n검증 대상 내용(요약 또는 코드):\n${user_answer}`
         : `질문:\n${query}`;
 
-        const prompt = `
+    const prompt = `
 너는 DV/CV 모드에서 "GitHub 근거 수집"을 위한 1회성 분류+쿼리 생성기다.
 
 [1] 먼저 입력이 "코드/개발" 질의인지 판정하라.
@@ -6198,6 +6230,63 @@ async function buildGithubQueriesFromGemini(
 ${baseText}
 `.trim();
 
+    // ─────────────────────────────
+    // ✅ (NEW) Groq 우선 시도 (AUTO)
+    //   - GROQ_API_KEY 있으면 먼저 Groq로 분류+쿼리 생성
+    //   - 실패/키없음이면 기존 Gemini로 fallback
+    // ─────────────────────────────
+    const groqKey = String(process.env.GROQ_API_KEY || "").trim();
+    const groqModel = String(process.env.GROQ_GITHUB_QUERY_MODEL || "llama-3.1-8b-instant").trim();
+
+    if (groqKey) {
+      const t0 = Date.now();
+      try {
+        const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${groqKey}`,
+          },
+          body: JSON.stringify({
+            model: groqModel,
+            temperature: 0,
+            max_tokens: 256,
+            messages: [{ role: "user", content: prompt }],
+          }),
+        });
+
+        const ms = Date.now() - t0;
+        __setDbg("groq_ms", ms);
+        __setDbg("provider", "groq");
+        __setDbg("model", groqModel);
+        __setDbg("http_status", resp.status);
+
+        const j = await resp.json().catch(() => null);
+        const outText = j?.choices?.[0]?.message?.content || "";
+        __setDbg("raw_len", (outText || "").length);
+
+        const parsed = __parseQueriesJson(outText);
+        if (parsed && parsed.length > 0) {
+          return parsed;
+        }
+
+        __setDbg("groq_parse_fail", true);
+        // continue to Gemini fallback
+      } catch (e) {
+        __setDbg("groq_error", String(e?.message || e));
+        // continue to Gemini fallback
+      }
+    } else {
+      __setDbg("provider", "gemini"); // default, may be overwritten below
+      __setDbg("groq_error", "GROQ_API_KEY_MISSING");
+    }
+
+    // ─────────────────────────────
+    // ✅ 기존 Gemini fallback 경로(그대로)
+    // ─────────────────────────────
+    __setDbg("provider", "gemini");
+    __setDbg("model", modelFinal || GEMINI_VERIFY_MODEL || "gemini-2.0-flash");
+
     const text = await fetchGeminiSmart({
       userId,
       gemini_key,
@@ -6206,35 +6295,15 @@ ${baseText}
       payload: { contents: [{ parts: [{ text: prompt }] }] },
     });
 
-    const trimmed = (text || "").trim();
-    const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
-    const jsonText = jsonMatch ? jsonMatch[0] : trimmed;
+    const parsed = __parseQueriesJson(text);
+    if (parsed && parsed.length > 0) return parsed;
 
-    let parsed;
-    try {
-      parsed = JSON.parse(jsonText);
-    } catch {
-      return [query];
-    }
-
-    const arr = Array.isArray(parsed.queries) ? parsed.queries : [];
-    const cleaned = arr
-  .map((s) =>
-    String(s || "")
-      .replace(/["']/g, "")           // ✅ 따옴표 제거(0 results 방지)
-      .replace(/\s+/g, " ")
-      .trim()
-  )
-  .filter((s) => s.length > 0);
-
-
-    return cleaned.length > 0 ? cleaned : [query];
+    return [query];
   } catch (e) {
     if (DEBUG) console.warn("⚠️ buildGithubQueriesFromGemini fail:", e.message);
     return [query];
   }
 }
-
 
 // ✅ engine_correction_samples: 엔진별 최근 N개만 남기기 (ID 기반 트림)
 const TRIM_BATCH = 200; // 한 번에 지울 최대 개수(안전용)
@@ -11723,9 +11792,24 @@ if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(query)) {
 
     // ✅ GitHub 쿼리 생성 (Gemini) + (B안) 1-call 분류: 비코드면 sentinel로 종료
 const t_q = Date.now();
+const t_q = Date.now();
+
+const __ghQB = {};
 const ghQueriesRaw = await buildGithubQueriesFromGemini(
-  safeMode, query, answerText, gemini_key, logUserId
+  safeMode,
+  query,
+  answerText,
+  gemini_key,
+  logUserId,
+  __ghQB
 );
+
+try {
+  if (typeof __ghDebug === "object" && __ghDebug) {
+    __ghDebug.github_query_builder = __ghQB;
+  }
+} catch {}
+
 ghUserText = String(query || "").trim();
 const ms_q = Date.now() - t_q;
 recordTime(geminiTimes, "github_query_builder_ms", ms_q);
@@ -11928,26 +12012,23 @@ if (
 
     const elapsedMs = Date.now() - start;
 
-  const suggestedMode =
-    (safeMode === "cv" && typeof user_answer === "string" && user_answer.trim().length > 0)
-      ? "fv"
-      : "qv";
+  const suggestedMode = "qv";
 
   const classifier = {
-    type: "gemini_non_code",
-    method: "buildGithubQueriesFromGemini/sentinel",
-    confidence: github_classifier.confidence,
-    reason: github_classifier.reason || "gemini_classified_non_code",
-  };
+  type: "heuristic_non_code",
+  method: "github_query_sentinel",
+  confidence: github_classifier.confidence,
+  reason: github_classifier.reason || "heuristic_classified_non_code",
+};
 
   const msg =
-    `DV/CV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
-    `Gemini 분류 결과: 비코드 질의로 판단되어 DV/CV를 종료합니다.\n` +
-    (github_classifier.reason ? `사유: ${github_classifier.reason}\n` : "") +
-    (github_classifier.confidence !== null ? `confidence: ${github_classifier.confidence}\n` : "") +
-    `\n권장:\n` +
-    `- 일반 사실/통계/정책 검증이면 ${suggestedMode.toUpperCase()}로 보내세요.\n` +
-    `- DV/CV를 유지하려면 server.js/로그/에러/코드블록/레포 링크 등 "코드 근거"를 포함하세요.\n`;
+  `DV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
+  `휴리스틱 판정: 비코드 질의로 판단되어 DV를 종료합니다.\n` +
+  (github_classifier.reason ? `사유: ${github_classifier.reason}\n` : "") +
+  (github_classifier.confidence !== null ? `confidence: ${github_classifier.confidence}\n` : "") +
+  `\n권장:\n` +
+  `- 일반 사실/통계/정책 검증이면 ${suggestedMode.toUpperCase()}로 보내세요.\n` +
+  `- DV를 유지하려면 server.js/로그/에러/코드블록/레포 링크 등 "코드 근거"를 포함하세요.\n`;
 
   return res.status(200).json({
     success: true,
@@ -11988,7 +12069,7 @@ if (
           suggested_mode: suggestedMode,
           classifier,
           github_classifier,
-          note: "Non-code query rejected by Gemini classifier sentinel; no GitHub search executed.",
+          note: "Non-code query rejected by heuristic sentinel; no GitHub search executed.",
         },
         null,
         2
@@ -12041,9 +12122,9 @@ const isRelevantGithubRepoDV = (r) => {
   return true;
 };
 
-// ✅ DV/CV: GitHub 검색 실행 (Gemini가 만든 ghQueries 기반)
+// ✅ DV: GitHub 검색 실행 (ghQueries 기반)
 if (
-  (safeMode === "dv" || safeMode === "cv") &&
+  safeMode === "dv" &&
   Array.isArray(ghQueries) &&
   ghQueries.length > 0
 ) {
