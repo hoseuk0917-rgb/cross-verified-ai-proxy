@@ -6168,14 +6168,14 @@ ${JSON.stringify(githubData).slice(0, 2500)}
 {"consistency":0.0}
 `;
 
-  const text = await fetchGeminiSmart({
-  userId,                 // ???꾨옒?먯꽌 ?⑥닔 ?쒓렇?덉쿂瑜?userId 諛쏄쾶 諛붽? 嫄곕씪 ?ш린???꾩떆
-  gemini_key,
-  keyHint: gemini_key,
+    const text = await fetchGeminiSmart({
+    userId,
+    gemini_key,
+    keyHint: gemini_key,
     // ✅ pro 금지 → flash 계열만 사용 (env 단일화)
-  model: modelFinal || GEMINI_VERIFY_MODEL || "gemini-2.0-flash",
-  payload: { contents: [{ parts: [{ text: prompt }] }] },
-});
+    model: GEMINI_VERIFY_MODEL || "gemini-2.0-flash",
+    payload: { contents: [{ parts: [{ text: prompt }] }] },
+  });
 
     const trimmed = (text || "").trim();
     const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
@@ -6288,22 +6288,60 @@ ${baseText}
     //   - GROQ_API_KEY 있으면 먼저 Groq로 분류+쿼리 생성
     //   - 실패/키없음이면 기존 Gemini로 fallback
     // ─────────────────────────────
-    const groqKey = String(process.env.GROQ_API_KEY || "").trim();
+        // ─────────────────────────────
+    // ✅ (NEW) Groq 우선 시도 (AUTO)
+    //   - user_secrets(userId) 우선
+    //   - env fallback은 GROQ_ALLOW_ENV_FALLBACK=1 일 때만
+    //   - 실패/키없음이면 기존 Gemini로 fallback
+    // ─────────────────────────────
     const groqModel = String(process.env.GROQ_GITHUB_QUERY_MODEL || "llama-3.1-8b-instant").trim();
+    const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+    let groqKey = "";
+
+    try {
+      if (userId && typeof __getGroqApiKeyForUser === "function") {
+        const k1 = await __getGroqApiKeyForUser({ supabase, userId });
+        const kk1 = String(k1 || "").trim();
+        if (kk1) {
+          groqKey = kk1;
+          __setDbg("groq_key_source", "user_secrets");
+        }
+      } else {
+        if (!userId) __setDbg("groq_key_error", "USERID_MISSING");
+        else __setDbg("groq_key_error", "__getGroqApiKeyForUser_MISSING");
+      }
+    } catch (e) {
+      __setDbg("groq_key_error", String(e?.message || e || "get_user_key_failed").slice(0, 180));
+    }
+
+    if (!groqKey && __allowEnvFallback) {
+      const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+      if (envK) {
+        groqKey = envK;
+        __setDbg("groq_key_source", "env");
+      }
+    }
 
     if (groqKey) {
       const t0 = Date.now();
+      const controller = new AbortController();
+      const timeoutMs = parseInt(process.env.GROQ_GITHUB_QUERY_TIMEOUT_MS || "8000", 10);
+      const tAbort = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 8000));
+
       try {
         const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
           method: "POST",
+          signal: controller.signal,
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${groqKey}`,
+            Accept: "application/json",
           },
           body: JSON.stringify({
             model: groqModel,
             temperature: 0,
             max_tokens: 256,
+            response_format: { type: "json_object" },
             messages: [{ role: "user", content: prompt }],
           }),
         });
@@ -6328,10 +6366,12 @@ ${baseText}
       } catch (e) {
         __setDbg("groq_error", String(e?.message || e));
         // continue to Gemini fallback
+      } finally {
+        clearTimeout(tAbort);
       }
     } else {
       __setDbg("provider", "gemini"); // default, may be overwritten below
-      __setDbg("groq_error", "GROQ_API_KEY_MISSING");
+      __setDbg("groq_error", "GROQ_KEY_MISSING_FOR_GITHUB_QUERY");
     }
 
     // ─────────────────────────────
@@ -13913,13 +13953,14 @@ try {
     }
   } catch (_) {}
 
-      // 실제 호출된 엔진(=calls>0) 별도 기록
+      // 실제 호출/시도된 엔진 — calls>0 OR ms>0 OR queries_used>0
   try {
     const __norm2 = (x) => String(x || "").trim().toLowerCase();
     const __allowed2 = new Set((Array.isArray(engines) ? engines : []).map(__norm2));
 
     const __calledSet2 = new Set();
 
+    // 1) engine_metrics: calls>0
     const __m2 =
       (partial_scores && partial_scores.engine_metrics && typeof partial_scores.engine_metrics === "object")
         ? partial_scores.engine_metrics
@@ -13935,6 +13976,7 @@ try {
       }
     }
 
+    // 2) engineTimes: ms>0
     const __t2 =
       (typeof engineTimes !== "undefined" && engineTimes && typeof engineTimes === "object")
         ? engineTimes
@@ -13950,10 +13992,24 @@ try {
       }
     }
 
+    // 3) engine_queries_used: queries.length>0 (attempt/plan 흔적)
+    const __q2 =
+      (partial_scores && partial_scores.engine_queries_used && typeof partial_scores.engine_queries_used === "object")
+        ? partial_scores.engine_queries_used
+        : ((typeof engineQueriesUsed !== "undefined" && engineQueriesUsed && typeof engineQueriesUsed === "object") ? engineQueriesUsed : null);
+
+    if (__q2 && typeof __q2 === "object") {
+      for (const [k, arr] of Object.entries(__q2)) {
+        const kk = __norm2(k);
+        if (!kk || (__allowed2.size > 0 && !__allowed2.has(kk))) continue;
+        if (Array.isArray(arr) && arr.length > 0) __calledSet2.add(kk);
+      }
+    }
+
     const __called2 = [...__calledSet2].filter((e) => (__allowed2.size === 0) || __allowed2.has(e));
 
     partial_scores.engines_called = __called2;
-    partial_scores.engines_called_source = (__called2.length > 0) ? "metrics_or_times" : "none";
+    partial_scores.engines_called_source = (__called2.length > 0) ? "metrics_or_times_or_queries" : "none";
   } catch (_) {}
 
   const __requested = partial_scores.engines_requested.slice();
