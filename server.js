@@ -10671,7 +10671,9 @@ const engineQueriesUsed = {
   naver: [],
 };
 
-const blocksForVerify = [];
+// ✅ NOTE: switch-case(블록 스코프) 밖에서도 접근 가능해야 함
+// - payload.naver_results / E_eff / no_block_evidence 판정에서 blocksForVerify를 참조하는 구간이 있음
+var blocksForVerify = [];
 
 // ✅ Naver total call budget (요청 전체: 블록 합산)
 // - ⚠️ __caps 초기화 전에 접근하면 TDZ 에러가 나므로, 여기서는 선언만 해두고
