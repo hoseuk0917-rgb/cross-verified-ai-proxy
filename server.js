@@ -11560,10 +11560,10 @@ if (naverPool.length > 0) {
       }
     }
 
-    const answerText = query;
+        const answerText = query;
 
-    // ✅ GitHub 관련 로직에서 항상 쓰는 텍스트(= TDZ 방지)
-    ghUserText = String(query || "").trim();
+    // ✅ GitHub 관련 로직에서 항상 쓰는 텍스트(= TDZ/스코프 방지)
+    let ghUserText = String(query || "").trim();
 
 // ✅ S-17 cache key (only QV/FV) — must be defined before cache get/set
 // - __cacheKey is declared once near rawMode (var). Here we only assign.
@@ -12136,7 +12136,7 @@ const wantCurated =
   wantsCuratedListsFromText(rawQuery) || wantsCuratedListsFromText(ghUserText);
 
 // curated 허용 조건: 전역 allowCuratedLists 이거나, 질문/텍스트가 curated를 원할 때
-allowCurated = Boolean(allowCuratedLists || wantCurated);
+const allowCurated = Boolean(allowCuratedLists || wantCurated);
 
 // ✅ gh repo 중복 제거(여러 query/page에서 같은 repo 나오는 것 방지)
 // (이미 상단에서 ghSeen을 만들었으므로 여기서는 재선언하지 않음)
