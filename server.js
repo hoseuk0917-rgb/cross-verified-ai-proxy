@@ -12136,7 +12136,7 @@ const wantCurated =
   wantsCuratedListsFromText(rawQuery) || wantsCuratedListsFromText(ghUserText);
 
 // curated 허용 조건: 전역 allowCuratedLists 이거나, 질문/텍스트가 curated를 원할 때
-const allowCurated = Boolean(allowCuratedLists || wantCurated);
+allowCurated = Boolean(allowCuratedLists || wantCurated);
 
 // ✅ gh repo 중복 제거(여러 query/page에서 같은 repo 나오는 것 방지)
 // (이미 상단에서 ghSeen을 만들었으므로 여기서는 재선언하지 않음)
