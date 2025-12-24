@@ -11985,8 +11985,8 @@ const githubRepoBlob = (r) => {
 const needExpressRateLimitAnchor = /express-rate-limit/i.test(rawQuery);
 const needRedisAnchor = /\bredis\b/i.test(rawQuery);
 
-// 1차 relevance 판정
-const isRelevantGithubRepo = (r) => {
+// 1차 relevance 판정 (DV/CV 전용)
+const isRelevantGithubRepoDV = (r) => {
   const blob = githubRepoBlob(r);
 
   if (needExpressRateLimitAnchor) {
@@ -12054,7 +12054,7 @@ for (const q of ghQueries) {
 );
 
 let r1 = Array.isArray(pack1?.result) ? pack1.result : [];
-r1 = r1.filter(isRelevantGithubRepo);
+r1 = r1.filter(isRelevantGithubRepoDV);
 
 if (!allowCurated) r1 = r1.filter(r => !isBigCuratedListRepo(r));
 
@@ -12069,7 +12069,7 @@ if (!r1.length) {
 );
 
   let r2 = Array.isArray(pack2?.result) ? pack2.result : [];
-  r2 = r2.filter(isRelevantGithubRepo);
+    r2 = r2.filter(isRelevantGithubRepoDV);
   if (!allowCurated) r2 = r2.filter(r => !isBigCuratedListRepo(r));
 
   if (r2.length) r1 = r2;
@@ -12104,8 +12104,8 @@ const github_raw_before_filter = Array.isArray(external.github) ? [...external.g
 
 // 1차 필터
 external.github = (external.github || [])
-  .filter(isRelevantGithubRepo)
-  .filter(r => !isBigCuratedListRepo(r));
+  .filter(isRelevantGithubRepoDV)
+  .filter(r => (allowCurated ? true : !isBigCuratedListRepo(r)));
 
 // ✅ fallback 트리거(Express rate-limit 류 질의일 때만)
 const needExpressRateLimit = (() => {
@@ -12158,7 +12158,9 @@ if (
   }
 
   // fallback 후 재필터
-  external.github = (external.github || []).filter(isRelevantGithubRepo);
+  external.github = (external.github || [])
+  .filter(isRelevantGithubRepoDV)
+  .filter(r => (allowCurated ? true : !isBigCuratedListRepo(r)));
 }
 
 // ✅ GitHub 결과 정리: 중복 제거 + stars 우선 + 최신 업데이트 우선 (품질 개선)
@@ -12169,7 +12171,7 @@ external.github = (external.github || [])
     stars: Number(r?.stars ?? r?.stargazers_count ?? 0),
     updated: String(r?.updated ?? r?.updated_at ?? ""),
   }))
-  .filter(r => !isBigCuratedListRepo(r)) // ✅ 추가: curated list 제거
+    .filter(r => (allowCurated ? true : !isBigCuratedListRepo(r))) // ✅ allowCurated면 curated 유지
 
   // 중복 제거(이름 기준) — 네 로그처럼 중복(repo가 2번) 나오는 것 방지
   .filter((r, idx, arr) => {
