@@ -7044,10 +7044,13 @@ const numTokensCompact = numTokens.map(normalizeNumToken);
     const __host0 =
       String(it?.host || it?.source_host || "").toLowerCase() || __getHostFromUrl(urlCand);
 
-    const isWhitelisted =
-      it?.whitelisted === true || !!it?.tier || (__host0 && __isWhitelistedHost(__host0));
+    // whitelist-only: 비화이트리스트는 제외
+// - inferred(tier만 부여)로 whitelist를 우회하지 않도록 tier 자체로는 통과시키지 않는다.
+// - upstream whitelisted 누락 방어는 host 매칭으로만 처리
+const isWhitelisted =
+  it?.whitelisted === true || (__host0 && __isWhitelistedHost(__host0));
 
-    if (!isWhitelisted) continue;
+if (!isWhitelisted) continue;
 
     // ✅ "한국" 1개만 맞아도 통과" 문제 해결: 최소 키워드 히트 수 요구
     const hits = __hitCount(text, kw);
