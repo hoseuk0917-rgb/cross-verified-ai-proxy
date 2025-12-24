@@ -12061,14 +12061,71 @@ allowCurated = Boolean(allowCuratedLists || wantCurated);
 // ✅ gh repo 중복 제거(여러 query/page에서 같은 repo 나오는 것 방지)
 // (이미 상단에서 ghSeen을 만들었으므로 여기서는 재선언하지 않음)
 
+// ✅ owner/repo 형태를 repo search 친화적으로 재작성 + (repo search에서 의미 없는) PR/issue 토큰 제거
+const __escRe = (s) => String(s ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// repo-search에서 오히려 결과를 0으로 만드는 토큰(=issues/PR 검색이 아니라 repo 검색이기 때문)
+const __DROP_GH_REPOSEARCH_TOKENS = new Set([
+  "pr", "prs", "pull", "pullrequest", "pull-request",
+  "issue", "issues",
+  "이슈", "풀리퀘", "풀리퀘스트", "풀리퀘스트(pr)",
+]);
+
+const __stripRepoSearchNoise = (s) => {
+  const parts = String(s ?? "").split(/\s+/).filter(Boolean);
+  const kept = [];
+  for (const p of parts) {
+    const low = p.toLowerCase();
+    if (__DROP_GH_REPOSEARCH_TOKENS.has(low)) continue;
+    kept.push(p);
+  }
+  return kept.join(" ").trim();
+};
+
+// owner/repo가 있으면: "nodejs/node http2 ..." → "node org:nodejs http2 in:name,description,readme"
+const __rewriteOwnerRepoForRepoSearch = (s) => {
+  let t = String(s ?? "").trim();
+  if (!t) return "";
+
+  const m = t.match(/\b([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\b/);
+  if (!m) return __stripRepoSearchNoise(t);
+
+  const owner = m[1];
+  const repo = m[2];
+
+  // owner/repo 토큰 제거
+  const re = new RegExp(`\\b${__escRe(owner)}\\/${__escRe(repo)}\\b`, "g");
+  t = t.replace(re, " ");
+
+  // PR/issue 등 repo-search 노이즈 제거
+  t = __stripRepoSearchNoise(t);
+
+  // org/user qualifier가 이미 있으면 유지, 없으면 org:<owner> 추가
+  const hasOrgOrUser = /\b(org|user)\s*:/i.test(t);
+
+  // repo name을 맨 앞에 앵커로 둬서 recall 올리기
+  t = `${repo} ${hasOrgOrUser ? "" : `org:${owner} `}${t}`.replace(/\s+/g, " ").trim();
+
+  // in:name,description,readme가 없으면 붙여서 적중률 보정(이미 있으면 유지)
+  if (!/\bin:name,description,readme\b/i.test(t)) t = `${t} in:name,description,readme`;
+
+  return t.trim();
+};
+
 for (const q of ghQueries) {
+  const qRaw = String(q || "").trim();
+  if (!qRaw) continue;
+
+  // ✅ rewrite first
+  const qFixed = __rewriteOwnerRepoForRepoSearch(qRaw);
+
   // ✅ 질문형/장문을 1회 더 압축해서 GitHub repo search recall 확보
   const q0 =
     (typeof __cleanGithubSearchQuery === "function")
-      ? __cleanGithubSearchQuery(q)
-      : String(q || "").trim();
+      ? __cleanGithubSearchQuery(qFixed)
+      : qFixed;
 
-  const q1 = sanitizeGithubQuery(q0 || q, ghUserText);
+  const q1 = sanitizeGithubQuery(q0 || qFixed, ghUserText);
   if (!q1) continue;
 
   // engine_queries.github (있을 때만 push + 중복 방지)
@@ -12263,10 +12320,14 @@ const GH_MIN_STARS = Math.max(
 const ghUrlHit = /https?:\/\/github\.com\/[^\s/]+\/[^\s/]+/i.test(rawQuery);
 const ghOwnerRepoMatch = String(rawQuery || "").match(/\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/);
 
-// api/verify 같은 "경로" 오탐만 제외하고, nodejs/node 같은 정상 owner/repo도 repo 힌트로 인정
+// api/verify 같은 "경로" 오탐만 제외하고, owner/repo는 기본 repo 힌트로 인정하되
+// "문맥 힌트"가 있으면 더 확실히 repo로 취급 (nodejs/node 등)
+const ghOwnerRepoHintText = /(github|깃헙|repo|repository|레포|issue|issues|pr|pull\s*request|commit|커밋)/i.test(String(rawQuery || ""));
+
 const ghOwnerRepoHit = !!(
   ghOwnerRepoMatch &&
-  !/^(api|v\d+)\/(verify|admin|settings|status)\b/i.test(String(ghOwnerRepoMatch[0] || ""))
+  !/^(api|v\d+)\/(verify|admin|settings|status)\b/i.test(String(ghOwnerRepoMatch[0] || "")) &&
+  (ghOwnerRepoHintText || ghUrlHit || /\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/.test(String(rawQuery || "")))
 );
 
 const ghHardRepoHint = ghUrlHit || ghOwnerRepoHit;
