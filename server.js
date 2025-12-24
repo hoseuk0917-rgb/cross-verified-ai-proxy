@@ -11791,7 +11791,7 @@ if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(query)) {
 }
 
     // ✅ GitHub 쿼리 생성 (Gemini) + (B안) 1-call 분류: 비코드면 sentinel로 종료
-const t_q = Date.now();
+const t_q_github = Date.now();
 
 const __ghQB = {};
 const ghQueriesRaw = await buildGithubQueriesFromGemini(
@@ -11810,7 +11810,7 @@ try {
 } catch {}
 
 ghUserText = String(query || "").trim();
-const ms_q = Date.now() - t_q;
+const ms_q = Date.now() - t_q_github;
 recordTime(geminiTimes, "github_query_builder_ms", ms_q);
 recordMetric(geminiMetrics, "github_query_builder", ms_q);
 
