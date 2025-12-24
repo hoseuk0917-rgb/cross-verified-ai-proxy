@@ -12631,7 +12631,7 @@ partial_scores.evidence_digest = {
 } catch {}
 
 // ✅ 요청 body.engines(또는 engines_requested/enginesRequested)가 있으면 그걸 우선 반영
-const enginesRequested = (() => {
+const enginesRequestedFinalize = (() => {
   const raw =
     (req && req.body && typeof req.body === "object")
       ? (req.body.engines ?? req.body.engines_requested ?? req.body.enginesRequested)
@@ -12652,9 +12652,10 @@ const enginesRequested = (() => {
     return filtered.length > 0 ? filtered : [...allowed];
   }
 
-  const ps = (partial_scores && Array.isArray(partial_scores.engines_requested))
-    ? partial_scores.engines_requested.map(norm).filter(Boolean)
-    : [];
+  const ps =
+    (partial_scores && Array.isArray(partial_scores.engines_requested))
+      ? partial_scores.engines_requested.map(norm).filter(Boolean)
+      : [];
 
   if (ps.length > 0) return [...new Set(ps)];
 
@@ -12662,12 +12663,12 @@ const enginesRequested = (() => {
 })();
 
 const { used: enginesUsedPre, excluded: enginesExcludedPre } = computeEnginesUsed({
-  enginesRequested,
+  enginesRequested: enginesRequestedFinalize,
   partial_scores,
   engineMetrics,
 });
 
-partial_scores.engines_requested = enginesRequested;
+partial_scores.engines_requested = enginesRequestedFinalize;
 
 // FINALIZE에서 engines_used 확정(여긴 pre만)
 partial_scores.engines_used_pre = enginesUsedPre;
