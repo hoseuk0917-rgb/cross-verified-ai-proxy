@@ -4633,10 +4633,27 @@ function __resolveEnginesRequestedFromReq({ req, partial_scores, engines, safeMo
   // allow only engines already allowed in this path (the default `engines` list)
   const allowed = new Set((Array.isArray(engines) ? engines : []).map(norm));
 
-  if (arr.length > 0) {
+    if (arr.length > 0) {
     const uniq = [...new Set(arr)];
     const filtered = uniq.filter((e) => allowed.has(e));
-    return filtered.length > 0 ? filtered : [...allowed];
+
+    if (filtered.length > 0) return filtered;
+
+    // ✅ 요청이 있었지만 매칭되는 엔진이 없으면 "전체 실행"으로 폴백하지 않는다.
+    //    (기본값으로 다시 전체 실행되는 사고 방지)
+    try {
+      if (partial_scores && typeof partial_scores === "object") {
+        partial_scores.engines_filter_warning = {
+          requested_raw: raw,
+          requested_norm: uniq.slice(),
+          allowed_defaults: Array.from(allowed),
+          final: [],
+          reason: "no_matching_engine_in_allowed_set",
+        };
+      }
+    } catch (_) {}
+
+    return [];
   }
 
   // fallback: if earlier stages already set engines_requested, respect it
@@ -9940,17 +9957,32 @@ switch (safeMode) {
       } catch (_) {}
     }
 
-    // ✅ IMPORTANT: engines 배열이 이미 기본값/플랜으로 채워져 있을 수 있으므로,
+        // ✅ IMPORTANT: engines 배열이 이미 기본값/플랜으로 채워져 있을 수 있으므로,
     //    qv/fv에서는 여기서 "실제 실행 엔진"을 확정(초기화 후 주입)한다.
+    const __engineFilterSet = new Set(__final);
+
     try {
       if (Array.isArray(engines)) engines.length = 0;
     } catch (_) {}
 
     engines.push(...__final);
 
+    // ✅ later stages(쿼리 생성/엔진 실행 루프)에서도 동일 필터를 참조할 수 있게 req에 심어둔다.
+    try {
+      if (req) req._engine_filter_set = __engineFilterSet;
+    } catch (_) {}
+
     try {
       if (partial_scores && typeof partial_scores === "object") {
         partial_scores.engines_effective = __final.slice();
+
+        // diag(나중에 “왜 호출됐지?” 추적용)
+        partial_scores.engines_filter = {
+          requested_raw: __rawEng,
+          requested_norm: Array.from(__reqSet),
+          allowed_defaults: __defaults.slice(),
+          effective: __final.slice(),
+        };
       }
     } catch (_) {}
 
@@ -10310,10 +10342,88 @@ if (__officialSeeds.length) {
     }
   }
 
+    // ✅ (IMPORTANT) 요청 engines가 있으면, one-shot이 만든 블록별 queries 자체도 그 엔진으로 "실제 호출" 제한해야 한다.
+  //    (engines 배열만 줄여도 engine_queries가 남아있으면 openalex/gdelt/naver 등이 계속 호출됨)
+  try {
+    const __engineFilterSet =
+      (typeof __final !== "undefined" && Array.isArray(__final) && __final.length)
+        ? new Set(__final)
+        : ((req && req._engine_filter_set instanceof Set) ? req._engine_filter_set : null);
+
+    if (__engineFilterSet && pre && typeof pre === "object") {
+      const __filterObjKeys = (obj) => {
+        if (!obj || typeof obj !== "object") return obj;
+        for (const k of Object.keys(obj)) {
+          if (!__engineFilterSet.has(String(k).toLowerCase().trim())) {
+            delete obj[k];
+          }
+        }
+        return obj;
+      };
+
+      // diag(before)
+      let __beforeKeys = [];
+      try {
+        const b0 = pre?.blocks?.[0];
+        const q0 = (b0 && (b0.engine_queries || b0.queries)) ? (b0.engine_queries || b0.queries) : null;
+        __beforeKeys = q0 ? Object.keys(q0) : [];
+      } catch (_) {}
+
+      // top-level engine_queries (있을 수도 있음)
+      try { if (pre.engine_queries) __filterObjKeys(pre.engine_queries); } catch (_) {}
+
+      // blocks[*].engine_queries / blocks[*].queries
+      try {
+        if (Array.isArray(pre.blocks)) {
+          for (const b of pre.blocks) {
+            if (!b || typeof b !== "object") continue;
+
+            // snake_case
+            if (b.engine_queries && typeof b.engine_queries === "object") {
+              __filterObjKeys(b.engine_queries);
+            }
+            // camel/alt
+            if (b.queries && typeof b.queries === "object") {
+              __filterObjKeys(b.queries);
+            }
+          }
+        }
+      } catch (_) {}
+
+      // diag(after)
+      let __afterKeys = [];
+      try {
+        const b0 = pre?.blocks?.[0];
+        const q0 = (b0 && (b0.engine_queries || b0.queries)) ? (b0.engine_queries || b0.queries) : null;
+        __afterKeys = q0 ? Object.keys(q0) : [];
+      } catch (_) {}
+
+      try {
+        if (partial_scores && typeof partial_scores === "object") {
+          partial_scores.engine_filter_applied_preprocess = {
+            applied: true,
+            allowed: Array.from(__engineFilterSet),
+            before_keys: __beforeKeys,
+            after_keys: __afterKeys,
+          };
+        }
+      } catch (_) {}
+    } else {
+      try {
+        if (partial_scores && typeof partial_scores === "object") {
+          partial_scores.engine_filter_applied_preprocess = {
+            applied: false,
+            reason: "no_engine_filter_set",
+          };
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+
   qvfvPre = pre;
   qvfvPreDone = true;
 
-    partial_scores.qvfv_pre = {
+  partial_scores.qvfv_pre = {
     korean_core: pre.korean_core,
     english_core: pre.english_core,
     blocks_count: pre.blocks.length,
