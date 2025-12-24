@@ -9840,7 +9840,7 @@ function __uniqStrings(arr, maxN = 0) {
 function __expandNaverQueries(baseQueries, seedInfo = {}) {
   // baseQueries: 기본 Naver 쿼리 배열
   const base = Array.isArray(baseQueries)
-    ? baseQueries.map(q => String(q || "").trim()).filter(Boolean)
+    ? baseQueries.map((q) => String(q || "").trim()).filter(Boolean)
     : [];
 
   // seedInfo: { korean_core, english_core } 같은 구조
@@ -9851,13 +9851,131 @@ function __expandNaverQueries(baseQueries, seedInfo = {}) {
   if (ko) extraSeeds.push(ko);
   if (en) extraSeeds.push(en);
 
-  const expanded = [...base];
+  // ✅ whitelist 기반 "공식 site:" 시드 호스트(가중치/순위) 추출
+  // - 하드코딩 대신 whitelist(티어/가중치) 순위를 따른다.
+  // - 파싱 실패 시: 시드 없이 기존 동작 유지
+  const __normHost = (h) =>
+    String(h || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//i, "")
+      .replace(/\/.*$/, "")
+      .replace(/:\d+$/, "")
+      .replace(/^www\./, "");
 
+  let seedHosts = [];
+  try {
+    const wl = loadNaverWhitelist();
+    const tiers = wl?.tiers;
+
+    const __push = (host, weight, displayOnly) => {
+      const hh = __normHost(host);
+      if (!hh) return;
+      if (!hh.includes(".")) return; // 도메인 형태만
+      seedHosts.push({
+        host: hh,
+        weight: Number.isFinite(Number(weight)) ? Number(weight) : 1,
+        display_only: displayOnly === true,
+      });
+    };
+
+    if (Array.isArray(tiers)) {
+      for (const t of tiers) {
+        const tierWeight = Number.isFinite(Number(t?.weight)) ? Number(t.weight) : 1;
+        const tierDisplayOnly = t?.display_only === true;
+
+        const hs = t?.hosts ?? t?.domains ?? t?.host_list ?? t?.items ?? null;
+
+        if (Array.isArray(hs)) {
+          for (const h of hs) __push(h, tierWeight, tierDisplayOnly);
+        } else if (hs && typeof hs === "object") {
+          for (const [k, v] of Object.entries(hs)) {
+            if (typeof v === "number") __push(k, v, tierDisplayOnly);
+            else if (v && typeof v === "object")
+              __push(k, v.weight ?? tierWeight, v.display_only ?? tierDisplayOnly);
+            else __push(k, tierWeight, tierDisplayOnly);
+          }
+        }
+      }
+    } else if (tiers && typeof tiers === "object") {
+      for (const [, t] of Object.entries(tiers)) {
+        const tierWeight = Number.isFinite(Number(t?.weight)) ? Number(t.weight) : 1;
+        const tierDisplayOnly = t?.display_only === true;
+
+        if (Array.isArray(t)) {
+          for (const h of t) __push(h, tierWeight, tierDisplayOnly);
+          continue;
+        }
+
+        const hs = t?.hosts ?? t?.domains ?? t?.host_list ?? t?.items ?? t;
+
+        if (Array.isArray(hs)) {
+          for (const h of hs) __push(h, tierWeight, tierDisplayOnly);
+        } else if (hs && typeof hs === "object") {
+          for (const [k, v] of Object.entries(hs)) {
+            if (k === "weight" || k === "display_only" || k === "meta" || k === "version" || k === "lastUpdate")
+              continue;
+            if (typeof v === "number") __push(k, v, tierDisplayOnly);
+            else if (v && typeof v === "object")
+              __push(k, v.weight ?? tierWeight, v.display_only ?? tierDisplayOnly);
+            else __push(k, tierWeight, tierDisplayOnly);
+          }
+        }
+      }
+    }
+
+    // dedupe + sort by weight desc
+    const seen = new Set();
+    seedHosts = seedHosts
+      .filter((x) => x && x.host && x.display_only !== true)
+      .sort((a, b) => (b.weight || 0) - (a.weight || 0))
+      .filter((x) => {
+        if (seen.has(x.host)) return false;
+        seen.add(x.host);
+        return true;
+      })
+      .slice(0, 8);
+  } catch (_) {
+    seedHosts = [];
+  }
+
+  const __pickPinnedHost = (q) => {
+    if (!Array.isArray(seedHosts) || seedHosts.length === 0) return "";
+    const qq = String(q || "");
+    const qLower = qq.toLowerCase();
+
+    // KOSIS/테이블코드(DT_*) 같은 케이스는 whitelist 내 kosis 후보를 우선
+    if (/\bdt_[a-z0-9_]+\b/i.test(qq) || /\bkosis\b/i.test(qLower)) {
+      const k = seedHosts.find((x) => String(x.host || "").includes("kosis"));
+      if (k && k.host) return k.host;
+    }
+
+    // 기본은 whitelist 최상위(host weight 기준)
+    return seedHosts[0].host || "";
+  };
+
+  const expanded = [];
+
+  // ✅ 1) base 쿼리: whitelist 기반 site: 핀 버전(우선) + 원본(후순위)
+  const pinned = [];
+  const originals = [];
+
+  for (const q of base) {
+    if (!q) continue;
+    originals.push(q);
+
+    const host = !/\bsite:/i.test(q) ? __pickPinnedHost(q) : "";
+    if (host) pinned.push(`site:${host} ${q}`);
+    else pinned.push(q);
+  }
+
+  expanded.push(...pinned, ...originals);
+
+  // ✅ 2) seed (ko/en) 확장: 기존 동작 유지
   for (const s of extraSeeds) {
     if (!s) continue;
     expanded.push(s);
 
-    // 괄호, 중복 공백 제거한 버전도 한 번 더 추가
     const stripped = s.replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
     if (stripped && stripped !== s) expanded.push(stripped);
   }
