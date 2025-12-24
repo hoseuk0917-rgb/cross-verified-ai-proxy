@@ -12205,6 +12205,11 @@ if (
 }
 
 // ✅ GitHub 결과 정리: 중복 제거 + stars 우선 + 최신 업데이트 우선 (품질 개선)
+const GH_KEEP_TOP = Math.max(
+  1,
+  parseInt(process.env.GITHUB_DV_CV_KEEP_TOP || "12", 10) || 12
+);
+
 external.github = (external.github || [])
   .filter(Boolean)
   .map(r => ({
@@ -12212,13 +12217,14 @@ external.github = (external.github || [])
     stars: Number(r?.stars ?? r?.stargazers_count ?? 0),
     updated: String(r?.updated ?? r?.updated_at ?? ""),
   }))
-    .filter(r => (allowCurated ? true : !isBigCuratedListRepo(r))) // ✅ allowCurated면 curated 유지
-
-  // 중복 제거(이름 기준) — 네 로그처럼 중복(repo가 2번) 나오는 것 방지
+  .filter(r => (allowCurated ? true : !isBigCuratedListRepo(r))) // ✅ allowCurated면 curated 유지
+  // 중복 제거: name은 충돌 위험(서로 다른 owner의 같은 repo명) → full_name 우선
   .filter((r, idx, arr) => {
-    const key = String(r?.name || "").toLowerCase();
+    const key = String(r?.full_name || r?.name || r?.html_url || r?.url || "").toLowerCase().trim();
     if (!key) return false;
-    return idx === arr.findIndex(x => String(x?.name || "").toLowerCase() === key);
+    return idx === arr.findIndex(x =>
+      String(x?.full_name || x?.name || x?.html_url || x?.url || "").toLowerCase().trim() === key
+    );
   })
   // stars 내림차순 → updated 최신순
   .sort((a, b) => {
@@ -12228,7 +12234,7 @@ external.github = (external.github || [])
     const tb = Date.parse(b.updated || "") || 0;
     return tb - ta;
   })
-  .slice(0, 12);
+  .slice(0, GH_KEEP_TOP);
 
   // ✅ GitHub results dedupe (multi-query/page overlap) + cap
 if (Array.isArray(external.github) && external.github.length > 1) {
@@ -12249,12 +12255,20 @@ if (Array.isArray(external.github) && external.github.length > 1) {
   external.github = uniq.slice(0, cap);
 }
 
-const GH_MIN_STARS = 3;
+const GH_MIN_STARS = Math.max(
+  0,
+  parseInt(process.env.GH_MIN_STARS || "0", 10) || 0
+);
 
 const ghUrlHit = /https?:\/\/github\.com\/[^\s/]+\/[^\s/]+/i.test(rawQuery);
 const ghOwnerRepoMatch = String(rawQuery || "").match(/\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/);
-// api/verify 같은 일반 경로 오탐 방지: owner/repo 토큰에 - _ . 중 하나라도 있을 때만 repo로 인정
-const ghOwnerRepoHit = !!(ghOwnerRepoMatch && /[-_.]/.test(ghOwnerRepoMatch[0]));
+
+// api/verify 같은 "경로" 오탐만 제외하고, nodejs/node 같은 정상 owner/repo도 repo 힌트로 인정
+const ghOwnerRepoHit = !!(
+  ghOwnerRepoMatch &&
+  !/^(api|v\d+)\/(verify|admin|settings|status)\b/i.test(String(ghOwnerRepoMatch[0] || ""))
+);
+
 const ghHardRepoHint = ghUrlHit || ghOwnerRepoHit;
 
 const ghMaxStars = Math.max(
