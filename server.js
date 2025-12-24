@@ -11982,6 +11982,9 @@ const wantsCuratedListsFromText = (t) =>
 ghUserText = String(answerText || query || "").trim();
 const allowCuratedLists = wantsCuratedListsFromText(`${rawQuery || ""} ${answerText || ""} ${query || ""} ${ghUserText || ""}`);
 
+// ✅ ADD: allowCurated는 DV/CV 전체 흐름에서 참조될 수 있으므로 let으로 승격(스코프 이슈 방지)
+let allowCurated = false;
+
 // ✅ (DV/CV 품질) GitHub repo relevance 필터 + 1회 fallback
 const githubRepoBlob = (r) => {
   const topics = Array.isArray(r?.topics) ? r.topics.join(" ") : "";
@@ -12022,7 +12025,7 @@ const wantCurated =
   wantsCuratedListsFromText(rawQuery) || wantsCuratedListsFromText(ghUserText);
 
 // curated 허용 조건: 전역 allowCuratedLists 이거나, 질문/텍스트가 curated를 원할 때
-const allowCurated = Boolean(allowCuratedLists || wantCurated);
+allowCurated = Boolean(allowCuratedLists || wantCurated);
 
 // ✅ gh repo 중복 제거(여러 query/page에서 같은 repo 나오는 것 방지)
 // (이미 상단에서 ghSeen을 만들었으므로 여기서는 재선언하지 않음)
@@ -12063,7 +12066,7 @@ for (const q of ghQueries) {
 let r1 = Array.isArray(pack1?.result) ? pack1.result : [];
 r1 = r1.filter(isRelevantGithubRepoDV);
 
-if (!allowCurated) r1 = r1.filter(r => !isBigCuratedListRepo(r));
+if (!allowCurated) r1 = r1.filter(r => (allowCurated ? true : !isBigCuratedListRepo(r)));
 
 // 2) page 2 (page1이 "필터 후 0"이면 한 번 더)
 if (!r1.length) {
@@ -12077,7 +12080,7 @@ if (!r1.length) {
 
   let r2 = Array.isArray(pack2?.result) ? pack2.result : [];
     r2 = r2.filter(isRelevantGithubRepoDV);
-  if (!allowCurated) r2 = r2.filter(r => !isBigCuratedListRepo(r));
+  if (!allowCurated) r2 = r2.filter(r => (allowCurated ? true : !isBigCuratedListRepo(r)));
 
   if (r2.length) r1 = r2;
 }
@@ -12111,7 +12114,7 @@ const github_raw_before_filter = Array.isArray(external.github) ? [...external.g
 
 // 1차 필터
 external.github = (external.github || [])
-  .filter(isRelevantGithubRepoDV)
+  .filter(isRelevantGithubRepo)
   .filter(r => (allowCurated ? true : !isBigCuratedListRepo(r)));
 
 // ✅ fallback 트리거(Express rate-limit 류 질의일 때만)
