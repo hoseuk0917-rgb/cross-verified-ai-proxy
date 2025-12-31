@@ -7,12 +7,12 @@ function __printFatal(tag, err) {
   try {
     const out =
       err && err.stack ? String(err.stack)
-      : err && err.message ? String(err.message)
-      : String(err);
+        : err && err.message ? String(err.message)
+          : String(err);
 
     process.stderr.write(`${tag}\n${out}\n`);
   } catch (_e) {
-    try { process.stderr.write(`${tag}\n${String(err)}\n`); } catch {}
+    try { process.stderr.write(`${tag}\n${String(err)}\n`); } catch { }
   }
 }
 
@@ -388,7 +388,7 @@ function pickDatabaseUrl() {
     throw new Error("No database URL provided. Set SUPABASE_DATABASE_URL (recommended) or DATABASE_URL.");
   }
 
-   const src = (source || "DATABASE_URL");
+  const src = (source || "DATABASE_URL");
 
   if (!/^postgres(ql)?:\/\//i.test(u)) {
     throw new Error(src + " must start with postgres:// or postgresql://");
@@ -406,7 +406,7 @@ function pickDatabaseUrl() {
     if (host.includes("render.com") || host.includes("postgres.render.com")) {
       throw new Error(src + " points to Render Postgres. Use SUPABASE_DATABASE_URL instead.");
     }
-  } catch {}
+  } catch { }
 
   return { url: u, source };
 }
@@ -533,7 +533,7 @@ function _attachRememberedListeners(pool) {
   for (const [ev, fn] of _pgPoolListeners) {
     try {
       pool.on(ev, fn);
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 
@@ -570,9 +570,9 @@ async function _resetPgPool(reasonErr) {
     // old.end()가 길게 걸릴 수 있으니 타임아웃 보호
     try {
       if (old) {
-        await _withTimeout(old.end().catch(() => {}), 2500, "OLD_POOL_END_TIMEOUT").catch(() => {});
+        await _withTimeout(old.end().catch(() => { }), 2500, "OLD_POOL_END_TIMEOUT").catch(() => { });
       }
-    } catch (_) {}
+    } catch (_) { }
   } finally {
     _pgPoolResetting = false;
   }
@@ -612,7 +612,7 @@ const pgPool = {
     _pgPoolListeners.push([ev, fn]);
     try {
       _pgPool.on(ev, fn);
-    } catch (_) {}
+    } catch (_) { }
     return this;
   },
 
@@ -961,11 +961,11 @@ if (MORGAN_ENABLED) {
       // Render 로그에 확실히 남게 console.log로 강제
       stream: { write: (msg) => console.log(msg.trimEnd()) },
       skip: (req) => {
-      const p = req.originalUrl || req.url || "";
-      if (p.startsWith("/health")) return true;
-       // ✅ 디버깅 중에는 test-db도 로그 보이게 (필요하면 다시 true로)
-       // if (p.startsWith("/api/test-db")) return true;
-       return false;
+        const p = req.originalUrl || req.url || "";
+        if (p.startsWith("/health")) return true;
+        // ✅ 디버깅 중에는 test-db도 로그 보이게 (필요하면 다시 true로)
+        // if (p.startsWith("/api/test-db")) return true;
+        return false;
       },
     })
   );
@@ -1128,9 +1128,9 @@ function verifyCacheGet(key) {
   if (!ent) return null;
 
   const ttl = (() => {
-  const n = Number(VERIFY_CACHE_TTL_MS);
-  return Number.isFinite(n) && n > 0 ? n : 0;
-})();
+    const n = Number(VERIFY_CACHE_TTL_MS);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  })();
   if (ttl > 0 && (Date.now() - ent.t) > ttl) {
     __verifyCache.delete(key);
     return null;
@@ -1220,7 +1220,7 @@ const verifyRateLimit = makeFixedWindowLimiter({
 });
 
 function enforceVerifyPayloadLimits(req, res, next) {
-    const b = getJsonBody(req);
+  const b = getJsonBody(req);
 
   const q = String(b.query ?? "");
   const core = String(b.core_text ?? "");
@@ -1439,28 +1439,28 @@ function safeVerifyInputForGemini(input, maxLen) {
   const cutArr = (v, n) => (Array.isArray(v) ? v.slice(0, n) : []);
 
   const pickUrl = (x) => {
-  if (!x || typeof x !== "object") return null;
+    if (!x || typeof x !== "object") return null;
 
-  const cand =
-    x.source_url ??
-    x.url ??
-    x.link ??
-    x.href ??
-    x.naver_url ??
-    x.permalink ??
-    null;
+    const cand =
+      x.source_url ??
+      x.url ??
+      x.link ??
+      x.href ??
+      x.naver_url ??
+      x.permalink ??
+      null;
 
-  // ✅ 문자열 URL만 허용 (함수/객체/String.prototype.link 방지)
-  if (typeof cand !== "string") return null;
+    // ✅ 문자열 URL만 허용 (함수/객체/String.prototype.link 방지)
+    if (typeof cand !== "string") return null;
 
-  const u = cand.trim();
-  if (!u) return null;
+    const u = cand.trim();
+    if (!u) return null;
 
-  // ✅ "function link() { [native code] }" 같은 문자열 방지
-  if (/^function\s+link\s*\(/i.test(u) || /\[native code\]/i.test(u)) return null;
+    // ✅ "function link() { [native code] }" 같은 문자열 방지
+    if (/^function\s+link\s*\(/i.test(u) || /\[native code\]/i.test(u)) return null;
 
-  return u;
-};
+    return u;
+  };
 
   const hostFromUrl = (u) => {
     try { return u ? (new URL(u)).hostname : null; } catch { return null; }
@@ -1484,49 +1484,49 @@ function safeVerifyInputForGemini(input, maxLen) {
   // (A) blocks: 기존 방식 유지하되 조금 더 방어적으로 축약
   const slimBlocks = Array.isArray(input?.blocks)
     ? input.blocks.map((b) => {
-        const ev = b?.evidence || {};
+      const ev = b?.evidence || {};
 
-        const topk = Math.min(
-          3,
-          (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3)
-        );
+      const topk = Math.min(
+        3,
+        (Number.isFinite(BLOCK_EVIDENCE_TOPK) ? BLOCK_EVIDENCE_TOPK : 3)
+      );
 
-        const nTopk = Math.min(
-          3,
-          (Number.isFinite(BLOCK_NAVER_EVIDENCE_TOPK) ? BLOCK_NAVER_EVIDENCE_TOPK : 3)
-        );
+      const nTopk = Math.min(
+        3,
+        (Number.isFinite(BLOCK_NAVER_EVIDENCE_TOPK) ? BLOCK_NAVER_EVIDENCE_TOPK : 3)
+      );
 
-        const slimNaver = cutArr(ev.naver, nTopk).map((x) => ({
-          title: x?.title || null,
-          link: x?.link || null,
-          naver_type: x?.naver_type || null,
-          tier: x?.tier || null,
-        }));
+      const slimNaver = cutArr(ev.naver, nTopk).map((x) => ({
+        title: x?.title || null,
+        link: x?.link || null,
+        naver_type: x?.naver_type || null,
+        tier: x?.tier || null,
+      }));
 
-        // queries가 너무 커지는 케이스 방지(값만 짧게)
-        const q0 = b?.queries && typeof b.queries === "object" ? b.queries : null;
-        const slimQueries = q0
-          ? Object.fromEntries(
-              Object.entries(q0).slice(0, 8).map(([k, v]) => {
-                if (Array.isArray(v)) return [k, v.slice(0, 4).map((s) => cutStr(s, 120))];
-                return [k, cutStr(v, 160)];
-              })
-            )
-          : null;
+      // queries가 너무 커지는 케이스 방지(값만 짧게)
+      const q0 = b?.queries && typeof b.queries === "object" ? b.queries : null;
+      const slimQueries = q0
+        ? Object.fromEntries(
+          Object.entries(q0).slice(0, 8).map(([k, v]) => {
+            if (Array.isArray(v)) return [k, v.slice(0, 4).map((s) => cutStr(s, 120))];
+            return [k, cutStr(v, 160)];
+          })
+        )
+        : null;
 
-        return {
-          id: b?.id ?? null,
-          text: cutStr(String(b?.text || ""), 320),
-          queries: slimQueries,
-          evidence: {
-            crossref: cutArr(ev.crossref, topk).map((s) => cutStr(s, 220)),
-            openalex: cutArr(ev.openalex, topk).map((s) => cutStr(s, 220)),
-            wikidata: cutArr(ev.wikidata, 5).map((s) => cutStr(s, 220)),
-            gdelt: cutArr(ev.gdelt, topk).map((s) => cutStr(s, 220)),
-            naver: slimNaver,
-          },
-        };
-      })
+      return {
+        id: b?.id ?? null,
+        text: cutStr(String(b?.text || ""), 320),
+        queries: slimQueries,
+        evidence: {
+          crossref: cutArr(ev.crossref, topk).map((s) => cutStr(s, 220)),
+          openalex: cutArr(ev.openalex, topk).map((s) => cutStr(s, 220)),
+          wikidata: cutArr(ev.wikidata, 5).map((s) => cutStr(s, 220)),
+          gdelt: cutArr(ev.gdelt, topk).map((s) => cutStr(s, 220)),
+          naver: slimNaver,
+        },
+      };
+    })
     : [];
 
   // (B) external: "근거 풀"을 최소 형태로 남김
@@ -1665,25 +1665,25 @@ function safeVerifyInputForGemini(input, maxLen) {
     external: slimExternal,
     partial_scores: input?.partial_scores
       ? {
-          recency: input.partial_scores.recency ?? null,
-          validity: input.partial_scores.validity ?? null,
-          consistency: input.partial_scores.consistency ?? null,
-          engine_factor: input.partial_scores.engine_factor ?? null,
-          naver_tier_factor: input.partial_scores.naver_tier_factor ?? null,
+        recency: input.partial_scores.recency ?? null,
+        validity: input.partial_scores.validity ?? null,
+        consistency: input.partial_scores.consistency ?? null,
+        engine_factor: input.partial_scores.engine_factor ?? null,
+        naver_tier_factor: input.partial_scores.naver_tier_factor ?? null,
 
-          engines_requested: input.partial_scores.engines_requested ?? null,
-          engines_used: input.partial_scores.engines_used ?? null,
-          engines_excluded: input.partial_scores.engines_excluded ?? null,
+        engines_requested: input.partial_scores.engines_requested ?? null,
+        engines_used: input.partial_scores.engines_used ?? null,
+        engines_excluded: input.partial_scores.engines_excluded ?? null,
 
-          engine_exclusion_reasons: input.partial_scores.engine_exclusion_reasons ?? null,
-          engine_explain: input.partial_scores.engine_explain ?? null,
+        engine_exclusion_reasons: input.partial_scores.engine_exclusion_reasons ?? null,
+        engine_explain: input.partial_scores.engine_explain ?? null,
 
-          engines_used_pre: input.partial_scores.engines_used_pre ?? null,
-          engines_excluded_pre: input.partial_scores.engines_excluded_pre ?? null,
-          engine_exclusion_reasons_pre: input.partial_scores.engine_exclusion_reasons_pre ?? null,
+        engines_used_pre: input.partial_scores.engines_used_pre ?? null,
+        engines_excluded_pre: input.partial_scores.engines_excluded_pre ?? null,
+        engine_exclusion_reasons_pre: input.partial_scores.engine_exclusion_reasons_pre ?? null,
 
-          engine_results: input.partial_scores.engine_results ?? null,
-        }
+        engine_results: input.partial_scores.engine_results ?? null,
+      }
       : {},
   };
 
@@ -1789,21 +1789,21 @@ function _parseEncKeyRaw(raw) {
   try {
     const b = Buffer.from(s, "base64");
     if (b.length === 32) return b;
-  } catch {}
+  } catch { }
 
   // 2) hex(64 chars => 32 bytes) 시도
   if (/^[0-9a-fA-F]{64}$/.test(s)) {
     try {
       const b = Buffer.from(s, "hex");
       if (b.length === 32) return b;
-    } catch {}
+    } catch { }
   }
 
   // 3) utf8(정확히 32 bytes) 시도
   try {
     const b = Buffer.from(s, "utf8");
     if (b.length === 32) return b;
-  } catch {}
+  } catch { }
 
   return null;
 }
@@ -1837,7 +1837,7 @@ function _collectEncKeyCandidates() {
         key = b;
         fmt = "base64";
       }
-    } catch {}
+    } catch { }
 
     // 2) hex(64 chars) → 32 bytes
     if (!key && /^[0-9a-fA-F]{64}$/.test(raw)) {
@@ -2000,21 +2000,21 @@ function getEncKeyDiagInfo() {
     try {
       const b = Buffer.from(s, "base64");
       if (b.length === 32) return b;
-    } catch {}
+    } catch { }
 
     // 2) hex(64 chars => 32 bytes)
     if (/^[0-9a-fA-F]{64}$/.test(s)) {
       try {
         const b = Buffer.from(s, "hex");
         if (b.length === 32) return b;
-      } catch {}
+      } catch { }
     }
 
     // 3) utf8(정확히 32 bytes)
     try {
       const b = Buffer.from(s, "utf8");
       if (b.length === 32) return b;
-    } catch {}
+    } catch { }
 
     return null;
   };
@@ -2166,27 +2166,27 @@ function _ensureGeminiSecretsShape(secrets) {
   if (!secrets.gemini || typeof secrets.gemini !== "object") secrets.gemini = {};
   if (!secrets.gemini.keyring || typeof secrets.gemini.keyring !== "object") {
     secrets.gemini.keyring = {
-  keys: [],
-  state: { active_id: null, exhausted_ids: {}, invalid_ids: {}, last_reset_pt_date: null, rate_limited_until: {} }
-};
+      keys: [],
+      state: { active_id: null, exhausted_ids: {}, invalid_ids: {}, last_reset_pt_date: null, rate_limited_until: {} }
+    };
   }
   if (!Array.isArray(secrets.gemini.keyring.keys)) secrets.gemini.keyring.keys = [];
   if (!secrets.gemini.keyring.state || typeof secrets.gemini.keyring.state !== "object") {
     secrets.gemini.keyring.state = { active_id: null, exhausted_ids: {}, invalid_ids: {}, last_reset_pt_date: null, rate_limited_until: {} };
   }
   if (!secrets.gemini.keyring.state.exhausted_ids || typeof secrets.gemini.keyring.state.exhausted_ids !== "object") {
-  secrets.gemini.keyring.state.exhausted_ids = {};
-}
-if (!secrets.gemini.keyring.state.invalid_ids || typeof secrets.gemini.keyring.state.invalid_ids !== "object") {
-  secrets.gemini.keyring.state.invalid_ids = {};
-}
+    secrets.gemini.keyring.state.exhausted_ids = {};
+  }
+  if (!secrets.gemini.keyring.state.invalid_ids || typeof secrets.gemini.keyring.state.invalid_ids !== "object") {
+    secrets.gemini.keyring.state.invalid_ids = {};
+  }
 
-// ✅ ADD: 429 쿨다운 상태 저장소(없으면 초기화)
-if (!secrets.gemini.keyring.state.rate_limited_until || typeof secrets.gemini.keyring.state.rate_limited_until !== "object") {
-  secrets.gemini.keyring.state.rate_limited_until = {};
-}
+  // ✅ ADD: 429 쿨다운 상태 저장소(없으면 초기화)
+  if (!secrets.gemini.keyring.state.rate_limited_until || typeof secrets.gemini.keyring.state.rate_limited_until !== "object") {
+    secrets.gemini.keyring.state.rate_limited_until = {};
+  }
 
-return secrets;
+  return secrets;
 }
 
 // ─────────────────────────────
@@ -2251,7 +2251,7 @@ function decryptIntegrationsSecrets(secrets) {
   secrets = _ensureIntegrationsSecretsShape(secrets);
   const it = secrets.integrations;
 
-    return {
+  return {
     naver_id: _getDec(it.naver, "id_enc"),
     naver_secret: _getDec(it.naver, "secret_enc"),
     klaw_key: _getDec(it.klaw, "key_enc"),
@@ -2338,7 +2338,7 @@ function pickGeminiKeyCandidate(secrets) {
   const invalid = state.invalid_ids || {};
 
   // ✅ 429 쿨다운 키는 일정 시간 후보에서 제외
-    const rateLimitedUntil = state.rate_limited_until || {};
+  const rateLimitedUntil = state.rate_limited_until || {};
   const nowMs = Date.now();
 
   if (!keys.length) return { keyId: null, enc: null, keysCount: 0 };
@@ -2397,7 +2397,7 @@ async function markGeminiKeyInvalid(userId, secrets, keyId, pt_date_now, meta = 
   };
 
   // invalid로 박았으면 exhausted에서 제거(혼선 방지)
-  try { delete state.exhausted_ids?.[keyId]; } catch (_) {}
+  try { delete state.exhausted_ids?.[keyId]; } catch (_) { }
 
   const keys = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
   state.active_id = _rotateKeyId(keys, keyId);
@@ -2437,7 +2437,7 @@ async function markGeminiKeyRateLimitedById(userId, keyId, retryAfterMs) {
   const state = kr.state || {};
   if (!state.rate_limited_until || typeof state.rate_limited_until !== "object") state.rate_limited_until = {};
 
-    const ms = Number.isFinite(retryAfterMs) ? retryAfterMs : 60000;
+  const ms = Number.isFinite(retryAfterMs) ? retryAfterMs : 60000;
   const until = Date.now() + Math.max(0, ms);
 
   // per-key 쿨다운
@@ -2488,7 +2488,7 @@ async function getGeminiKeyFromDB(userId) {
   const pac = await ensureGeminiResetIfNeeded(userId, secrets);
   const pt_date_now = pac.pt_date;
 
-    const keys = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
+  const keys = Array.isArray(secrets?.gemini?.keyring?.keys) ? secrets.gemini.keyring.keys : [];
   const keysCount = keys.length;
 
   // ✅ NEW: 전역 429 쿨다운이면 “이번 요청에서 추가 시도 금지”
@@ -2544,17 +2544,17 @@ async function getGeminiKeyFromDB(userId) {
     }
 
     // ✅ 케이스 A: “키는 있는데 전부 쿨다운 중”
-if (nonExhausted > 0 && nonExhaustedButRateLimited === nonExhausted && minUntil != null) {
-  const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
-  err.code = "GEMINI_RATE_LIMIT";
-  err.httpStatus = 429;
+    if (nonExhausted > 0 && nonExhaustedButRateLimited === nonExhausted && minUntil != null) {
+      const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
+      err.code = "GEMINI_RATE_LIMIT";
+      err.httpStatus = 429;
 
-  const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
-  err.detail = {
-    keysCount,
-    keysTriedCount: tried.size,
-    pt_date: pt_date_now,
-    next_reset_utc: pac.next_reset_utc,
+      const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
+      err.detail = {
+        keysCount,
+        keysTriedCount: tried.size,
+        pt_date: pt_date_now,
+        next_reset_utc: pac.next_reset_utc,
         retry_after_ms: retryAfterMs,
       };
       throw err;
@@ -2573,7 +2573,7 @@ if (nonExhausted > 0 && nonExhaustedButRateLimited === nonExhausted && minUntil 
     throw err;
   }
 
-    // ✅ 핵심: “현재 후보 키 복호화 실패”는 ‘전체 소진’이 아니라 ‘해당 키만 탈락’ → 다음 키로 계속
+  // ✅ 핵심: “현재 후보 키 복호화 실패”는 ‘전체 소진’이 아니라 ‘해당 키만 탈락’ → 다음 키로 계속
   for (let i = 0; i < keysCount; i++) {
     const cand = pickGeminiKeyCandidate(secrets);
     if (!cand.keyId || !cand.enc) break;
@@ -2653,21 +2653,21 @@ if (nonExhausted > 0 && nonExhaustedButRateLimited === nonExhausted && minUntil 
     }
 
     // ✅ 케이스 B: “쓸 수 있는 키는 있는데 전부 쿨다운 중”
-if (
-  nonExhaustedNonInvalid > 0 &&
-  nonExhaustedNonInvalidButRateLimited === nonExhaustedNonInvalid &&
-  minUntil != null
-) {
-  const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
-  err.code = "GEMINI_RATE_LIMIT";
-  err.httpStatus = 429;
+    if (
+      nonExhaustedNonInvalid > 0 &&
+      nonExhaustedNonInvalidButRateLimited === nonExhaustedNonInvalid &&
+      minUntil != null
+    ) {
+      const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
+      err.code = "GEMINI_RATE_LIMIT";
+      err.httpStatus = 429;
 
-  const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
-  err.detail = {
-    keysCount,
-    keysTriedCount: tried.size,
-    pt_date: pt_date_now,
-    next_reset_utc: pac.next_reset_utc,
+      const retryAfterMs = Math.max(0, Math.ceil(minUntil - nowMs2));
+      err.detail = {
+        keysCount,
+        keysTriedCount: tried.size,
+        pt_date: pt_date_now,
+        next_reset_utc: pac.next_reset_utc,
         retry_after_ms: retryAfterMs,
       };
       throw err;
@@ -2886,7 +2886,23 @@ function isUuid(v) {
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
 
-// user_id > user_email 기반 users 테이블에서 id 조회/생성 > DEFAULT_USER_ID
+function toPseudoEmail(tokenLike) {
+  const t = String(tokenLike || "").trim();
+  if (!t) return "";
+
+  try {
+    const crypto = require("crypto");
+    const h = crypto.createHash("sha256").update(t).digest("hex").slice(0, 24);
+    return `bearer_${h}@local.invalid`;
+  } catch (_) {
+    // fallback: small deterministic hash (non-crypto)
+    let sum = 0;
+    for (let i = 0; i < t.length; i++) sum = (sum * 31 + t.charCodeAt(i)) >>> 0;
+    const h = String(sum >>> 0).padStart(10, "0");
+    return `bearer_${h}@local.invalid`;
+  }
+}
+
 // user_id > user_email 기반 users 테이블에서 id 조회/생성 > DEFAULT_USER_ID
 async function resolveLogUserId({ user_id, user_email, user_name, auth_user, bearer_token }) {
   // ✅ 1) Supabase JWT로 검증된 사용자면 그 정보를 최우선 사용 (body 값은 위조 가능)
@@ -2923,11 +2939,11 @@ async function resolveLogUserId({ user_id, user_email, user_name, auth_user, bea
   const email = (user_email || "").toString().trim().toLowerCase();
   if (email) {
     await supabase
-  .from("users")
-  .upsert(
-    [{ email, name: user_name || null, updated_at: new Date().toISOString() }],
-    { onConflict: "email" }
-  );
+      .from("users")
+      .upsert(
+        [{ email, name: user_name || null, updated_at: new Date().toISOString() }],
+        { onConflict: "email" }
+      );
 
     const { data, error } = await supabase
       .from("users")
@@ -3241,9 +3257,9 @@ async function sendAdminNotice(subject, html, toOverride = null) {
       __adminMailDisabledUntilMs = Date.now() + ADMIN_NOTICE_MAIL_COOLDOWN_MS;
       console.error(
         "❌ Mail disabled (cooldown) due to invalid_grant-like error. " +
-          "Action: re-issue Gmail refresh token (GMAIL_REFRESH_TOKEN) in Render env. " +
-          "Disabled until: " +
-          new Date(__adminMailDisabledUntilMs).toISOString()
+        "Action: re-issue Gmail refresh token (GMAIL_REFRESH_TOKEN) in Render env. " +
+        "Disabled until: " +
+        new Date(__adminMailDisabledUntilMs).toISOString()
       );
       return { ok: false, disabled: true, reason: "INVALID_GRANT_COOLDOWN" };
     }
@@ -3361,7 +3377,7 @@ function requireDiag(req, res, next) {
     ) {
       return next();
     }
-  } catch (_) {}
+  } catch (_) { }
 
   // ✅ PROD에서는 존재 자체를 숨김
   return res.status(404).json(buildError("NOT_FOUND", "Not available"));
@@ -3375,163 +3391,163 @@ if (process.env.NODE_ENV === "production") {
     res.status(404).json(buildError("NOT_FOUND", "Not available"))
   );
 } else {
-app.post("/api/dev/seed-secrets", async (req, res) => {
-  try {
-    const admin = String(req.headers["x-admin-token"] || "");
-    if (!DEV_ADMIN_TOKEN || admin !== DEV_ADMIN_TOKEN) {
-      return res.status(401).json(buildError("UNAUTHORIZED", "Invalid admin token"));
-    }
-
-    const {
-      user_id,
-      // integrations
-      naver_id,
-      naver_secret,
-      klaw_key,
-      github_token,
-      deepl_key,
-      // (옵션) gemini keyring도 같이 넣고 싶으면
-      gemini_keys,
-      action,
-    } = req.body || {};
-
-    const uid = String(user_id || "").trim();
-    if (!uid) {
-      return res.status(400).json(buildError("VALIDATION_ERROR", "user_id is required"));
-    }
-
-    const row = await loadUserSecretsRow(uid);
-    let secrets = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
-
-    // ✅ integrations 암호화 저장(빈 문자열이면 삭제)
-    secrets = applyIntegrationsSecretPatch(secrets, {
-      naver_id,
-      naver_secret,
-      klaw_key,
-      github_token,
-      deepl_key,
-    });
-
-    // ✅ (옵션) gemini keyring도 seed
-    const hasGeminiPayload =
-      (Array.isArray(gemini_keys) && gemini_keys.length > 0) ||
-      (typeof gemini_keys === "string" && String(gemini_keys).trim());
-
-    if (hasGeminiPayload) {
-      let normalized = [];
-      let arr = [];
-      if (Array.isArray(gemini_keys)) arr = gemini_keys;
-      else arr = [String(gemini_keys).trim()];
-
-      normalized = arr
-        .map((x) => {
-          if (typeof x === "string") return { key: x.trim(), label: null };
-          if (x && typeof x === "object")
-            return { key: String(x.key || x.k || "").trim(), label: x.label ? String(x.label).trim() : null };
-          return { key: "", label: null };
-        })
-        .filter((x) => x.key);
-
-      if (!normalized.length) {
-        return res.status(400).json(buildError("VALIDATION_ERROR", "gemini_keys is empty"));
+  app.post("/api/dev/seed-secrets", async (req, res) => {
+    try {
+      const admin = String(req.headers["x-admin-token"] || "");
+      if (!DEV_ADMIN_TOKEN || admin !== DEV_ADMIN_TOKEN) {
+        return res.status(401).json(buildError("UNAUTHORIZED", "Invalid admin token"));
       }
 
-            const mode = String(action || "replace").toLowerCase(); // replace | append
-      const MAX_KEYS = 1; // fallback-only: Gemini keyring은 1개 키만 유지
+      const {
+        user_id,
+        // integrations
+        naver_id,
+        naver_secret,
+        klaw_key,
+        github_token,
+        deepl_key,
+        // (옵션) gemini keyring도 같이 넣고 싶으면
+        gemini_keys,
+        action,
+      } = req.body || {};
 
-      // ✅ dedupe incoming by plaintext
-      const _seenIn = new Set();
-      const normalizedUnique = (normalized || [])
-        .map((x) => ({ key: String(x?.key || "").trim(), label: x?.label ?? null }))
-        .filter((x) => x.key)
-        .filter((x) => {
-          if (_seenIn.has(x.key)) return false;
-          _seenIn.add(x.key);
-          return true;
-        });
+      const uid = String(user_id || "").trim();
+      if (!uid) {
+        return res.status(400).json(buildError("VALIDATION_ERROR", "user_id is required"));
+      }
 
-      let keys = Array.isArray(secrets.gemini.keyring.keys) ? secrets.gemini.keyring.keys : [];
+      const row = await loadUserSecretsRow(uid);
+      let secrets = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
 
-      // ✅ helper: dedupe key-objects by decrypted plaintext (best-effort)
-      const _dedupeKeysByPlain = (arr) => {
-        const out = [];
-        const seen = new Set();
-        for (const k of arr || []) {
-          let plain = null;
-          try {
-            plain = String(decryptSecret(k?.enc) ?? "").trim();
-          } catch (_) {}
-          // decrypt 실패/빈값이면 그대로 보존(rare) - 대신 MAX_KEYS가 있으니 폭증 방지됨
-          if (!plain) {
+      // ✅ integrations 암호화 저장(빈 문자열이면 삭제)
+      secrets = applyIntegrationsSecretPatch(secrets, {
+        naver_id,
+        naver_secret,
+        klaw_key,
+        github_token,
+        deepl_key,
+      });
+
+      // ✅ (옵션) gemini keyring도 seed
+      const hasGeminiPayload =
+        (Array.isArray(gemini_keys) && gemini_keys.length > 0) ||
+        (typeof gemini_keys === "string" && String(gemini_keys).trim());
+
+      if (hasGeminiPayload) {
+        let normalized = [];
+        let arr = [];
+        if (Array.isArray(gemini_keys)) arr = gemini_keys;
+        else arr = [String(gemini_keys).trim()];
+
+        normalized = arr
+          .map((x) => {
+            if (typeof x === "string") return { key: x.trim(), label: null };
+            if (x && typeof x === "object")
+              return { key: String(x.key || x.k || "").trim(), label: x.label ? String(x.label).trim() : null };
+            return { key: "", label: null };
+          })
+          .filter((x) => x.key);
+
+        if (!normalized.length) {
+          return res.status(400).json(buildError("VALIDATION_ERROR", "gemini_keys is empty"));
+        }
+
+        const mode = String(action || "replace").toLowerCase(); // replace | append
+        const MAX_KEYS = 1; // fallback-only: Gemini keyring은 1개 키만 유지
+
+        // ✅ dedupe incoming by plaintext
+        const _seenIn = new Set();
+        const normalizedUnique = (normalized || [])
+          .map((x) => ({ key: String(x?.key || "").trim(), label: x?.label ?? null }))
+          .filter((x) => x.key)
+          .filter((x) => {
+            if (_seenIn.has(x.key)) return false;
+            _seenIn.add(x.key);
+            return true;
+          });
+
+        let keys = Array.isArray(secrets.gemini.keyring.keys) ? secrets.gemini.keyring.keys : [];
+
+        // ✅ helper: dedupe key-objects by decrypted plaintext (best-effort)
+        const _dedupeKeysByPlain = (arr) => {
+          const out = [];
+          const seen = new Set();
+          for (const k of arr || []) {
+            let plain = null;
+            try {
+              plain = String(decryptSecret(k?.enc) ?? "").trim();
+            } catch (_) { }
+            // decrypt 실패/빈값이면 그대로 보존(rare) - 대신 MAX_KEYS가 있으니 폭증 방지됨
+            if (!plain) {
+              out.push(k);
+              continue;
+            }
+            if (seen.has(plain)) continue;
+            seen.add(plain);
             out.push(k);
-            continue;
           }
-          if (seen.has(plain)) continue;
-          seen.add(plain);
-          out.push(k);
-        }
-        return out;
-      };
+          return out;
+        };
 
-      if (mode === "append") {
-        // existing plaintext set
-        const existingPlain = new Set();
-        for (const k of keys) {
-          try {
-            const t = String(decryptSecret(k?.enc) ?? "").trim();
-            if (t) existingPlain.add(t);
-          } catch (_) {}
-        }
+        if (mode === "append") {
+          // existing plaintext set
+          const existingPlain = new Set();
+          for (const k of keys) {
+            try {
+              const t = String(decryptSecret(k?.enc) ?? "").trim();
+              if (t) existingPlain.add(t);
+            } catch (_) { }
+          }
 
-        const newOnes = normalizedUnique
-          .filter((x) => !existingPlain.has(x.key))
-          .map((x) => ({
+          const newOnes = normalizedUnique
+            .filter((x) => !existingPlain.has(x.key))
+            .map((x) => ({
+              id: crypto.randomUUID(),
+              label: x.label,
+              enc: encryptSecret(x.key),
+              created_at: new Date().toISOString(),
+            }));
+
+          keys = _dedupeKeysByPlain([...keys, ...newOnes]).slice(0, MAX_KEYS);
+        } else {
+          keys = normalizedUnique.map((x) => ({
             id: crypto.randomUUID(),
             label: x.label,
             enc: encryptSecret(x.key),
             created_at: new Date().toISOString(),
           }));
+          keys = keys.slice(0, MAX_KEYS);
+        }
 
-        keys = _dedupeKeysByPlain([...keys, ...newOnes]).slice(0, MAX_KEYS);
-      } else {
-        keys = normalizedUnique.map((x) => ({
-          id: crypto.randomUUID(),
-          label: x.label,
-          enc: encryptSecret(x.key),
-          created_at: new Date().toISOString(),
-        }));
-        keys = keys.slice(0, MAX_KEYS);
+        const pac = await getPacificResetInfoCached();
+        secrets.gemini.keyring.keys = keys;
+        secrets.gemini.keyring.state = secrets.gemini.keyring.state || {};
+        secrets.gemini.keyring.state.active_id = keys[0]?.id || null;
+        secrets.gemini.keyring.state.exhausted_ids = {};
+        secrets.gemini.keyring.state.invalid_ids = {};
+        secrets.gemini.keyring.state.rate_limited_until = {};
+        secrets.gemini.keyring.state.last_reset_pt_date = pac.pt_date;
       }
 
-      const pac = await getPacificResetInfoCached();
-      secrets.gemini.keyring.keys = keys;
-secrets.gemini.keyring.state = secrets.gemini.keyring.state || {};
-secrets.gemini.keyring.state.active_id = keys[0]?.id || null;
-secrets.gemini.keyring.state.exhausted_ids = {};
-secrets.gemini.keyring.state.invalid_ids = {};
-secrets.gemini.keyring.state.rate_limited_until = {};
-secrets.gemini.keyring.state.last_reset_pt_date = pac.pt_date;
+      await upsertUserSecretsRow(uid, secrets);
+
+      const it = secrets.integrations || {};
+      return res.json(
+        buildSuccess({
+          seeded: true,
+          user_id: uid,
+          has_naver: !!(it.naver?.id_enc && it.naver?.secret_enc),
+          has_klaw: !!it.klaw?.key_enc,
+          has_github: !!it.github?.token_enc,
+          has_deepl: !!it.deepl?.key_enc,
+          gemini_key_count: (secrets?.gemini?.keyring?.keys || []).length,
+        })
+      );
+    } catch (e) {
+      console.error("❌ /api/dev/seed-secrets Error:", e.message);
+      return res.status(500).json(buildError("SEED_ERROR", "seed failed", e.message));
     }
-
-    await upsertUserSecretsRow(uid, secrets);
-
-    const it = secrets.integrations || {};
-    return res.json(
-      buildSuccess({
-        seeded: true,
-        user_id: uid,
-        has_naver: !!(it.naver?.id_enc && it.naver?.secret_enc),
-        has_klaw: !!it.klaw?.key_enc,
-        has_github: !!it.github?.token_enc,
-        has_deepl: !!it.deepl?.key_enc,
-        gemini_key_count: (secrets?.gemini?.keyring?.keys || []).length,
-      })
-    );
-  } catch (e) {
-    console.error("❌ /api/dev/seed-secrets Error:", e.message);
-    return res.status(500).json(buildError("SEED_ERROR", "seed failed", e.message));
-  }
-});
+  });
 }
 
 // ─────────────────────────────
@@ -3560,83 +3576,83 @@ app.post("/api/settings/save", async (req, res) => {
       return res.status(400).json(buildError("VALIDATION_ERROR", "userId 해결 실패"));
     }
 
-        const body0 = (() => {
-  if (!req.body) return {};
-  if (typeof req.body === "object") return req.body;
-  if (typeof req.body === "string") {
-    try { return JSON.parse(req.body); } catch { return {}; }
-  }
-  return {};
-})();
+    const body0 = (() => {
+      if (!req.body) return {};
+      if (typeof req.body === "object") return req.body;
+      if (typeof req.body === "string") {
+        try { return JSON.parse(req.body); } catch { return {}; }
+      }
+      return {};
+    })();
 
-// ✅ allow "settings" wrapper too (ex: { settings:{ integrations:{...}} })
-const body = (body0 && typeof body0.settings === "object" && body0.settings) ? body0.settings : body0;
+    // ✅ allow "settings" wrapper too (ex: { settings:{ integrations:{...}} })
+    const body = (body0 && typeof body0.settings === "object" && body0.settings) ? body0.settings : body0;
 
-// ✅ allow integrations to be at root OR under settings
-const integrationsIn =
-  (body && typeof body.integrations === "object" && body.integrations) ? body.integrations :
-  (body0 && typeof body0.integrations === "object" && body0.integrations) ? body0.integrations :
-  {};
+    // ✅ allow integrations to be at root OR under settings
+    const integrationsIn =
+      (body && typeof body.integrations === "object" && body.integrations) ? body.integrations :
+        (body0 && typeof body0.integrations === "object" && body0.integrations) ? body0.integrations :
+          {};
 
-// ✅ gemini section can be at root OR under settings
-const geminiIn =
-  (body && typeof body.gemini === "object" && body.gemini) ? body.gemini :
-  (body0 && typeof body0.gemini === "object" && body0.gemini) ? body0.gemini :
-  {};
+    // ✅ gemini section can be at root OR under settings
+    const geminiIn =
+      (body && typeof body.gemini === "object" && body.gemini) ? body.gemini :
+        (body0 && typeof body0.gemini === "object" && body0.gemini) ? body0.gemini :
+          {};
 
     const action = body.action ?? geminiIn.action ?? "replace";
 
     // ✅ gemini_keys: (레거시) top-level gemini_keys OR (신규) gemini.keyring.keys
     const gemini_keys =
-  body.gemini_keys ??
-  geminiIn.keyring?.keys ??
-  geminiIn.keys;
+      body.gemini_keys ??
+      geminiIn.keyring?.keys ??
+      geminiIn.keys;
 
-// ✅ integrations: (레거시) top-level OR (신규) integrations.* / integrations.<provider>.*
-const naver_id =
-  body.naver_id ??
-  integrationsIn.naver_id ??
-  integrationsIn.naver?.id ??
-  integrationsIn.naver?.client_id;
+    // ✅ integrations: (레거시) top-level OR (신규) integrations.* / integrations.<provider>.*
+    const naver_id =
+      body.naver_id ??
+      integrationsIn.naver_id ??
+      integrationsIn.naver?.id ??
+      integrationsIn.naver?.client_id;
 
-const naver_secret =
-  body.naver_secret ??
-  integrationsIn.naver_secret ??
-  integrationsIn.naver?.secret ??
-  integrationsIn.naver?.client_secret;
+    const naver_secret =
+      body.naver_secret ??
+      integrationsIn.naver_secret ??
+      integrationsIn.naver?.secret ??
+      integrationsIn.naver?.client_secret;
 
-const klaw_key =
-  body.klaw_key ??
-  integrationsIn.klaw_key ??
-  integrationsIn.klaw?.key;
+    const klaw_key =
+      body.klaw_key ??
+      integrationsIn.klaw_key ??
+      integrationsIn.klaw?.key;
 
-const github_token =
-  body.github_token ??
-  integrationsIn.github_token ??
-  integrationsIn.github?.token;
+    const github_token =
+      body.github_token ??
+      integrationsIn.github_token ??
+      integrationsIn.github?.token;
 
-const deepl_key =
-  body.deepl_key ??
-  integrationsIn.deepl_key ??
-  integrationsIn.deepl?.key;
+    const deepl_key =
+      body.deepl_key ??
+      integrationsIn.deepl_key ??
+      integrationsIn.deepl?.key;
 
-// ✅ Groq (router)
-const groq_key =
-  body.groq_key ??
-  body.groq_api_key ??
-  integrationsIn.groq_key ??
-  integrationsIn.groq_api_key ??
-  integrationsIn.groq?.key ??
-  integrationsIn.groq?.api_key ??
-  integrationsIn.groq?.token;
+    // ✅ Groq (router)
+    const groq_key =
+      body.groq_key ??
+      body.groq_api_key ??
+      integrationsIn.groq_key ??
+      integrationsIn.groq_api_key ??
+      integrationsIn.groq?.key ??
+      integrationsIn.groq?.api_key ??
+      integrationsIn.groq?.token;
 
-const hasOtherPayload =
-  naver_id !== undefined ||
-  naver_secret !== undefined ||
-  klaw_key !== undefined ||
-  github_token !== undefined ||
-  deepl_key !== undefined ||
-  groq_key !== undefined;
+    const hasOtherPayload =
+      naver_id !== undefined ||
+      naver_secret !== undefined ||
+      klaw_key !== undefined ||
+      github_token !== undefined ||
+      deepl_key !== undefined ||
+      groq_key !== undefined;
 
     const hasGeminiPayload =
       (Array.isArray(gemini_keys) && gemini_keys.length > 0) ||
@@ -3672,7 +3688,7 @@ const hasOtherPayload =
     const row = await loadUserSecretsRow(userId);
     let secrets = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
 
-        // ✅ NEW: 기타 키 저장(암호화). 빈 문자열이면 삭제
+    // ✅ NEW: 기타 키 저장(암호화). 빈 문자열이면 삭제
     secrets = applyIntegrationsSecretPatch(secrets, {
       naver_id,
       naver_secret,
@@ -3709,7 +3725,7 @@ const hasOtherPayload =
           let plain = null;
           try {
             plain = String(decryptSecret(k?.enc) ?? "").trim();
-          } catch (_) {}
+          } catch (_) { }
           if (!plain) {
             out.push(k);
             continue;
@@ -3727,7 +3743,7 @@ const hasOtherPayload =
           try {
             const t = String(decryptSecret(k?.enc) ?? "").trim();
             if (t) existingPlain.add(t);
-          } catch (_) {}
+          } catch (_) { }
         }
 
         const newOnes = normalizedUnique
@@ -3783,10 +3799,10 @@ const hasOtherPayload =
         next_reset_utc: pac?.next_reset_utc || null,
 
         has_naver: !!(it.naver?.id_enc && it.naver?.secret_enc),
-has_klaw: !!it.klaw?.key_enc,
-has_github: !!it.github?.token_enc,
-has_deepl: !!it.deepl?.key_enc,
-has_groq: !!it.groq?.api_key_enc, // ✅ ADD
+        has_klaw: !!it.klaw?.key_enc,
+        has_github: !!it.github?.token_enc,
+        has_deepl: !!it.deepl?.key_enc,
+        has_groq: !!it.groq?.api_key_enc, // ✅ ADD
       })
     );
   } catch (e) {
@@ -3821,7 +3837,7 @@ app.get("/api/settings/gemini/status", async (req, res) => {
     const state = secrets.gemini.keyring.state || {};
     const exhaustedIds = state.exhausted_ids || {};
 
-        const invalidIds = state.invalid_ids || {};
+    const invalidIds = state.invalid_ids || {};
     const rl = state.rate_limited_until || {};
     const nowMs = Date.now();
 
@@ -3846,31 +3862,31 @@ app.get("/api/settings/gemini/status", async (req, res) => {
       rate_limited_until: rl,
     }));
   } catch (e) {
-  const msg = String(e?.message || e || "");
-  const code = String(e?.code || "");
+    const msg = String(e?.message || e || "");
+    const code = String(e?.code || "");
 
-  // ✅ DB/네트워크 일시 장애는 500 대신 503 + Retry-After로 degrade
-  const transient =
-    _isPgTerminationError(e) ||
-    /timeout exceeded when trying to connect/i.test(msg) ||
-    /connection terminated due to connection timeout/i.test(msg) ||
-    code === "ETIMEDOUT" ||
-    code === "ECONNRESET" ||
-    code === "EPIPE" ||
-    code === "EAI_AGAIN";
+    // ✅ DB/네트워크 일시 장애는 500 대신 503 + Retry-After로 degrade
+    const transient =
+      _isPgTerminationError(e) ||
+      /timeout exceeded when trying to connect/i.test(msg) ||
+      /connection terminated due to connection timeout/i.test(msg) ||
+      code === "ETIMEDOUT" ||
+      code === "ECONNRESET" ||
+      code === "EPIPE" ||
+      code === "EAI_AGAIN";
 
-  if (transient) {
-    console.error("❌ /api/settings/gemini/status transient:", code, msg);
-    res.setHeader("Retry-After", "3");
-    res.setHeader("X-Retry-After-Ms", "3000");
-    return res
-      .status(503)
-      .json(buildError("GEMINI_STATUS_ERROR", "상태 조회 실패", msg));
+    if (transient) {
+      console.error("❌ /api/settings/gemini/status transient:", code, msg);
+      res.setHeader("Retry-After", "3");
+      res.setHeader("X-Retry-After-Ms", "3000");
+      return res
+        .status(503)
+        .json(buildError("GEMINI_STATUS_ERROR", "상태 조회 실패", msg));
+    }
+
+    console.error("❌ /api/settings/gemini/status Error:", msg);
+    return res.status(500).json(buildError("GEMINI_STATUS_ERROR", "상태 조회 실패", msg));
   }
-
-  console.error("❌ /api/settings/gemini/status Error:", msg);
-  return res.status(500).json(buildError("GEMINI_STATUS_ERROR", "상태 조회 실패", msg));
-}
 });
 
 // ✅ ADD: Groq key status (앱 ping/진단용)
@@ -3905,7 +3921,7 @@ app.get("/api/settings/groq/status", async (req, res) => {
         dec_ok = true;
         dec_len = k.length;
       }
-    } catch (_) {}
+    } catch (_) { }
 
     const allow_env_fallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
     const env_present = !!String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
@@ -3945,7 +3961,7 @@ app.get(
     failureRedirect: "/auth/failure",
     session: true,
   }),
-    (_, res) => res.redirect("/admin/ui")
+  (_, res) => res.redirect("/admin/ui")
 );
 app.get("/auth/failure", (_, res) =>
   res.status(401).send("❌ OAuth Failed")
@@ -4033,7 +4049,7 @@ function __normalizeWhitelistJson(json) {
     }
     json.display_only_domains = Array.from(set);
     json._display_only_set = new Set(json.display_only_domains);
-  } catch (_) {}
+  } catch (_) { }
 
   // lastUpdate 기본값 보정(없으면 "now")
   if (!json.lastUpdate) json.lastUpdate = new Date().toISOString();
@@ -4183,17 +4199,17 @@ async function updateNaverWhitelistIfNeeded({ force = false, reason = "auto" } =
 
   try {
     if (!NAVER_WHITELIST_SOURCE_URL) {
-  result.success = false;
-  result.message = "NAVER_WHITELIST_SOURCE_URL not set";
-  result.finishedAt = new Date().toISOString();
+      result.success = false;
+      result.message = "NAVER_WHITELIST_SOURCE_URL not set";
+      result.finishedAt = new Date().toISOString();
 
-  globalThis.__NAVER_WL_UPDATE_LAST = { ...result, ts: Date.now() };
-  return result;
-}
+      globalThis.__NAVER_WL_UPDATE_LAST = { ...result, ts: Date.now() };
+      return result;
+    }
 
     // current whitelist
     let oldWl = null;
-    try { oldWl = loadNaverWhitelist(); } catch (_) {}
+    try { oldWl = loadNaverWhitelist(); } catch (_) { }
 
     // decide whether to update (based on lastUpdate or file mtime)
     let should = !!force;
@@ -4204,13 +4220,13 @@ async function updateNaverWhitelistIfNeeded({ force = false, reason = "auto" } =
       try {
         const lu = oldWl?.lastUpdate ? new Date(String(oldWl.lastUpdate).trim()).getTime() : NaN;
         if (Number.isFinite(lu)) baseMs = lu;
-      } catch (_) {}
+      } catch (_) { }
 
       if (!baseMs) {
         try {
           const st = fs.statSync(whitelistPath);
           baseMs = st?.mtimeMs || null;
-        } catch (_) {}
+        } catch (_) { }
       }
 
       if (!baseMs) {
@@ -4437,7 +4453,7 @@ function loadNaverWhitelist() {
       json.display_only_domains = Array.from(set);
       // in-memory fast lookup
       json._display_only_set = new Set(json.display_only_domains);
-    } catch (_) {}
+    } catch (_) { }
 
     _NAVER_WL_CACHE = { mtimeMs: st.mtimeMs, json };
     return json;
@@ -4450,7 +4466,7 @@ function loadNaverWhitelist() {
 // ✅ Naver whitelist meta (admin/diag)
 function getNaverWhitelistMeta() {
   let wl = null;
-  try { wl = loadNaverWhitelist(); } catch (_) {}
+  try { wl = loadNaverWhitelist(); } catch (_) { }
 
   let fileMtimeIso = null;
   let fileMtimeMs = null;
@@ -4458,7 +4474,7 @@ function getNaverWhitelistMeta() {
     const st = fs.statSync(whitelistPath);
     fileMtimeMs = st.mtimeMs;
     fileMtimeIso = new Date(st.mtimeMs).toISOString();
-  } catch (_) {}
+  } catch (_) { }
 
   const tiers = {};
   let totalHosts = 0;
@@ -4489,7 +4505,7 @@ function getNaverWhitelistMeta() {
         if (daysPassed < 0) daysPassed = 0;
       }
     }
-  } catch (_) {}
+  } catch (_) { }
 
   return {
     loaded: !!wl,
@@ -4566,7 +4582,7 @@ function resolveNaverTier(urlOrHost) {
         };
       }
     }
-  } catch (_) {}
+  } catch (_) { }
 
   const order = ["tier1", "tier2", "tier3", "tier4", "tier5"];
   for (const t of order) {
@@ -4625,8 +4641,8 @@ function dedupeByLink(items = []) {
 }
 
 function __resolveEnginesRequestedFromReq({ req, partial_scores, engines, safeMode }) {
-  // ✅ DV/CV는 GitHub 전용(뉴스/논문 엔진 오용 방지)
-  if (safeMode === "dv" || safeMode === "cv") return ["github"];
+  // ✅ DV는 GitHub 전용(뉴스/논문 엔진 오용 방지)
+  if (safeMode === "dv") return ["github"];
 
   const raw =
     (req && req.body && typeof req.body === "object")
@@ -4644,7 +4660,7 @@ function __resolveEnginesRequestedFromReq({ req, partial_scores, engines, safeMo
   // allow only engines already allowed in this path (the default `engines` list)
   const allowed = new Set((Array.isArray(engines) ? engines : []).map(norm));
 
-    if (arr.length > 0) {
+  if (arr.length > 0) {
     const uniq = [...new Set(arr)];
     const filtered = uniq.filter((e) => allowed.has(e));
 
@@ -4662,7 +4678,7 @@ function __resolveEnginesRequestedFromReq({ req, partial_scores, engines, safeMo
           reason: "no_matching_engine_in_allowed_set",
         };
       }
-    } catch (_) {}
+    } catch (_) { }
 
     return [];
   }
@@ -4763,7 +4779,7 @@ async function safeFetch(name, fn, q) {
       const isTimeout =
         code === "TIMEBOX_TIMEOUT" || code === "ECONNABORTED" || code === "ERR_CANCELED";
       const isRetryableStatus =
-  status === 408 || (typeof status === "number" && status >= 500);
+        status === 408 || (typeof status === "number" && status >= 500);
 
       const shouldRetry = i < attempts - 1 && (isTimeout || isRetryableStatus || !status);
 
@@ -4867,8 +4883,8 @@ async function callNaver(query, clientId, clientSecret, ctx = {}) {
   };
 
   const endpoints = [
-    { type: "news",  url: "https://openapi.naver.com/v1/search/news.json" },
-    { type: "web",   url: "https://openapi.naver.com/v1/search/webkr.json" },
+    { type: "news", url: "https://openapi.naver.com/v1/search/news.json" },
+    { type: "web", url: "https://openapi.naver.com/v1/search/webkr.json" },
     { type: "encyc", url: "https://openapi.naver.com/v1/search/encyc.json" },
   ];
 
@@ -4878,7 +4894,7 @@ async function callNaver(query, clientId, clientSecret, ctx = {}) {
     .map(normalizeNaverToken)
     .filter((t) => t.length > 1);
 
-    // ✅ Naver 결과 토큰 필터 완화:
+  // ✅ Naver 결과 토큰 필터 완화:
   // - site:/도메인/테이블ID(DT_*) 같은 "구조화 쿼리"는 title/desc에 토큰이 안 박히는 경우가 많아
   //   requiredHits를 낮춰서 "0건 드랍"을 방지한다.
   const requiredHits = (() => {
@@ -4921,68 +4937,68 @@ async function callNaver(query, clientId, clientSecret, ctx = {}) {
           const link = i.link;
 
           const source_url = i.originallink || i.link; // ✅news는 originallink가 진짜 출처
-const tierInfo = resolveNaverTier(source_url);
-const typeWeight = NAVER_TYPE_WEIGHTS[ep.type] ?? 1;
+          const tierInfo = resolveNaverTier(source_url);
+          const typeWeight = NAVER_TYPE_WEIGHTS[ep.type] ?? 1;
 
-const display_only = !!tierInfo.display_only;
+          const display_only = !!tierInfo.display_only;
 
-// ✅(옵션) 화이트리스트가 없더라도 "공식 성격" 도메인이면...
-let tier = tierInfo.tier;
+          // ✅(옵션) 화이트리스트가 없더라도 "공식 성격" 도메인이면...
+          let tier = tierInfo.tier;
 
-let tier_weight =
-  (typeof tierInfo.weight === "number" && Number.isFinite(tierInfo.weight))
-    ? tierInfo.weight
-    : 1;
+          let tier_weight =
+            (typeof tierInfo.weight === "number" && Number.isFinite(tierInfo.weight))
+              ? tierInfo.weight
+              : 1;
 
-let whitelisted = !!tier;
-let inferred = false;
+          let whitelisted = !!tier;
+          let inferred = false;
 
-// ✅ display-only는 "표시만" (증거/스코어링은 아래 루프에서 제외 처리 예정)
-if (display_only) {
-  tier = null;
-  whitelisted = false;
-  inferred = false;
-  tier_weight = NAVER_NON_WHITELIST_FACTOR;
-} else {
-  // ✅ 비화이트리스트 기본 감점(= 1.0 방지)
-  if (!whitelisted) {
-    tier_weight = NAVER_NON_WHITELIST_FACTOR;
-  }
+          // ✅ display-only는 "표시만" (증거/스코어링은 아래 루프에서 제외 처리 예정)
+          if (display_only) {
+            tier = null;
+            whitelisted = false;
+            inferred = false;
+            tier_weight = NAVER_NON_WHITELIST_FACTOR;
+          } else {
+            // ✅ 비화이트리스트 기본 감점(= 1.0 방지)
+            if (!whitelisted) {
+              tier_weight = NAVER_NON_WHITELIST_FACTOR;
+            }
 
-  // ✅ "공식처럼 보임"은 tier만 주고, whitelisted는 true로 두지 않음(유지)
-  if (!tier && hostLooksOfficial(tierInfo.host)) {
-    tier = "tier2"; // 표시용 티어
-    tier_weight = NAVER_INFERRED_OFFICIAL_FACTOR;
-    inferred = true;
-  }
-}
+            // ✅ "공식처럼 보임"은 tier만 주고, whitelisted는 true로 두지 않음(유지)
+            if (!tier && hostLooksOfficial(tierInfo.host)) {
+              tier = "tier2"; // 표시용 티어
+              tier_weight = NAVER_INFERRED_OFFICIAL_FACTOR;
+              inferred = true;
+            }
+          }
 
-return {
-  title: cleanTitle,
-  desc: cleanDesc,
-  link,
-  source_url,
-  origin: "naver",
-  naver_type: ep.type,
+          return {
+            title: cleanTitle,
+            desc: cleanDesc,
+            link,
+            source_url,
+            origin: "naver",
+            naver_type: ep.type,
 
-  // ✅ whitelist/tier meta
-  tier,
-  tier_weight,
-  type_weight: typeWeight,
-  whitelisted,
-  inferred,
-  display_only,
+            // ✅ whitelist/tier meta
+            tier,
+            tier_weight,
+            type_weight: typeWeight,
+            whitelisted,
+            inferred,
+            display_only,
 
-  // ✅ news만 pubDate가 있음
-  pubDate: ep.type === "news" ? (i.pubDate || null) : null,
+            // ✅ news만 pubDate가 있음
+            pubDate: ep.type === "news" ? (i.pubDate || null) : null,
 
-  // ✅ domain 판정은 source_url(=originallink) 기준
-  source_host: tierInfo.host || null,
-  match_domain: tierInfo.match_domain || null,
+            // ✅ domain 판정은 source_url(=originallink) 기준
+            source_host: tierInfo.host || null,
+            match_domain: tierInfo.match_domain || null,
 
-  ...(inferred ? { _whitelist_inferred: true } : {}),
-  ...(display_only ? { _whitelist_display_only: true } : {}),
-};
+            ...(inferred ? { _whitelist_inferred: true } : {}),
+            ...(display_only ? { _whitelist_display_only: true } : {}),
+          };
         }) || [];
 
       // 🔹 제목/요약 토큰 필터(완화된 requiredHits 사용)
@@ -5003,15 +5019,15 @@ return {
       const s = e?.response?.status;
 
       // ✅ BAD 키(401/403)는 즉시 "치명 오류"로 중단시켜야 함
-     if (s === 401 || s === 403) {
-  const err = new Error("NAVER_AUTH_ERROR");
-  err.code = "NAVER_AUTH_ERROR";
-  err.httpStatus = 401;
-  err.detail = { status: s };
-  err.publicMessage = "Naver client id / secret 인증에 실패했습니다. (올바른 키인지 확인하세요)";
-  err._fatal = true;
-  throw err;
-}
+      if (s === 401 || s === 403) {
+        const err = new Error("NAVER_AUTH_ERROR");
+        err.code = "NAVER_AUTH_ERROR";
+        err.httpStatus = 401;
+        err.detail = { status: s };
+        err.publicMessage = "Naver client id / secret 인증에 실패했습니다. (올바른 키인지 확인하세요)";
+        err._fatal = true;
+        throw err;
+      }
 
       // 다른 에러는 일단 다음 endpoint 시도 (news만 죽고 web은 살 수 있음)
       if (DEBUG) console.warn("⚠️ Naver endpoint fail:", ep.type, s, e.message);
@@ -5261,10 +5277,10 @@ async function fetchGitHub(q, token, ctx = {}) {
       .trim();
 
     const stop = new Set([
-      "how","to","use","using","in","on","for","with","without","from",
-      "a","an","the","and","or","of","is","are","was","were","be","been","being",
-      "please","help","example","examples","tutorial","guide","getting","start","starter",
-      "node","nodejs","express","next","react","vue","angular"
+      "how", "to", "use", "using", "in", "on", "for", "with", "without", "from",
+      "a", "an", "the", "and", "or", "of", "is", "are", "was", "were", "be", "been", "being",
+      "please", "help", "example", "examples", "tutorial", "guide", "getting", "start", "starter",
+      "node", "nodejs", "express", "next", "react", "vue", "angular"
     ]);
 
     const tokens = cleaned
@@ -5354,8 +5370,8 @@ async function fetchGitHub(q, token, ctx = {}) {
     const h = e?.response?.headers || {};
 
     const rlRemain = h["x-ratelimit-remaining"] ?? h["X-RateLimit-Remaining"];
-    const rlReset  = h["x-ratelimit-reset"] ?? h["X-RateLimit-Reset"]; // epoch sec
-    const ra       = h["retry-after"] ?? h["Retry-After"]; // sec (있을 때만)
+    const rlReset = h["x-ratelimit-reset"] ?? h["X-RateLimit-Reset"]; // epoch sec
+    const ra = h["retry-after"] ?? h["Retry-After"]; // sec (있을 때만)
 
     const isRateLimit =
       (s === 403 || s === 429) &&
@@ -5420,7 +5436,7 @@ function isRelevantGithubRepo(r) {
   // ✅ (DV/CV 품질) 대형 curated/awesome 리스트 레포 제거
   try {
     if (typeof isBigCuratedListRepo === "function" && isBigCuratedListRepo(r)) return false;
-  } catch {}
+  } catch { }
 
   const desc = String(r?.description || "").toLowerCase();
   const topics = Array.isArray(r?.topics) ? r.topics.join(" ").toLowerCase() : "";
@@ -5580,21 +5596,21 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const { data } = await withGeminiPermit(() =>
-  withTimebox(
-    ({ signal }) =>
-      axios.post(url, payload, {
-        timeout: timeoutMs,
-        signal,
-        headers: {
-          "Content-Type": "application/json",
-          ...(opts.headers || {}),
-          "x-goog-api-key": apiKey,
-        },
-      }),
-    timeoutMs,
-    label
-  )
-);
+        withTimebox(
+          ({ signal }) =>
+            axios.post(url, payload, {
+              timeout: timeoutMs,
+              signal,
+              headers: {
+                "Content-Type": "application/json",
+                ...(opts.headers || {}),
+                "x-goog-api-key": apiKey,
+              },
+            }),
+          timeoutMs,
+          label
+        )
+      );
 
       const text = extractGeminiText(data);
       if ((text || "").trim().length < minChars) {
@@ -5634,68 +5650,68 @@ async function fetchGeminiRaw({ model, gemini_key, payload, opts = {} }) {
       if (status === 400 || status === 401 || status === 403 || status === 404) throw e;
       if (e?._gemini_empty) throw e;
 
-            const isTimeout =
-  code === "TIMEBOX_TIMEOUT" || code === "ECONNABORTED" || code === "ERR_CANCELED";
+      const isTimeout =
+        code === "TIMEBOX_TIMEOUT" || code === "ECONNABORTED" || code === "ERR_CANCELED";
 
-// ✅ 429는 여기서 재시도 금지(증폭 방지)
-// + 상위(/api/verify)에서 Retry-After를 안정적으로 내려줄 수 있게 "정규화"해서 throw
-if (status === 429) {
-  // Retry-After(ms) 최대한 파싱, 실패하면 60s
-  let raMs = null;
+      // ✅ 429는 여기서 재시도 금지(증폭 방지)
+      // + 상위(/api/verify)에서 Retry-After를 안정적으로 내려줄 수 있게 "정규화"해서 throw
+      if (status === 429) {
+        // Retry-After(ms) 최대한 파싱, 실패하면 60s
+        let raMs = null;
 
-  // (1) header: Retry-After (초)
-  const ra = e?.response?.headers?.["retry-after"] ?? e?.response?.headers?.["Retry-After"];
-  if (ra != null) {
-    const sec = parseFloat(String(ra).trim());
-    if (Number.isFinite(sec)) raMs = Math.max(0, Math.ceil(sec * 1000));
-  }
+        // (1) header: Retry-After (초)
+        const ra = e?.response?.headers?.["retry-after"] ?? e?.response?.headers?.["Retry-After"];
+        if (ra != null) {
+          const sec = parseFloat(String(ra).trim());
+          if (Number.isFinite(sec)) raMs = Math.max(0, Math.ceil(sec * 1000));
+        }
 
-  // (2) message: "retry in ... ms/s"
-  if (raMs == null) {
-    const s = String(msg || "");
-    const mMs = s.match(/retry in\s+([0-9.]+)\s*ms/i);
-    const mS = s.match(/retry in\s+([0-9.]+)\s*s/i);
-    if (mMs) raMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
-    else if (mS) raMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
-  }
+        // (2) message: "retry in ... ms/s"
+        if (raMs == null) {
+          const s = String(msg || "");
+          const mMs = s.match(/retry in\s+([0-9.]+)\s*ms/i);
+          const mS = s.match(/retry in\s+([0-9.]+)\s*s/i);
+          if (mMs) raMs = Math.max(0, Math.ceil(parseFloat(mMs[1])));
+          else if (mS) raMs = Math.max(0, Math.ceil(parseFloat(mS[1]) * 1000));
+        }
 
-  if (raMs == null) raMs = 60000; // fallback 60s
+        if (raMs == null) raMs = 60000; // fallback 60s
 
-  // ✅ 프로세스 레벨 즉시 쿨다운(같은 요청/다른 요청의 연쇄 호출 차단)
-  try { bumpGeminiMemoryCooldown(raMs); } catch (_) {}
+        // ✅ 프로세스 레벨 즉시 쿨다운(같은 요청/다른 요청의 연쇄 호출 차단)
+        try { bumpGeminiMemoryCooldown(raMs); } catch (_) { }
 
-  const err429 = new Error("GEMINI_RATE_LIMIT");
-  err429.code = "GEMINI_RATE_LIMIT";
-  err429.httpStatus = 429;
-  err429.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
-  err429.detail = {
-    stage: "raw",
-    model,
-    label,
-    last_status: 429,
-    last_error: String(msg || ""),
-    retry_after_ms: raMs,
-  };
-  throw err429;
-}
+        const err429 = new Error("GEMINI_RATE_LIMIT");
+        err429.code = "GEMINI_RATE_LIMIT";
+        err429.httpStatus = 429;
+        err429.publicMessage = "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.";
+        err429.detail = {
+          stage: "raw",
+          model,
+          label,
+          last_status: 429,
+          last_error: String(msg || ""),
+          retry_after_ms: raMs,
+        };
+        throw err429;
+      }
 
-const isRetryableStatus =
-  status === 408 || (typeof status === "number" && status >= 500);
+      const isRetryableStatus =
+        status === 408 || (typeof status === "number" && status >= 500);
 
-const shouldRetry = attempt < maxRetries && (isTimeout || isRetryableStatus || !status);
+      const shouldRetry = attempt < maxRetries && (isTimeout || isRetryableStatus || !status);
 
-if (shouldRetry) {
-  if (DEBUG) {
-    console.warn(
-      `⚠️ retryable error in ${label} (attempt=${attempt + 1}/${maxRetries + 1}):`,
-      msg
-    );
-  }
-  await sleep(baseMs * Math.pow(2, attempt));
-  continue;
-}
+      if (shouldRetry) {
+        if (DEBUG) {
+          console.warn(
+            `⚠️ retryable error in ${label} (attempt=${attempt + 1}/${maxRetries + 1}):`,
+            msg
+          );
+        }
+        await sleep(baseMs * Math.pow(2, attempt));
+        continue;
+      }
 
-throw e;
+      throw e;
     }
   }
 }
@@ -5751,7 +5767,7 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
     return raMs;
   };
 
-    // ✅ 429가 "프로젝트/키 단위"일 수 있으니, 다른 키(다른 프로젝트 포함)로 소수만 추가 시도 허용
+  // ✅ 429가 "프로젝트/키 단위"일 수 있으니, 다른 키(다른 프로젝트 포함)로 소수만 추가 시도 허용
   // - 증폭 방지를 위해 기본 2회로 제한 (hint 포함)
   const GEMINI_429_MAX_TRIES = Math.max(1, parseInt(process.env.GEMINI_429_MAX_TRIES || "2", 10));
   let _rl429_count = 0;
@@ -5882,7 +5898,7 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         // hint는 keyId가 없으므로 전역만 갱신
         try {
           await markGeminiKeyRateLimitedGlobal(userId, _rl429_minRetryAfterMs ?? raMs);
-        } catch (_) {}
+        } catch (_) { }
 
         const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
         err.code = "GEMINI_RATE_LIMIT";
@@ -5958,7 +5974,7 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         }
       }
 
-                  if (st === 429) {
+      if (st === 429) {
         const raMs = _parseRetryAfterMs(e);
 
         // key별 쿨다운(＋__global__) 갱신
@@ -5968,7 +5984,7 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         // ✅ 증폭 방지: 429면 "이 요청에서" 추가 키 시도 금지 → 즉시 전역 쿨다운 보강 후 종료
         try {
           await markGeminiKeyRateLimitedGlobal(userId, _rl429_minRetryAfterMs ?? raMs);
-        } catch (_) {}
+        } catch (_) { }
 
         const err = new Error("GEMINI_KEYRING_RATE_LIMITED");
         err.code = "GEMINI_RATE_LIMIT";
@@ -5986,7 +6002,7 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
         throw err;
       }
 
-            // ✅ 400 invalid key / 401 / 403 => exhausted(쿼터 소진) 금지. invalid_ids로 마킹 후 회전
+      // ✅ 400 invalid key / 401 / 403 => exhausted(쿼터 소진) 금지. invalid_ids로 마킹 후 회전
       if (st === 401 || st === 403 || (st === 400 && _isInvalidKey(e)) || _isInvalidKey(e)) {
         const row = await loadUserSecretsRow(userId);
         let secrets = _ensureGeminiSecretsShape(row.secrets);
@@ -6008,15 +6024,15 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
 
   const _keysStoredCount =
     Number.isFinite(lastKctx?.keys_count) ? lastKctx.keys_count :
-    Number.isFinite(lastKctx?.keysCount) ? lastKctx.keysCount :
-    null;
+      Number.isFinite(lastKctx?.keysCount) ? lastKctx.keysCount :
+        null;
 
   const _lastMsg = lastErr ? String(lastErr?.message || lastErr) : null;
   const _lastStatus =
     Number.isFinite(lastErr?.response?.status) ? lastErr.response.status :
-    Number.isFinite(lastErr?.status) ? lastErr.status :
-    Number.isFinite(lastErr?.httpStatus) ? lastErr.httpStatus :
-    null;
+      Number.isFinite(lastErr?.status) ? lastErr.status :
+        Number.isFinite(lastErr?.httpStatus) ? lastErr.httpStatus :
+          null;
 
   // ✅ 최종 에러가 overload면: 200코드 에러로 통일
   if (lastErr && _isOverloaded(lastErr)) {
@@ -6024,30 +6040,30 @@ async function fetchGeminiRotating({ userId, keyHint, model, payload, opts = {} 
   }
 
   const _is429 =
-  _lastStatus === 429 ||
-  (_lastMsg && /status\s*=?\s*429|quota exceeded|rate limit|generate_content_free_tier_requests/i.test(_lastMsg));
+    _lastStatus === 429 ||
+    (_lastMsg && /status\s*=?\s*429|quota exceeded|rate limit|generate_content_free_tier_requests/i.test(_lastMsg));
 
-const _isRateLimit =
-  _is429 ||
-  (lastErr && (lastErr.code === "GEMINI_RATE_LIMIT" || lastErr.message === "GEMINI_KEYRING_RATE_LIMITED"));
+  const _isRateLimit =
+    _is429 ||
+    (lastErr && (lastErr.code === "GEMINI_RATE_LIMIT" || lastErr.message === "GEMINI_KEYRING_RATE_LIMITED"));
 
-let _retryAfterMs = null;
-if (lastErr) {
-  try {
-    _retryAfterMs =
-      Number.isFinite(lastErr?.detail?.retry_after_ms) ? lastErr.detail.retry_after_ms : _parseRetryAfterMs(lastErr);
-  } catch {}
-}
+  let _retryAfterMs = null;
+  if (lastErr) {
+    try {
+      _retryAfterMs =
+        Number.isFinite(lastErr?.detail?.retry_after_ms) ? lastErr.detail.retry_after_ms : _parseRetryAfterMs(lastErr);
+    } catch { }
+  }
 
-err.code = _isRateLimit ? "GEMINI_RATE_LIMIT" : "GEMINI_KEY_EXHAUSTED";
+  err.code = _isRateLimit ? "GEMINI_RATE_LIMIT" : "GEMINI_KEY_EXHAUSTED";
 
-    // (옵션) keyring 상태를 detail에 포함(디버깅/운영 가시성)
+  // (옵션) keyring 상태를 detail에 포함(디버깅/운영 가시성)
   let _kr_state = null;
   try {
     const rowS = await loadUserSecretsRow(userId);
     const secretsS = _ensureGeminiSecretsShape(rowS.secrets);
     _kr_state = secretsS?.gemini?.keyring?.state || null;
-  } catch (_) {}
+  } catch (_) { }
 
   const _exhausted_ids = _kr_state?.exhausted_ids || {};
   const _invalid_ids = _kr_state?.invalid_ids || {};
@@ -6090,9 +6106,9 @@ function calcValidityScore(gitItems = []) {
     const stars = Math.min(r.stars || 0, 5000) / 5000;
     const forks = Math.min(r.forks || 0, 1000) / 1000;
     const upd = new Date(r.updated);
-const freshness = isNaN(upd.getTime())
-  ? 0.5
-  : 1 - Math.min((Date.now() - upd.getTime()) / (1000 * 60 * 60 * 24 * 365), 1);
+    const freshness = isNaN(upd.getTime())
+      ? 0.5
+      : 1 - Math.min((Date.now() - upd.getTime()) / (1000 * 60 * 60 * 24 * 365), 1);
     return 0.6 * stars + 0.3 * forks + 0.1 * freshness;
   });
 
@@ -6125,7 +6141,7 @@ async function fetchGeminiSmart({ userId, gemini_key, keyHint, model, payload, o
   const getStatus = (e) =>
     e?.response?.status ?? e?.status ?? e?.statusCode ?? null;
 
-      // 1) directKey/hintKey는 "rotating의 hint 1회 시도"로만 사용한다.
+  // 1) directKey/hintKey는 "rotating의 hint 1회 시도"로만 사용한다.
   //    (#direct로 raw를 직접 치면 429/쿨다운/회전 정책을 우회할 수 있음)
 
   // 2) 나머지는 keyHint(있으면 1순위) + keyring fallback 으로 rotating
@@ -6180,13 +6196,13 @@ ${JSON.stringify(githubData).slice(0, 2500)}
 `;
 
     const text = await fetchGeminiSmart({
-    userId,
-    gemini_key,
-    keyHint: gemini_key,
-    // ✅ pro 금지 → flash 계열만 사용 (env 단일화)
-    model: GEMINI_VERIFY_MODEL || "gemini-2.0-flash",
-    payload: { contents: [{ parts: [{ text: prompt }] }] },
-  });
+      userId,
+      gemini_key,
+      keyHint: gemini_key,
+      // ✅ pro 금지 → flash 계열만 사용 (env 단일화)
+      model: GEMINI_VERIFY_MODEL || "gemini-2.0-flash",
+      payload: { contents: [{ parts: [{ text: prompt }] }] },
+    });
 
     const trimmed = (text || "").trim();
     const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
@@ -6227,7 +6243,7 @@ async function buildGithubQueriesFromGemini(
   const __setDbg = (k, v) => {
     try {
       if (dbg && typeof dbg === "object") dbg[k] = v;
-    } catch {}
+    } catch { }
   };
 
   const __parseQueriesJson = (text) => {
@@ -6299,7 +6315,7 @@ ${baseText}
     //   - GROQ_API_KEY 있으면 먼저 Groq로 분류+쿼리 생성
     //   - 실패/키없음이면 기존 Gemini로 fallback
     // ─────────────────────────────
-        // ─────────────────────────────
+    // ─────────────────────────────
     // ✅ (NEW) Groq 우선 시도 (AUTO)
     //   - user_secrets(userId) 우선
     //   - env fallback은 GROQ_ALLOW_ENV_FALLBACK=1 일 때만
@@ -6510,15 +6526,15 @@ async function updateWeight(engine, truth, time) {
 
     const totalRuns = (prev?.total_runs || 0) + 1;
 
-// 5) avgTruth 기반 자동 보정계수(auto_ce) 계산 (0.9~1.1)
-//    ✅ 응답시간(avgResp)은 모니터링(저장)만 하고, 신뢰도 보정에는 반영하지 않음
-const targetTruth = 0.7; // 기준 Truth
-let truthAdj = avgTruth / targetTruth;
-if (truthAdj < 0.9) truthAdj = 0.9;
-if (truthAdj > 1.1) truthAdj = 1.1;
+    // 5) avgTruth 기반 자동 보정계수(auto_ce) 계산 (0.9~1.1)
+    //    ✅ 응답시간(avgResp)은 모니터링(저장)만 하고, 신뢰도 보정에는 반영하지 않음
+    const targetTruth = 0.7; // 기준 Truth
+    let truthAdj = avgTruth / targetTruth;
+    if (truthAdj < 0.9) truthAdj = 0.9;
+    if (truthAdj > 1.1) truthAdj = 1.1;
 
-const auto_ce = Math.max(0.9, Math.min(1.1, truthAdj));
-;
+    const auto_ce = Math.max(0.9, Math.min(1.1, truthAdj));
+    ;
 
     // 6) override_ce가 있으면 그 값을, 없으면 auto_ce를 effective_ce로 사용
     const override_ce =
@@ -6674,7 +6690,7 @@ function extractQuantNumberTokens(text) {
   const rawTokens = [];
   const re = /\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\b/g;
 
-    for (const m of s.matchAll(re)) {
+  for (const m of s.matchAll(re)) {
     const tok = m[0];
     const norm = normalizeNumToken(tok);
     if (!norm) continue;
@@ -6708,7 +6724,7 @@ function extractQuantNumberTokens(text) {
         // scaled도 토큰으로 추가(후단 dedupe/normalize에서 정리됨)
         rawTokens.push(scaled);
       }
-    } catch (_e) {}
+    } catch (_e) { }
   }
 
   // normalize 기준 dedup
@@ -6812,7 +6828,7 @@ const NAVER_NUMERIC_FETCH_MAX = parseInt(process.env.NAVER_NUMERIC_FETCH_MAX || 
 const STRICT_NUMERIC_PRUNE =
   String(process.env.STRICT_NUMERIC_PRUNE ?? "false").toLowerCase() === "true";
 
-  // ✅ Naver: widen pool, keep topK tight
+// ✅ Naver: widen pool, keep topK tight
 const NAVER_QUERY_MAX = Math.max(1, Math.min(5, parseInt(process.env.NAVER_QUERY_MAX || "3", 10)));
 const NAVER_PER_QUERY_DISPLAY = Math.max(3, Math.min(50, parseInt(process.env.NAVER_PER_QUERY_DISPLAY || "10", 10)));
 const NAVER_POOL_MAX = Math.max(5, Math.min(100, parseInt(process.env.NAVER_POOL_MAX || "20", 10)));
@@ -6939,8 +6955,8 @@ function extractKeywords(text, max = 12) {
   // 한글(2자+), 영문(3자+), 숫자(2자+) 토큰 추출
   const raw = s.match(/[가-힣]{2,}|[A-Za-z]{3,}|\d{2,}/g) || [];
   const stop = new Set([
-    "그리고","하지만","또한","대한","관련","대한민국","한국","사용자","질문","블록","내용",
-    "the","and","for","with","from","that","this","are","was","were","has","have"
+    "그리고", "하지만", "또한", "대한", "관련", "대한민국", "한국", "사용자", "질문", "블록", "내용",
+    "the", "and", "for", "with", "from", "that", "this", "are", "was", "were", "has", "have"
   ]);
 
   const out = [];
@@ -6984,14 +7000,14 @@ function pickTopNaverEvidenceForVerify({
   const minRel = Number.isFinite(minRelevance) ? minRelevance : 0.15;
 
   const needle = String(blockText || "").trim();
-const yearTokens = extractYearTokens(needle);
-const numTokens = extractQuantNumberTokens(needle); // years/1-digit 제외한 "수량성 숫자" 토큰
-const numTokensCompact = numTokens.map(normalizeNumToken);
+  const yearTokens = extractYearTokens(needle);
+  const numTokens = extractQuantNumberTokens(needle); // years/1-digit 제외한 "수량성 숫자" 토큰
+  const numTokensCompact = numTokens.map(normalizeNumToken);
 
   const kw = extractKeywords([query, blockText, ...(naverQueries || [])].join(" "), 14);
   const needNum = hasNumberLike(blockText) || hasNumberLike(query);
 
-    // tier1(core) 도메인 1개는 최소 포함되도록(가능하면)
+  // tier1(core) 도메인 1개는 최소 포함되도록(가능하면)
   const wl = loadNaverWhitelist();
   const tiersObj =
     wl && typeof wl === "object" && wl.tiers && typeof wl.tiers === "object" ? wl.tiers : {};
@@ -7050,18 +7066,18 @@ const numTokensCompact = numTokens.map(normalizeNumToken);
     const isDisplayOnly = (it?.display_only === true) || (it?._whitelist_display_only === true);
     if (isDisplayOnly) continue;
 
-        // whitelist-only: 비화이트리스트는 제외
+    // whitelist-only: 비화이트리스트는 제외
     // - 업스트림에서 tier/whitelisted 누락되어도 host로 재판정
     const __host0 =
       String(it?.host || it?.source_host || "").toLowerCase() || __getHostFromUrl(urlCand);
 
     // whitelist-only: 비화이트리스트는 제외
-// - inferred(tier만 부여)로 whitelist를 우회하지 않도록 tier 자체로는 통과시키지 않는다.
-// - upstream whitelisted 누락 방어는 host 매칭으로만 처리
-const isWhitelisted =
-  it?.whitelisted === true || (__host0 && __isWhitelistedHost(__host0));
+    // - inferred(tier만 부여)로 whitelist를 우회하지 않도록 tier 자체로는 통과시키지 않는다.
+    // - upstream whitelisted 누락 방어는 host 매칭으로만 처리
+    const isWhitelisted =
+      it?.whitelisted === true || (__host0 && __isWhitelistedHost(__host0));
 
-if (!isWhitelisted) continue;
+    if (!isWhitelisted) continue;
 
     // ✅ "한국" 1개만 맞아도 통과" 문제 해결: 최소 키워드 히트 수 요구
     const hits = __hitCount(text, kw);
@@ -7073,27 +7089,27 @@ if (!isWhitelisted) continue;
 
     const isNews = it?.naver_type === "news";
     const hasAnyNum = hasNumberLike(text);
-const textCompact = String(text || "").replace(/[,\s]/g, "");
-const urlCompact = String(urlCand || "").replace(/[,\s]/g, "");
+    const textCompact = String(text || "").replace(/[,\s]/g, "");
+    const urlCompact = String(urlCand || "").replace(/[,\s]/g, "");
 
-const hasYear = yearTokens.length
-  ? yearTokens.some((y) => {
-      const yy = String(y);
-      return (
-        text.includes(yy) ||
-        textCompact.includes(yy) ||
-        urlCand.includes(yy) ||
-        urlCompact.includes(yy)
-      );
-    })
-  : false;
+    const hasYear = yearTokens.length
+      ? yearTokens.some((y) => {
+        const yy = String(y);
+        return (
+          text.includes(yy) ||
+          textCompact.includes(yy) ||
+          urlCand.includes(yy) ||
+          urlCompact.includes(yy)
+        );
+      })
+      : false;
 
-const hasExactNum = numTokensCompact.length
-  ? numTokensCompact.some((n) => {
-      const nn = String(n || "");
-      return nn && (textCompact.includes(nn) || urlCompact.includes(nn));
-    })
-  : false;
+    const hasExactNum = numTokensCompact.length
+      ? numTokensCompact.some((n) => {
+        const nn = String(n || "");
+        return nn && (textCompact.includes(nn) || urlCompact.includes(nn));
+      })
+      : false;
 
     // ✅ 숫자형 질문이면: "숫자/연도 단서 없는 뉴스"는 잡음으로 보고 제외
     if (isNews && needNum && !hasAnyNum && !hasYear && !hasExactNum) continue;
@@ -7104,33 +7120,33 @@ const hasExactNum = numTokensCompact.length
 
     let bonus = 1.0;
     if (needNum) bonus *= hasAnyNum ? 1.15 : 0.85;
-  // ✅ year soft flag (no hard drop) + tag for logging
-// - NOTE: 여기(선정/스코어링)에서 __pen으로 감점하지 않는다 (중복 감점 방지)
-// - 최종 TruthScore 감점은 Swap-in A/B(soft_penalty_factor → 1회 곱)에서만 수행
-if (NAVER_STRICT_YEAR_MATCH && yearTokens.length) {
-  if (hasYear) {
-    bonus *= 1.10;
-  } else {
-    const __pen = Math.min(1.0, Math.max(0.0, Number(NAVER_YEAR_MISS_PENALTY) || 0.90));
+    // ✅ year soft flag (no hard drop) + tag for logging
+    // - NOTE: 여기(선정/스코어링)에서 __pen으로 감점하지 않는다 (중복 감점 방지)
+    // - 최종 TruthScore 감점은 Swap-in A/B(soft_penalty_factor → 1회 곱)에서만 수행
+    if (NAVER_STRICT_YEAR_MATCH && yearTokens.length) {
+      if (hasYear) {
+        bonus *= 1.10;
+      } else {
+        const __pen = Math.min(1.0, Math.max(0.0, Number(NAVER_YEAR_MISS_PENALTY) || 0.90));
 
-    // "메타(제목/스니펫)" 기준 soft-year-miss 태깅
-    // (이미 excerpt 단계에서 찍혔으면 덮어쓰지 않음)
-    if (!it?._soft_year_miss) {
-      it._soft_year_miss = true;
-      it._soft_year_miss_years = yearTokens.slice(0, 6);
-      it._soft_year_miss_penalty = __pen;
-      it._soft_year_miss_where = "naver_item_meta";
-    } else {
-      // 기존 플래그는 유지하되 penalty가 없으면 채움
-      if (
-        !(typeof it._soft_year_miss_penalty === "number" && Number.isFinite(it._soft_year_miss_penalty))
-      ) {
-        it._soft_year_miss_penalty = __pen;
+        // "메타(제목/스니펫)" 기준 soft-year-miss 태깅
+        // (이미 excerpt 단계에서 찍혔으면 덮어쓰지 않음)
+        if (!it?._soft_year_miss) {
+          it._soft_year_miss = true;
+          it._soft_year_miss_years = yearTokens.slice(0, 6);
+          it._soft_year_miss_penalty = __pen;
+          it._soft_year_miss_where = "naver_item_meta";
+        } else {
+          // 기존 플래그는 유지하되 penalty가 없으면 채움
+          if (
+            !(typeof it._soft_year_miss_penalty === "number" && Number.isFinite(it._soft_year_miss_penalty))
+          ) {
+            it._soft_year_miss_penalty = __pen;
+          }
+          if (!it._soft_year_miss_where) it._soft_year_miss_where = "naver_item_meta";
+        }
       }
-      if (!it._soft_year_miss_where) it._soft_year_miss_where = "naver_item_meta";
     }
-  }
-}
 
     if (numTokens.length && hasExactNum) bonus *= NAVER_NUM_MATCH_BOOST;
 
@@ -7187,7 +7203,7 @@ async function preprocessQVFVOneShot({
   const baseCore = (core_text || query || "").toString().trim();
   const userIntentQ = String(question || "").trim();
 
-    const prompt = `
+  const prompt = `
 너는 Cross-Verified AI의 "전처리 엔진"이다.
 목표: (QV/FV) 모드 확정(router_plan) + (QV일 때) 답변 생성 + 의미블록 분해 + 블록별 외부검증 엔진 쿼리 생성을 한 번에 수행한다.
 
@@ -7292,7 +7308,7 @@ async function preprocessQVFVOneShot({
 
     if (raw.length < 8) return raw;
 
-    const stop = new Set(["is","are","was","were","the","a","an","of","to","in","on","and","or","for","with","as","by","from"]);
+    const stop = new Set(["is", "are", "was", "were", "the", "a", "an", "of", "to", "in", "on", "and", "or", "for", "with", "as", "by", "from"]);
     const toks = raw.split(" ").filter(w => {
       const lw = w.toLowerCase();
       if (stop.has(lw)) return false;
@@ -7303,85 +7319,85 @@ async function preprocessQVFVOneShot({
     return out.length >= 8 ? out : raw;
   }
 
-   const __normalizeParsed = (parsedObj, meta) => {
+  const __normalizeParsed = (parsedObj, meta) => {
     const answer_ko0 = String(parsedObj?.answer_ko || "").trim();
-const korean_core0 = String(parsedObj?.korean_core || "").trim() || normalizeKoreanQuestion(baseCore);
-const english_core0 = String(parsedObj?.english_core || "").trim() || String(query || "").trim();
+    const korean_core0 = String(parsedObj?.korean_core || "").trim() || normalizeKoreanQuestion(baseCore);
+    const english_core0 = String(parsedObj?.english_core || "").trim() || String(query || "").trim();
 
-// ✅ (server-side) naver query safety net: numeric/pop official seeds + "+" sanitize
-const __baseForDetect = String(query || userIntentQ || baseCore || "").trim();
-const __isPop = /(인구|총인구|주민등록인구|장래인구추계|인구추계)/i.test(__baseForDetect);
-const __isNumericLike =
-  /\d/.test(__baseForDetect) ||
-  /(인구|명|금액|원|달러|USD|KRW|비율|퍼센트|%|수치|규모|GDP|성장률|물가|인플레이션|실업률|환율|통계|추계|집계)/i.test(__baseForDetect);
+    // ✅ (server-side) naver query safety net: numeric/pop official seeds + "+" sanitize
+    const __baseForDetect = String(query || userIntentQ || baseCore || "").trim();
+    const __isPop = /(인구|총인구|주민등록인구|장래인구추계|인구추계)/i.test(__baseForDetect);
+    const __isNumericLike =
+      /\d/.test(__baseForDetect) ||
+      /(인구|명|금액|원|달러|USD|KRW|비율|퍼센트|%|수치|규모|GDP|성장률|물가|인플레이션|실업률|환율|통계|추계|집계)/i.test(__baseForDetect);
 
-const __year = (() => {
-  const m = __baseForDetect.match(/\b(19|20)\d{2}\b/);
-  return m ? m[0] : "";
-})();
+    const __year = (() => {
+      const m = __baseForDetect.match(/\b(19|20)\d{2}\b/);
+      return m ? m[0] : "";
+    })();
 
-const __cleanNaverQ = (s) => {
-  let t = String(s || "").trim();
+    const __cleanNaverQ = (s) => {
+      let t = String(s || "").trim();
 
-  // prohibit literal '+' (will become %2B after encodeURIComponent)
-  t = t.replace(/[+]/g, " ");
+      // prohibit literal '+' (will become %2B after encodeURIComponent)
+      t = t.replace(/[+]/g, " ");
 
-  // optional: 괄호/따옴표 최소 정리
-  t = t.replace(/[()"'`]/g, " ");
+      // optional: 괄호/따옴표 최소 정리
+      t = t.replace(/[()"'`]/g, " ");
 
-  t = t.replace(/\s+/g, " ").trim();
-  if (!t) return "";
-  return t.length <= 30 ? t : t.slice(0, 30).trim();
-};
+      t = t.replace(/\s+/g, " ").trim();
+      if (!t) return "";
+      return t.length <= 30 ? t : t.slice(0, 30).trim();
+    };
 
-const __dedupeNaver = (arr) => {
-  const seen = new Set();
-  const out = [];
-  for (const it of (arr || [])) {
-    const s = __cleanNaverQ(it);
-    if (!s) continue;
-    const k = s.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(s);
-  }
-  return out;
-};
+    const __dedupeNaver = (arr) => {
+      const seen = new Set();
+      const out = [];
+      for (const it of (arr || [])) {
+        const s = __cleanNaverQ(it);
+        if (!s) continue;
+        const k = s.toLowerCase();
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push(s);
+      }
+      return out;
+    };
 
-const __mkYearNaverQ = (seed) => {
-  const s = __cleanNaverQ(seed);
-  if (!s) return "";
-  const y = String(__year || "").trim();
-  if (y) {
-    const cand1 = __cleanNaverQ(`${y} ${s}`);
-    if (cand1) return cand1;
-  }
-  return s;
-};
+    const __mkYearNaverQ = (seed) => {
+      const s = __cleanNaverQ(seed);
+      if (!s) return "";
+      const y = String(__year || "").trim();
+      if (y) {
+        const cand1 = __cleanNaverQ(`${y} ${s}`);
+        if (cand1) return cand1;
+      }
+      return s;
+    };
 
-const __officialNaverSeedsRaw = __isPop
-  ? [
-      "KOSIS DT_1BPA002 총인구",
-      "통계청 장래인구추계 총인구",
-      "주민등록인구 mois",
-      "KOSIS 인구 통계표",
-    ]
-  : (__isNumericLike
+    const __officialNaverSeedsRaw = __isPop
       ? [
+        "KOSIS DT_1BPA002 총인구",
+        "통계청 장래인구추계 총인구",
+        "주민등록인구 mois",
+        "KOSIS 인구 통계표",
+      ]
+      : (__isNumericLike
+        ? [
           "KOSIS 통계표",
           "통계청 통계",
         ]
-      : []);
+        : []);
 
-const __officialNaverSeeds =
-  __officialNaverSeedsRaw.length
-    ? __dedupeNaver(__officialNaverSeedsRaw.map(__mkYearNaverQ))
-    : [];
+    const __officialNaverSeeds =
+      __officialNaverSeedsRaw.length
+        ? __dedupeNaver(__officialNaverSeedsRaw.map(__mkYearNaverQ))
+        : [];
 
-// ─────────────────────────────
-// router_plan normalize (preprocess output)
-// ─────────────────────────────
-const __normalizePreRouterPlan = (rpRaw) => {
+    // ─────────────────────────────
+    // router_plan normalize (preprocess output)
+    // ─────────────────────────────
+    const __normalizePreRouterPlan = (rpRaw) => {
       try {
         const m0 = String(mode || "").toLowerCase().trim();
         const hasSnippetClaim = String(baseCore || "").trim().length >= 20;
@@ -7464,25 +7480,25 @@ const __normalizePreRouterPlan = (rpRaw) => {
         const crossrefQ = limitChars(__cleanAcademicQuery(eq.crossref || english_core0), 90);
         const openalexQ = limitChars(__cleanAcademicQuery(eq.openalex || english_core0), 90);
         const wikidataQ = limitChars(eq.wikidata || korean_core0, 50);
-        const gdeltQ    = limitChars(eq.gdelt   || english_core0, 120);
+        const gdeltQ = limitChars(eq.gdelt || english_core0, 120);
 
         let naverArr = Array.isArray(eq.naver)
-  ? eq.naver
-  : (typeof eq.naver === "string" ? [eq.naver] : []);
+          ? eq.naver
+          : (typeof eq.naver === "string" ? [eq.naver] : []);
 
-naverArr = __dedupeNaver(naverArr);
+        naverArr = __dedupeNaver(naverArr);
 
-if (naverArr.length === 0) {
-  const seed = String(b?.text || "").trim() || korean_core0;
-  naverArr = __dedupeNaver(fallbackNaverQueryFromText(seed));
-}
+        if (naverArr.length === 0) {
+          const seed = String(b?.text || "").trim() || korean_core0;
+          naverArr = __dedupeNaver(fallbackNaverQueryFromText(seed));
+        }
 
-// ✅ official seeds prepend (esp. numeric/pop questions) + cap
-if (__officialNaverSeeds.length) {
-  naverArr = __dedupeNaver([ ...__officialNaverSeeds, ...naverArr ]);
-}
+        // ✅ official seeds prepend (esp. numeric/pop questions) + cap
+        if (__officialNaverSeeds.length) {
+          naverArr = __dedupeNaver([...__officialNaverSeeds, ...naverArr]);
+        }
 
-naverArr = naverArr.slice(0, BLOCK_NAVER_MAX_QUERIES);
+        naverArr = naverArr.slice(0, BLOCK_NAVER_MAX_QUERIES);
 
         const text = clipBlockText(String(b?.text || "").trim(), 260);
 
@@ -7528,7 +7544,7 @@ naverArr = naverArr.slice(0, BLOCK_NAVER_MAX_QUERIES);
     };
   };
 
-    // ─────────────────────────────
+  // ─────────────────────────────
   // 1) Groq first (optional)
   // ─────────────────────────────
   const GROQ_QVFV_PRE_ENABLE =
@@ -7537,101 +7553,101 @@ naverArr = naverArr.slice(0, BLOCK_NAVER_MAX_QUERIES);
   let __groqPreError = null;
 
   const __getGroqKeyForPre = async () => {
-  // 0) body override (caller-provided)
-  const kBody = String(groq_api_key || "").trim();
-  if (kBody) return kBody;
+    // 0) body override (caller-provided)
+    const kBody = String(groq_api_key || "").trim();
+    if (kBody) return kBody;
 
-  // 0.5) request cache
-  try {
-    if (req && Object.prototype.hasOwnProperty.call(req, "_groq_pre_key_cache")) {
-      return String(req._groq_pre_key_cache || "").trim();
-    }
-  } catch (_) {}
-
-  // 1) ✅ SAME AS VERIFY/ROUTER: resolve via request (JWT/session -> user_secrets)
-  try {
-    if (req && typeof __getUserGroqKey === "function") {
-      const kReq = await __getUserGroqKey(req);
-      const kkReq = String(kReq || "").trim();
-      if (kkReq) {
-        try { req._groq_pre_key_cache = kkReq; } catch (_) {}
-        return kkReq;
+    // 0.5) request cache
+    try {
+      if (req && Object.prototype.hasOwnProperty.call(req, "_groq_pre_key_cache")) {
+        return String(req._groq_pre_key_cache || "").trim();
       }
-    }
-  } catch (e) {
-    __groqPreError = {
-      stage: "get_user_key_req",
-      message: String(e?.message || e || "get_user_key_req_failed").slice(0, 200),
-    };
-  }
+    } catch (_) { }
 
-  // 2) user_secrets (DB) via explicit uid (authUser/userId)
-  try {
-    const uid =
-      (authUser && authUser.id) ? authUser.id :
-      (userId ? String(userId).trim() : null);
-
-    if (uid && typeof __getGroqApiKeyForUser === "function") {
-      const k1 = await __getGroqApiKeyForUser({ supabase, userId: uid });
-      const kk1 = String(k1 || "").trim();
-      if (kk1) {
-        try { if (req) req._groq_pre_key_cache = kk1; } catch (_) {}
-        return kk1;
+    // 1) ✅ SAME AS VERIFY/ROUTER: resolve via request (JWT/session -> user_secrets)
+    try {
+      if (req && typeof __getUserGroqKey === "function") {
+        const kReq = await __getUserGroqKey(req);
+        const kkReq = String(kReq || "").trim();
+        if (kkReq) {
+          try { req._groq_pre_key_cache = kkReq; } catch (_) { }
+          return kkReq;
+        }
       }
+    } catch (e) {
+      __groqPreError = {
+        stage: "get_user_key_req",
+        message: String(e?.message || e || "get_user_key_req_failed").slice(0, 200),
+      };
     }
-  } catch (e) {
-    __groqPreError = {
-      stage: "get_user_key_db",
-      message: String(e?.message || e || "get_user_key_db_failed").slice(0, 200),
-    };
-  }
 
-  // 3) userId direct (users.id) fallback
-  try {
-    if (userId && typeof __getGroqApiKeyForUser === "function") {
-      const kUser1 = await __getGroqApiKeyForUser({ supabase, userId });
-      const kk1 = String(kUser1 || "").trim();
-      if (kk1) {
-        try { if (req) req._groq_pre_key_cache = kk1; } catch (_) {}
-        return kk1;
+    // 2) user_secrets (DB) via explicit uid (authUser/userId)
+    try {
+      const uid =
+        (authUser && authUser.id) ? authUser.id :
+          (userId ? String(userId).trim() : null);
+
+      if (uid && typeof __getGroqApiKeyForUser === "function") {
+        const k1 = await __getGroqApiKeyForUser({ supabase, userId: uid });
+        const kk1 = String(k1 || "").trim();
+        if (kk1) {
+          try { if (req) req._groq_pre_key_cache = kk1; } catch (_) { }
+          return kk1;
+        }
       }
+    } catch (e) {
+      __groqPreError = {
+        stage: "get_user_key_db",
+        message: String(e?.message || e || "get_user_key_db_failed").slice(0, 200),
+      };
     }
 
-    // 4) legacy auth uid fallback (rare)
-    if (authUser && typeof _getGroqApiKeyForUser === "function") {
-      const kUser2 = await _getGroqApiKeyForUser(authUser);
-      const kk2 = String(kUser2 || "").trim();
-      if (kk2) {
-        try { if (req) req._groq_pre_key_cache = kk2; } catch (_) {}
-        return kk2;
+    // 3) userId direct (users.id) fallback
+    try {
+      if (userId && typeof __getGroqApiKeyForUser === "function") {
+        const kUser1 = await __getGroqApiKeyForUser({ supabase, userId });
+        const kk1 = String(kUser1 || "").trim();
+        if (kk1) {
+          try { if (req) req._groq_pre_key_cache = kk1; } catch (_) { }
+          return kk1;
+        }
       }
-    }
-  } catch (e) {
-    __groqPreError = {
-      stage: "get_user_key_fallback",
-      message: String(e?.message || e || "get_user_key_fallback_failed").slice(0, 200),
-    };
-  }
 
-  // 5) env fallback (optional)
-  try {
-    const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
-    if (__allowEnvFallback) {
-      const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
-      if (envK) {
-        try { if (req) req._groq_pre_key_cache = envK; } catch (_) {}
-        return envK;
+      // 4) legacy auth uid fallback (rare)
+      if (authUser && typeof _getGroqApiKeyForUser === "function") {
+        const kUser2 = await _getGroqApiKeyForUser(authUser);
+        const kk2 = String(kUser2 || "").trim();
+        if (kk2) {
+          try { if (req) req._groq_pre_key_cache = kk2; } catch (_) { }
+          return kk2;
+        }
       }
+    } catch (e) {
+      __groqPreError = {
+        stage: "get_user_key_fallback",
+        message: String(e?.message || e || "get_user_key_fallback_failed").slice(0, 200),
+      };
     }
-  } catch (e) {
-    __groqPreError = {
-      stage: "get_env_fallback",
-      message: String(e?.message || e || "get_env_fallback_failed").slice(0, 200),
-    };
-  }
 
-  return "";
-};
+    // 5) env fallback (optional)
+    try {
+      const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+      if (__allowEnvFallback) {
+        const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+        if (envK) {
+          try { if (req) req._groq_pre_key_cache = envK; } catch (_) { }
+          return envK;
+        }
+      }
+    } catch (e) {
+      __groqPreError = {
+        stage: "get_env_fallback",
+        message: String(e?.message || e || "get_env_fallback_failed").slice(0, 200),
+      };
+    }
+
+    return "";
+  };
 
   const __fetchGroqPre = async ({ model, promptText, timeoutMs }) => {
     const key = await __getGroqKeyForPre();
@@ -7774,7 +7790,7 @@ naverArr = naverArr.slice(0, BLOCK_NAVER_MAX_QUERIES);
             status: Number(e?._http_status || e?.response?.status || 0) || null,
           };
         }
-      } catch (_) {}
+      } catch (_) { }
     }
   } else {
     // 진단용: 스킵 사유를 남김
@@ -7782,15 +7798,15 @@ naverArr = naverArr.slice(0, BLOCK_NAVER_MAX_QUERIES);
       const _reason = !__enableGeminiFallback
         ? "skip_gemini_fallback_disabled_by_env"
         : (__geminiKeyMissing
-            ? "skip_gemini_fallback_due_to_gemini_key_missing"
-            : "skip_gemini_fallback_due_to_groq_key_missing");
+          ? "skip_gemini_fallback_due_to_gemini_key_missing"
+          : "skip_gemini_fallback_due_to_groq_key_missing");
 
       if (!__groqPreError) __groqPreError = { stage: "gemini_pre_skipped", message: _reason, status: null };
       else __groqPreError._gemini_pre_skipped = _reason;
-    } catch (_) {}
+    } catch (_) { }
   }
 
-    // ─────────────────────────────
+  // ─────────────────────────────
   // 3) Manual fallback (최후 안전망)
   //   - Groq/Gemini 전처리 실패 시에도 one-shot 스키마 유지
   //   - router_plan 포함 + auto 계열 모드에서도 qv/fv 결정
@@ -7838,21 +7854,21 @@ naverArr = naverArr.slice(0, BLOCK_NAVER_MAX_QUERIES);
   const answer_ko =
     (__safeFinal === "qv")
       ? (() => {
-          const isPop = /(인구|총인구|주민등록인구|명)/i.test(String(query || userIntentQ || baseCore || ""));
-          const magnitudeHint = isPop ? "대략 5천만 명대" : "대략 큰 규모/수준";
+        const isPop = /(인구|총인구|주민등록인구|명)/i.test(String(query || userIntentQ || baseCore || ""));
+        const magnitudeHint = isPop ? "대략 5천만 명대" : "대략 큰 규모/수준";
 
-          const core = String(query || baseCore || "").trim() || "질문";
-          const line1 = `질문: ${core}`;
-          const line2 = isNumericQ
-            ? `정확한 값은 공표 자료의 기준시점(집계/추계)과 정의에 따라 달라질 수 있어, 기준을 먼저 확인하는 게 안전합니다.`
-            : `정확한 답은 공표 자료의 기준시점/정의에 따라 달라질 수 있습니다.`;
-          const line3 = isPop
-            ? `이 질문은 ${magnitudeHint}로만 말하면 안전하며, 정확한 수치는 KOSIS/통계청 자료(해당 기준시점)를 확인해야 합니다.`
-            : `가능하면 공식 통계/공공기관/원출처 기준으로 확인하는 것을 권장합니다.`;
-          const line4 = `필요하면 “총인구/주민등록인구/추계인구” 중 어떤 기준인지도 같이 정해야 합니다.`;
+        const core = String(query || baseCore || "").trim() || "질문";
+        const line1 = `질문: ${core}`;
+        const line2 = isNumericQ
+          ? `정확한 값은 공표 자료의 기준시점(집계/추계)과 정의에 따라 달라질 수 있어, 기준을 먼저 확인하는 게 안전합니다.`
+          : `정확한 답은 공표 자료의 기준시점/정의에 따라 달라질 수 있습니다.`;
+        const line3 = isPop
+          ? `이 질문은 ${magnitudeHint}로만 말하면 안전하며, 정확한 수치는 KOSIS/통계청 자료(해당 기준시점)를 확인해야 합니다.`
+          : `가능하면 공식 통계/공공기관/원출처 기준으로 확인하는 것을 권장합니다.`;
+        const line4 = `필요하면 “총인구/주민등록인구/추계인구” 중 어떤 기준인지도 같이 정해야 합니다.`;
 
-          return [line1, line2, line3, line4].join("\n");
-        })()
+        return [line1, line2, line3, line4].join("\n");
+      })()
       : "";
 
   // blocks seed: QV면 answer_ko 기반, FV면 base(스니펫/원문) 기반
@@ -7912,44 +7928,44 @@ naverArr = naverArr.slice(0, BLOCK_NAVER_MAX_QUERIES);
 
     // ✅ official seed는 "prepend"로 최우선 보장 (cap=2에서 중요)
     const __officialSeeds = __isPop
-  ? [
-      // ✅ Naver 쿼리 제약(짧게/30자 이내) 고려: "site:" 같은 긴/영문 시드는 제거
-      "KOSIS DT_1BPA002 총인구",
-      "통계청 장래인구추계 총인구",
-      "주민등록인구 mois",
-      "KOSIS 인구 통계표",
-    ]
-  : __isNumericLike
-    ? [
-        "KOSIS 통계표",
-        "통계청 통계",
+      ? [
+        // ✅ Naver 쿼리 제약(짧게/30자 이내) 고려: "site:" 같은 긴/영문 시드는 제거
+        "KOSIS DT_1BPA002 총인구",
+        "통계청 장래인구추계 총인구",
+        "주민등록인구 mois",
+        "KOSIS 인구 통계표",
       ]
-    : [];
+      : __isNumericLike
+        ? [
+          "KOSIS 통계표",
+          "통계청 통계",
+        ]
+        : [];
 
-const __mkYearQ = (seed) => {
-  const s = String(seed || "").trim();
-  if (!s) return "";
-  const y = String(__year || "").trim();
+    const __mkYearQ = (seed) => {
+      const s = String(seed || "").trim();
+      if (!s) return "";
+      const y = String(__year || "").trim();
 
-  // year가 있으면 "2025 KOSIS 총인구" 같은 짧은 형태로 우선 시도
-  if (y) {
-    const cand1 = `${y} ${s}`.trim();
-    if (cand1.length <= 30) return cand1;
+      // year가 있으면 "2025 KOSIS 총인구" 같은 짧은 형태로 우선 시도
+      if (y) {
+        const cand1 = `${y} ${s}`.trim();
+        if (cand1.length <= 30) return cand1;
 
-    const cand2 = `${y}${s}`.replace(/\s+/g, "").trim();
-    if (cand2.length <= 30) return cand2;
-  }
+        const cand2 = `${y}${s}`.replace(/\s+/g, "").trim();
+        if (cand2.length <= 30) return cand2;
+      }
 
-  // 최후: 30자 제한에 맞게 컷
-  return s.length <= 30 ? s : s.slice(0, 30);
-};
+      // 최후: 30자 제한에 맞게 컷
+      return s.length <= 30 ? s : s.slice(0, 30);
+    };
 
-if (__officialSeeds.length) {
-  const __officialQ = __officialSeeds.map(__mkYearQ).filter(Boolean);
+    if (__officialSeeds.length) {
+      const __officialQ = __officialSeeds.map(__mkYearQ).filter(Boolean);
 
-  // ✅ 핵심: 공식 시드를 "맨 앞"에 강제 배치 → per_block_cap에서도 먼저 호출됨
-  naverQ = __dedupeQ([ ...__officialQ, ...(naverQ || []) ]).slice(0, BLOCK_NAVER_MAX_QUERIES);
-}
+      // ✅ 핵심: 공식 시드를 "맨 앞"에 강제 배치 → per_block_cap에서도 먼저 호출됨
+      naverQ = __dedupeQ([...__officialQ, ...(naverQ || [])]).slice(0, BLOCK_NAVER_MAX_QUERIES);
+    }
 
     return {
       id,
@@ -8120,7 +8136,7 @@ function extractJsonObjectFromText(raw) {
     let s = String(raw || "").trim();
     if (!s) return null;
 
-        // 1) 코드펜스 제거(있으면)
+    // 1) 코드펜스 제거(있으면)
     const __FENCE3 = "`".repeat(3);
     const fenceRe = new RegExp(`${__FENCE3}(?:json)?\\s*([\\s\\S]*?)${__FENCE3}`, "i");
     const fence = s.match(fenceRe);
@@ -8182,7 +8198,7 @@ function normalizeUrlKey(u) {
     // path가 "/"가 아닌데 끝이 "/"면 제거 (trailing slash 차이 흡수)
     try {
       if (s.endsWith("/") && x.pathname && x.pathname !== "/") s = s.slice(0, -1);
-    } catch (_) {}
+    } catch (_) { }
 
     return s;
   } catch (_) {
@@ -8204,13 +8220,13 @@ function collectExternalEvidenceUrls(external, opts) {
     for (const it of arr) {
       // ✅ snippet에서는 "naver"만 whitelist URL만 allowlist에 넣는다
       if (strictNaverWhitelist && key === "naver") {
-  const isWl =
-    (it?.whitelisted === true) ||
-    !!it?.tier ||
-    (it?.display_only === true) ||
-    (it?._whitelist_display_only === true);
-  if (!isWl) continue;
-}
+        const isWl =
+          (it?.whitelisted === true) ||
+          !!it?.tier ||
+          (it?.display_only === true) ||
+          (it?._whitelist_display_only === true);
+        if (!isWl) continue;
+      }
 
       const u =
         it?.url ??
@@ -8261,9 +8277,9 @@ function scrubVerifyMetaUnknownUrls(verifyMeta, allowedUrls) {
       b.irrelevant_urls = b.irrelevant_urls
         .map(u => String(u || "").trim())
         .filter(u => {
-  const key = normalizeUrlKey(u);
-  return u && (allowedUrls.has(u) || (key && allowedUrls.has(key)));
-});
+          const key = normalizeUrlKey(u);
+          return u && (allowedUrls.has(u) || (key && allowedUrls.has(key)));
+        });
     }
 
     // comment: strip unknown URLs
@@ -8297,7 +8313,7 @@ function normalizeEnginesRequested(engines_requested, engine_metrics) {
 // ─────────────────────────────
 const verifyCoreHandler = async (req, res) => {
   // ✅ answerText 공용 선선언 (ReferenceError 방지)
-      // ✅ normalize request body (supports legacy + schema_version=1 payload)
+  // ✅ normalize request body (supports legacy + schema_version=1 payload)
   const __b0 = await (async () => {
     const __raw = getJsonBody(req);
     const b = (__raw && typeof __raw === "object") ? __raw : {};
@@ -8307,7 +8323,7 @@ const verifyCoreHandler = async (req, res) => {
       (b.input && typeof b.input === "object");
 
     if (!isV1) {
-      try { if (req && req.body !== b) req.body = b; } catch (_) {}
+      try { if (req && req.body !== b) req.body = b; } catch (_) { }
       return b;
     }
 
@@ -8315,7 +8331,7 @@ const verifyCoreHandler = async (req, res) => {
     const options = (b.options && typeof b.options === "object") ? b.options : {};
     const clientPre =
       (b.client_pre && typeof b.client_pre === "object") ? b.client_pre :
-      ((b.clientPre && typeof b.clientPre === "object") ? b.clientPre : {});
+        ((b.clientPre && typeof b.clientPre === "object") ? b.clientPre : {});
 
     const q0 = String(
       input.question ??
@@ -8416,7 +8432,7 @@ const verifyCoreHandler = async (req, res) => {
       if (Array.isArray(eng) && eng.length > 0) {
         out.engines = eng;
       }
-    } catch (_) {}
+    } catch (_) { }
 
     // ✅ snippet_meta mapping (do not force endpoint; only metadata)
     if (snippetProvided && core0) {
@@ -8592,10 +8608,10 @@ const verifyCoreHandler = async (req, res) => {
           };
         }
       }
-    } catch (_) {}
+    } catch (_) { }
 
     // ✅ keep compat: many paths read req.body directly
-    try { if (req) req.body = out; } catch (_) {}
+    try { if (req) req.body = out; } catch (_) { }
     return out;
   })();
 
@@ -8624,7 +8640,7 @@ const verifyCoreHandler = async (req, res) => {
     ghUserText,
   });
 
-    let __irrelevant_urls = [];
+  let __irrelevant_urls = [];
 
   // ✅ DV/CV GitHub curated 허용 플래그
   // - 일부 후속 정리/필터 단계에서 DV/CV 블록 밖에서도 참조될 수 있으니
@@ -8654,1053 +8670,1053 @@ const verifyCoreHandler = async (req, res) => {
   } = __b0;
 
   let safeMode = String(
-  (req.body?.mode ?? req.body?.safeMode ?? req.body?.raw_mode ?? mode ?? "")
-).trim().toLowerCase();
+    (req.body?.mode ?? req.body?.safeMode ?? req.body?.raw_mode ?? mode ?? "")
+  ).trim().toLowerCase();
 
-const rawMode = safeMode; // ✅ 요청된 원래 mode를 보존(뒤에서 fallback plan에서 사용)
-    // ✅ verify-cache key (QV/FV). Declare once in handler scope to avoid ReferenceError.
+  const rawMode = safeMode; // ✅ 요청된 원래 mode를 보존(뒤에서 fallback plan에서 사용)
+  // ✅ verify-cache key (QV/FV). Declare once in handler scope to avoid ReferenceError.
   var __cacheKey = null;
 
-// ✅ /api/verify-snippet은 "FV 고정" + 라우터 개입 금지 (endpoint 기준)
-// ✅ snippet_meta.is_snippet은 "입력 타입 메타"일 뿐, mode 강제에 쓰지 않는다.
-const __isVerifySnippetPath = String(req.path || "") === "/api/verify-snippet";
-const __isSnippetPayload = !!(snippet_meta && snippet_meta.is_snippet === true);
+  // ✅ /api/verify-snippet은 "FV 고정" + 라우터 개입 금지 (endpoint 기준)
+  // ✅ snippet_meta.is_snippet은 "입력 타입 메타"일 뿐, mode 강제에 쓰지 않는다.
+  const __isVerifySnippetPath = String(req.path || "") === "/api/verify-snippet";
+  const __isSnippetPayload = !!(snippet_meta && snippet_meta.is_snippet === true);
 
-// ✅ router_plan.is_snippet 진단용 단일 플래그
-// - __buildRouterPlanPublicFinal()이 이 변수를 참조함
-const __isSnippetEndpoint = (__isVerifySnippetPath || __isSnippetPayload);
+  // ✅ router_plan.is_snippet 진단용 단일 플래그
+  // - __buildRouterPlanPublicFinal()이 이 변수를 참조함
+  const __isSnippetEndpoint = (__isVerifySnippetPath || __isSnippetPayload);
 
-if (__isVerifySnippetPath) {
-  safeMode = "fv";
-}
+  if (__isVerifySnippetPath) {
+    safeMode = "fv";
+  }
 
-// ✅ Groq Router(plan) - mode 자동분류 + 멀티 실행 계획
-// - safeMode가 비었거나 auto/overlay 류일 때만 개입
-// - qv+lv는 허용, qv+fv는 버림(필요없다고 했으니)
-let __routerPlan = null;
-let __runLvExtra = false;
-let __routerCacheKey = null; // ✅ S-17: router plan cache key (separate from __cacheKey)
-// ✅ helper: build router_plan for response (always reflect final safeMode)
-function __buildRouterPlanPublicFinal({ safeMode, rawMode, routerPlan, runLvExtra }) {
-  try {
-    const __sf0 = String(safeMode || "qv").toLowerCase();
-    const __sf =
-      __sf0 === "auto" || __sf0 === "null" || __sf0 === "undefined" ? "qv" : __sf0;
+  // ✅ Groq Router(plan) - mode 자동분류 + 멀티 실행 계획
+  // - safeMode가 비었거나 auto/overlay 류일 때만 개입
+  // - qv+lv는 허용, qv+fv는 버림(필요없다고 했으니)
+  let __routerPlan = null;
+  let __runLvExtra = false;
+  let __routerCacheKey = null; // ✅ S-17: router plan cache key (separate from __cacheKey)
+  // ✅ helper: build router_plan for response (always reflect final safeMode)
+  function __buildRouterPlanPublicFinal({ safeMode, rawMode, routerPlan, runLvExtra }) {
+    try {
+      const __sf0 = String(safeMode || "qv").toLowerCase();
+      const __sf =
+        __sf0 === "auto" || __sf0 === "null" || __sf0 === "undefined" ? "qv" : __sf0;
 
-    const __plan =
-      Array.isArray(routerPlan?.plan) && routerPlan.plan.length > 0
-        ? routerPlan.plan
-        : [{ mode: __sf, priority: 1, reason: "router_missing_or_failed" }];
+      const __plan =
+        Array.isArray(routerPlan?.plan) && routerPlan.plan.length > 0
+          ? routerPlan.plan
+          : [{ mode: __sf, priority: 1, reason: "router_missing_or_failed" }];
 
-    const __runs =
-      Array.isArray(routerPlan?.runs) && routerPlan.runs.length > 0
-        ? routerPlan.runs.map((x) => String(x).toLowerCase()).filter(Boolean)
-        : __plan.map((x) => String(x?.mode ?? x).toLowerCase()).filter(Boolean);
+      const __runs =
+        Array.isArray(routerPlan?.runs) && routerPlan.runs.length > 0
+          ? routerPlan.runs.map((x) => String(x).toLowerCase()).filter(Boolean)
+          : __plan.map((x) => String(x?.mode ?? x).toLowerCase()).filter(Boolean);
 
-        return {
-      enabled: !!GROQ_ROUTER_ENABLE,
+      return {
+        enabled: !!GROQ_ROUTER_ENABLE,
 
-      // ✅ "plan 객체 존재"가 아니라, 실제 라우터 실행/캐시히트 여부로 used 판단
-      used: (typeof __routerUsed !== "undefined") ? !!__routerUsed : !!routerPlan,
-      cached: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
+        // ✅ "plan 객체 존재"가 아니라, 실제 라우터 실행/캐시히트 여부로 used 판단
+        used: (typeof __routerUsed !== "undefined") ? !!__routerUsed : !!routerPlan,
+        cached: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
 
-      // ✅ 요청된 raw mode도 같이 남김 (디버깅)
-      raw_mode: String(rawMode ?? "").toLowerCase(),
+        // ✅ 요청된 raw mode도 같이 남김 (디버깅)
+        raw_mode: String(rawMode ?? "").toLowerCase(),
 
-      // ✅ always final safeMode (stale 방지)
-      safe_mode_final: String(__sf).toLowerCase(),
+        // ✅ always final safeMode (stale 방지)
+        safe_mode_final: String(__sf).toLowerCase(),
 
-      primary: String(
-        routerPlan?.primary ??
+        primary: String(
+          routerPlan?.primary ??
           routerPlan?.mode ??
           routerPlan?.safe_mode_final ??
           __sf
-      ).toLowerCase(),
+        ).toLowerCase(),
 
-      runs: (__runs.length > 0 ? __runs : [__sf]).slice(0, 5),
+        runs: (__runs.length > 0 ? __runs : [__sf]).slice(0, 5),
 
-      plan: __plan.slice(0, 5).map((x) => ({
-        mode: String(x?.mode ?? "").toLowerCase(),
-        priority: Number.isFinite(Number(x?.priority)) ? Number(x.priority) : undefined,
-      })),
+        plan: __plan.slice(0, 5).map((x) => ({
+          mode: String(x?.mode ?? "").toLowerCase(),
+          priority: Number.isFinite(Number(x?.priority)) ? Number(x.priority) : undefined,
+        })),
 
-      confidence:
-        (routerPlan && typeof routerPlan.confidence === "number") ? routerPlan.confidence : null,
+        confidence:
+          (routerPlan && typeof routerPlan.confidence === "number") ? routerPlan.confidence : null,
 
-      reason: routerPlan?.reason ?? (__plan?.[0]?.reason ?? "router_missing_or_failed"),
-      run_lv_extra: !!runLvExtra,
+        reason: routerPlan?.reason ?? (__plan?.[0]?.reason ?? "router_missing_or_failed"),
+        run_lv_extra: !!runLvExtra,
 
-      // ✅ /api/verify-snippet 또는 snippet_meta.is_snippet 기반으로 판단
-      is_snippet: (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : null,
+        // ✅ /api/verify-snippet 또는 snippet_meta.is_snippet 기반으로 판단
+        is_snippet: (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : null,
 
-      cache_hit: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
+        cache_hit: (typeof __routerCached !== "undefined") ? !!__routerCached : null,
 
-      model:
-        routerPlan?.model ??
-        (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
+        model:
+          routerPlan?.model ??
+          (typeof GROQ_ROUTER_MODEL !== "undefined" ? GROQ_ROUTER_MODEL : null),
 
-      lv_extra: !!(routerPlan?.lv_extra || runLvExtra),
+        lv_extra: !!(routerPlan?.lv_extra || runLvExtra),
 
-      status: !GROQ_ROUTER_ENABLE
-        ? "disabled"
-        : (routerPlan ? (__plan.length > 0 ? "ok" : "ok_no_plan") : "missing_plan"),
+        status: !GROQ_ROUTER_ENABLE
+          ? "disabled"
+          : (routerPlan ? (__plan.length > 0 ? "ok" : "ok_no_plan") : "missing_plan"),
 
-      // ✅ router cache key(해시) 노출: 캐시 추적용 (민감정보 없음: 이미 sha16 기반)
-      cache_key:
-        (routerPlan && (routerPlan._cache_key || routerPlan.cache_key))
-          ? String(routerPlan._cache_key || routerPlan.cache_key)
-          : null,
-    };
-  } catch (_) {
-    return null;
-  }
-}
-
-let __routerCached = false;
-
-// 환경변수로 라우터 전체 on/off 가능 (single source of truth)
-const GROQ_ROUTER_ENABLE = String(process.env.GROQ_ROUTER_ENABLE || "1") !== "0";
-
-// ✅ Groq Router config — 라우터 실행 경로보다 “먼저” 선언
-const GROQ_API_BASE = process.env.GROQ_API_BASE || "https://api.groq.com/openai/v1";
-const GROQ_ROUTER_MODEL = process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile";
-const GROQ_ROUTER_TIMEOUT_MS = parseInt(process.env.GROQ_ROUTER_TIMEOUT_MS || "12000", 10);
-
-// env fallback option
-const GROQ_ALLOW_ENV_FALLBACK = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
-
-// ✅ Groq Router in-memory cache (process-wide via globalThis)
-// - Same input => skip Groq call
-// - TTL + MAX size (LRU-ish via Map insertion order)
-const GROQ_ROUTER_CACHE_ENABLE = String(process.env.GROQ_ROUTER_CACHE_ENABLE || "1") !== "0";
-const GROQ_ROUTER_CACHE_TTL_MS = parseInt(process.env.GROQ_ROUTER_CACHE_TTL_MS || "300000", 10); // 5min
-const GROQ_ROUTER_CACHE_MAX = parseInt(process.env.GROQ_ROUTER_CACHE_MAX || "500", 10);
-
-const __ROUTER_CACHE =
-  globalThis.__CVA_GROQ_ROUTER_CACHE ||
-  (globalThis.__CVA_GROQ_ROUTER_CACHE = new Map());
-
-function __routerCacheGet(k) {
-  try {
-    if (!GROQ_ROUTER_CACHE_ENABLE) return null;
-    if (!k) return null;
-    const hit = __ROUTER_CACHE.get(k);
-    if (!hit) return null;
-    const now = Date.now();
-    if (hit.exp && hit.exp <= now) {
-      __ROUTER_CACHE.delete(k);
+        // ✅ router cache key(해시) 노출: 캐시 추적용 (민감정보 없음: 이미 sha16 기반)
+        cache_key:
+          (routerPlan && (routerPlan._cache_key || routerPlan.cache_key))
+            ? String(routerPlan._cache_key || routerPlan.cache_key)
+            : null,
+      };
+    } catch (_) {
       return null;
     }
-    // refresh recency (LRU-ish)
-    __ROUTER_CACHE.delete(k);
-    __ROUTER_CACHE.set(k, hit);
-    const v = hit.v ?? null;
-if (!v || typeof v !== "object") return v;
-// ✅ return a clone so later mutations won't poison the cache object
-try {
-  return (typeof structuredClone === "function")
-    ? structuredClone(v)
-    : JSON.parse(JSON.stringify(v));
-} catch (_) {
-  return { ...v };
-}
-  } catch (_) {
-    return null;
   }
-}
 
-function __routerCacheSet(k, v) {
-  try {
-    if (!k) return;
-    const now = Date.now();
-    const exp = now + Math.max(1000, Number(GROQ_ROUTER_CACHE_TTL_MS) || 300000);
-    __ROUTER_CACHE.set(k, { v, exp, t: now });
+  let __routerCached = false;
 
-    // evict oldest
-    const maxN = Math.max(50, Number(GROQ_ROUTER_CACHE_MAX) || 500);
-    while (__ROUTER_CACHE.size > maxN) {
-      const firstKey = __ROUTER_CACHE.keys().next().value;
-      if (!firstKey) break;
-      __ROUTER_CACHE.delete(firstKey);
-    }
-  } catch (_) {}
-}
+  // 환경변수로 라우터 전체 on/off 가능 (single source of truth)
+  const GROQ_ROUTER_ENABLE = String(process.env.GROQ_ROUTER_ENABLE || "1") !== "0";
 
-// ✅ helper: request -> user groq key
-async function __getUserGroqKey(req) {
-  // ✅ user_secrets.user_id 는 "users" 테이블 id(=resolveLogUserId 결과) 기준
-  // - auth user id(au.id)로 조회하면 키를 못 찾는 케이스 발생
+  // ✅ Groq Router config — 라우터 실행 경로보다 “먼저” 선언
+  const GROQ_API_BASE = process.env.GROQ_API_BASE || "https://api.groq.com/openai/v1";
+  const GROQ_ROUTER_MODEL = process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile";
+  const GROQ_ROUTER_TIMEOUT_MS = parseInt(process.env.GROQ_ROUTER_TIMEOUT_MS || "12000", 10);
 
-  let userId = null;
+  // env fallback option
+  const GROQ_ALLOW_ENV_FALLBACK = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
 
-  // 0) request 캐시 우선
-  try {
-    if (Object.prototype.hasOwnProperty.call(req, "_resolvedLogUserId")) {
-      userId = req._resolvedLogUserId || null;
-    }
-  } catch (_) {}
+  // ✅ Groq Router in-memory cache (process-wide via globalThis)
+  // - Same input => skip Groq call
+  // - TTL + MAX size (LRU-ish via Map insertion order)
+  const GROQ_ROUTER_CACHE_ENABLE = String(process.env.GROQ_ROUTER_CACHE_ENABLE || "1") !== "0";
+  const GROQ_ROUTER_CACHE_TTL_MS = parseInt(process.env.GROQ_ROUTER_CACHE_TTL_MS || "300000", 10); // 5min
+  const GROQ_ROUTER_CACHE_MAX = parseInt(process.env.GROQ_ROUTER_CACHE_MAX || "500", 10);
 
-  // 1) 없으면 auth_user/email 기반으로 users.id로 resolve
-  if (!userId) {
+  const __ROUTER_CACHE =
+    globalThis.__CVA_GROQ_ROUTER_CACHE ||
+    (globalThis.__CVA_GROQ_ROUTER_CACHE = new Map());
+
+  function __routerCacheGet(k) {
     try {
-      const au = await getSupabaseAuthUser(req);
-      const bearer = getBearerToken(req);
-
-      if (au) {
-        userId = await resolveLogUserId({
-          user_id: null,
-          user_email: au?.email || null,
-          user_name: au?.user_metadata?.full_name || au?.user_metadata?.name || null,
-          auth_user: au,
-          bearer_token: bearer,
-        });
+      if (!GROQ_ROUTER_CACHE_ENABLE) return null;
+      if (!k) return null;
+      const hit = __ROUTER_CACHE.get(k);
+      if (!hit) return null;
+      const now = Date.now();
+      if (hit.exp && hit.exp <= now) {
+        __ROUTER_CACHE.delete(k);
+        return null;
       }
-    } catch (_) {}
+      // refresh recency (LRU-ish)
+      __ROUTER_CACHE.delete(k);
+      __ROUTER_CACHE.set(k, hit);
+      const v = hit.v ?? null;
+      if (!v || typeof v !== "object") return v;
+      // ✅ return a clone so later mutations won't poison the cache object
+      try {
+        return (typeof structuredClone === "function")
+          ? structuredClone(v)
+          : JSON.parse(JSON.stringify(v));
+      } catch (_) {
+        return { ...v };
+      }
+    } catch (_) {
+      return null;
+    }
+  }
 
-    // cache
+  function __routerCacheSet(k, v) {
     try {
-      req._resolvedLogUserId = userId || null;
-    } catch (_) {}
+      if (!k) return;
+      const now = Date.now();
+      const exp = now + Math.max(1000, Number(GROQ_ROUTER_CACHE_TTL_MS) || 300000);
+      __ROUTER_CACHE.set(k, { v, exp, t: now });
+
+      // evict oldest
+      const maxN = Math.max(50, Number(GROQ_ROUTER_CACHE_MAX) || 500);
+      while (__ROUTER_CACHE.size > maxN) {
+        const firstKey = __ROUTER_CACHE.keys().next().value;
+        if (!firstKey) break;
+        __ROUTER_CACHE.delete(firstKey);
+      }
+    } catch (_) { }
   }
 
-  // 2) user_secrets 우선, env fallback optional
-  return await __getGroqApiKeyForUser({ supabase, userId });
-}
+  // ✅ helper: request -> user groq key
+  async function __getUserGroqKey(req) {
+    // ✅ user_secrets.user_id 는 "users" 테이블 id(=resolveLogUserId 결과) 기준
+    // - auth user id(au.id)로 조회하면 키를 못 찾는 케이스 발생
 
-// ✅ S-17: Groq Router execution (sets safeMode + __runLvExtra + __routerPlan, with in-memory plan cache)
-let __routerUsed = false; // ✅ 실제 라우터 실행/캐시히트 여부
-let __routerError = null; // ✅ router failure diagnostics (string)
+    let userId = null;
 
-try {
+    // 0) request 캐시 우선
+    try {
+      if (Object.prototype.hasOwnProperty.call(req, "_resolvedLogUserId")) {
+        userId = req._resolvedLogUserId || null;
+      }
+    } catch (_) { }
+
+    // 1) 없으면 auth_user/email 기반으로 users.id로 resolve
+    if (!userId) {
+      try {
+        const au = await getSupabaseAuthUser(req);
+        const bearer = getBearerToken(req);
+
+        if (au) {
+          userId = await resolveLogUserId({
+            user_id: null,
+            user_email: au?.email || null,
+            user_name: au?.user_metadata?.full_name || au?.user_metadata?.name || null,
+            auth_user: au,
+            bearer_token: bearer,
+          });
+        }
+      } catch (_) { }
+
+      // cache
+      try {
+        req._resolvedLogUserId = userId || null;
+      } catch (_) { }
+    }
+
+    // 2) user_secrets 우선, env fallback optional
+    return await __getGroqApiKeyForUser({ supabase, userId });
+  }
+
+  // ✅ S-17: Groq Router execution (sets safeMode + __runLvExtra + __routerPlan, with in-memory plan cache)
+  let __routerUsed = false; // ✅ 실제 라우터 실행/캐시히트 여부
+  let __routerError = null; // ✅ router failure diagnostics (string)
+
+  try {
     // NOTE: safeMode는 이 시점에 기본값("qv") 등으로 이미 세팅돼 있을 수 있으므로,
-  // 라우팅 조건은 요청 바디의 원시 모드(mode/safeMode/raw_mode)를 우선으로 본다.
-  const _rawMode = String(
-    (req && req.body && (req.body.mode ?? req.body.safeMode ?? req.body.raw_mode)) ??
-    safeMode ??
-    ""
-  ).trim().toLowerCase();
+    // 라우팅 조건은 요청 바디의 원시 모드(mode/safeMode/raw_mode)를 우선으로 본다.
+    const _rawMode = String(
+      (req && req.body && (req.body.mode ?? req.body.safeMode ?? req.body.raw_mode)) ??
+      safeMode ??
+      ""
+    ).trim().toLowerCase();
 
-  const __cacheMode =
-  (_rawMode === "overlay" || _rawMode === "route") ? "auto" : _rawMode;
+    const __cacheMode =
+      (_rawMode === "overlay" || _rawMode === "route") ? "auto" : _rawMode;
 
-const __isSn =
-  (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : false;
+    const __isSn =
+      (typeof __isSnippetEndpoint !== "undefined") ? !!__isSnippetEndpoint : false;
 
-// ✅ auto/overlay/route/빈값이면 "원래는" 라우터가 개입하던 케이스
-const __wouldRouteByMode =
-  (!_rawMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
+    // ✅ auto/overlay/route/빈값이면 "원래는" 라우터가 개입하던 케이스
+    const __wouldRouteByMode =
+      (!_rawMode || _rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route");
 
-// ✅ 기본값=1: auto/overlay/route/빈값은 라우터를 스킵하고 one-shot preprocess(router_plan)로 확정
-// - 이전 동작으로 되돌리고 싶으면 env: GROQ_ROUTER_PREFER_QVFV_ONE_SHOT=0
-const __preferOneShot =
-  String(process.env.GROQ_ROUTER_PREFER_QVFV_ONE_SHOT || "1") !== "0";
+    // ✅ 기본값=1: auto/overlay/route/빈값은 라우터를 스킵하고 one-shot preprocess(router_plan)로 확정
+    // - 이전 동작으로 되돌리고 싶으면 env: GROQ_ROUTER_PREFER_QVFV_ONE_SHOT=0
+    const __preferOneShot =
+      String(process.env.GROQ_ROUTER_PREFER_QVFV_ONE_SHOT || "1") !== "0";
 
-// ✅ 라우터 실행 조건: (기존 조건) AND (one-shot 선호가 꺼져있을 때만)
-const _shouldRoute =
-  GROQ_ROUTER_ENABLE &&
-  !__isSn &&
-  __wouldRouteByMode &&
-  !__preferOneShot;
+    // ✅ 라우터 실행 조건: (기존 조건) AND (one-shot 선호가 꺼져있을 때만)
+    const _shouldRoute =
+      GROQ_ROUTER_ENABLE &&
+      !__isSn &&
+      __wouldRouteByMode &&
+      !__preferOneShot;
 
-// ✅ 라우터 스킵 경로: "missing"으로 표시해서, 뒤에서 one-shot router_plan이 오면 교체되게 만든다.
-if (!_shouldRoute && GROQ_ROUTER_ENABLE && !__isSn && __wouldRouteByMode && __preferOneShot) {
-  try {
-    // 이 시점 safeMode는 auto/빈값일 수 있으니 보수적으로 qv로 둔다(뒤에서 pre.router_plan이 오면 확정됨)
-    safeMode = "qv";
+    // ✅ 라우터 스킵 경로: "missing"으로 표시해서, 뒤에서 one-shot router_plan이 오면 교체되게 만든다.
+    if (!_shouldRoute && GROQ_ROUTER_ENABLE && !__isSn && __wouldRouteByMode && __preferOneShot) {
+      try {
+        // 이 시점 safeMode는 auto/빈값일 수 있으니 보수적으로 qv로 둔다(뒤에서 pre.router_plan이 오면 확정됨)
+        safeMode = "qv";
+        __runLvExtra = false;
+
+        __routerPlan = {
+          raw_mode: _rawMode,
+          safe_mode_final: "qv",
+          primary: "qv",
+
+          // ✅ "router_missing" 포함: (뒤의 9253 근처 로직) one-shot이 router_plan을 주면 덮어쓰도록 트리거
+          plan: [{ mode: "qv", priority: 1, reason: "router_missing_prefer_one_shot_preprocess" }],
+          runs: ["qv"],
+
+          model: String(process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile"),
+          cached: false,
+          lv_extra: false,
+
+          reason: "router_missing_prefer_one_shot_preprocess",
+          error: null,
+        };
+      } catch (_) { }
+    }
+
+    if (_shouldRoute) {
+      // auth user (best-effort) — avoid ReferenceError when authUser is not in scope
+      let __au = (typeof authUser !== "undefined" ? authUser : null) || null;
+      if (!__au) {
+        try { __au = await getSupabaseAuthUser(req); } catch (_) { __au = null; }
+      }
+
+      const __rq0 = String(req.body?.query ?? "").trim();
+      const __rPath0 = String(req.path || "");
+
+      // user hash (do not leak raw id)
+      const __rUidRaw = String(__au?.id || (typeof logUserId !== "undefined" ? logUserId : null) || "anon");
+      const __rUHash =
+        (typeof hash16 === "function")
+          ? hash16(__rUidRaw)
+          : (typeof sha16 === "function")
+            ? sha16(__rUidRaw)
+            : __rUidRaw.slice(0, 16);
+
+      const __rQHash =
+        (typeof sha16 === "function")
+          ? sha16(__rq0)
+          : __rq0.slice(0, 64);
+
+      const __rSn0 = String(req.body?.snippet ?? req.body?.core_text ?? req.body?.snippet_meta?.snippet_core ?? "").slice(0, 1800);
+      const __rHasSn = __rSn0.trim().length >= 20 ? "1" : "0";
+      const __rSnHash = (typeof sha16 === "function") ? sha16(__rSn0) : __rSn0.slice(0, 64);
+
+      // ✅ router cache key (separate from other __cacheKey uses)
+      // - include snippet presence/hash to avoid "fv cached" leaking into non-snippet requests
+      __routerCacheKey =
+        (typeof sha16 === "function")
+          ? sha16(
+            `router:v3|u=${__rUHash}|p=${__rPath0}|m=${__cacheMode}|hs=${__rHasSn}|s=${__rSnHash}|q=${__rQHash}`.slice(0, 4000)
+          )
+          : `router:v3|u=${__rUHash}|p=${__rPath0}|m=${__cacheMode}|hs=${__rHasSn}|s=${__rSnHash}|q=${__rQHash}`.slice(0, 4000);
+
+      // cache hit?
+      const __cachedPlan = __routerCacheGet(__routerCacheKey);
+      if (__cachedPlan) {
+        __routerPlan = __cachedPlan;
+        try { if (__routerPlan && typeof __routerPlan === "object") __routerPlan._cache_key = __routerCacheKey; } catch (_) { }
+        __routerCached = true;
+        __routerUsed = true; // ✅ cache hit도 "used"
+        try { if (__routerPlan && typeof __routerPlan === "object") __routerPlan.cached = true; } catch (_) { }
+      } else {
+        // ✅ load user Groq key (Supabase vault) — 없으면 라우터 스킵하고 qv로 진행
+        let __routerCacheable = false; // ✅ only cache when user has groq key and router actually ran
+        const __groqKey = await __getUserGroqKey(req);
+
+        if (!__groqKey) {
+          // 라우터는 "키 없는 사용자"에겐 실행하지 않음 (기본 qv)
+          safeMode = "qv";
+          __runLvExtra = false;
+
+          __routerPlan = {
+            raw_mode: _rawMode,
+            safe_mode_final: "qv",
+            primary: "qv",
+            plan: [{ mode: "qv", priority: 1, reason: "router_skipped_no_user_groq_key" }],
+            runs: ["qv"],
+            cached: false,
+            lv_extra: false,
+          };
+
+          __routerCacheable = false; // ✅ DO NOT cache this result
+        } else {
+          __routerUsed = true; // ✅ 실제 라우터 호출 경로
+          __routerCacheable = true;
+
+          __routerPlan = await groqRoutePlan({
+            authUser: __au,
+            groq_api_key: __groqKey, // ✅ extra field: groqRoutePlan이 안 쓰면 무시됨
+            query: __rq0,
+            snippet: String(req.body?.snippet ?? req.body?.core_text ?? "").slice(0, 1800),
+            question: String(req.body?.question ?? "").slice(0, 800),
+            hintMode: (_rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route") ? null : _rawMode,
+          });
+          try { if (__routerPlan && typeof __routerPlan === "object") __routerPlan._cache_key = __routerCacheKey; } catch (_) { }
+        }
+        __routerCached = false;
+        try {
+          if (__routerCacheable && __routerCacheKey && __routerPlan) {
+            __routerCacheSet(__routerCacheKey, __routerPlan);
+          }
+        } catch (_) { }
+      }
+
+      // plan 해석: primary 모드 + 추가 실행
+      const primaryRaw =
+        String(
+          __routerPlan?.primary ??
+          __routerPlan?.mode ??
+          (__routerPlan?.plan?.[0]?.mode ?? "qv")
+        )
+          .toLowerCase()
+          .trim();
+
+      const runsRaw = Array.isArray(__routerPlan?.runs)
+        ? __routerPlan.runs.map((x) => String(x).toLowerCase().trim()).filter(Boolean)
+        : Array.isArray(__routerPlan?.plan)
+          ? __routerPlan.plan
+            .map((x) => String(x?.mode ?? x).toLowerCase().trim())
+            .filter(Boolean)
+          : [];
+
+      // ✅ FV top-level 게이트: "검증할 스니펫/클레임"이 있을 때만 fv 허용
+      const __snClaim0 = String(
+        req.body?.snippet ??
+        req.body?.core_text ??
+        req.body?.snippet_meta?.snippet_core ??
+        ""
+      ).trim();
+      const __hasSnippetClaim = __snClaim0.length >= 20;
+
+      // ✅ top-level safeMode는 qv/fv만 허용 (lv는 extra로만)
+      let topPrimary = "qv";
+      if (primaryRaw === "fv" && __hasSnippetClaim) topPrimary = "fv";
+
+      // top-level mode 확정
+      safeMode = topPrimary;
+
+      // ─────────────────────────────
+      // ✅ LV extra 게이트(서버에서 보수적으로 차단)
+      // - auto에서 기본 lv로 튀는 리스크 방지
+      // - "법/조항/판례/처벌/소송/계약" 등 법률 신호 있을 때만 허용
+      function __looksLegalLike(s) {
+        const t = String(s || "").trim();
+        if (!t) return false;
+
+        const reKo =
+          /(민법|형법|형사|민사|행정법|상법|근로기준법|개인정보보호법|저작권법|상표법|특허법|부동산|임대차|상가임대차|소송|고소|고발|기소|항소|상고|판결|판례|대법원|헌재|헌법재판소|처벌|벌금|징역|과태료|손해배상|위자료|계약|해지|해제|위약금|조항|제\s*\d+\s*조|시행령|시행규칙|법률|법령)/i;
+
+        const reEn =
+          /\b(statute|case law|precedent|supreme court|criminal|civil|lawsuit|litigation|penalty|fine|imprisonment|contract|breach|termination)\b/i;
+
+        return reKo.test(t) || reEn.test(t);
+      }
+
+      const __q0 = String(req.body?.query ?? query ?? "").trim();
+      const __qu0 = String(req.body?.question ?? "").trim();
+      const __sn0 = String(req.body?.snippet ?? req.body?.core_text ?? req.body?.snippet_meta?.snippet_core ?? "").trim();
+
+      // 법률 신호는 query/question/snippet 중 하나라도 잡히면 OK
+      const __legalSignal = __looksLegalLike(__q0) || __looksLegalLike(__qu0) || __looksLegalLike(__sn0);
+
+      // 라우터 confidence가 있으면 최소 기준 요구(없으면 “신호 기반”으로만)
+      const __conf0 =
+        (typeof __routerPlan?.confidence === "number" && Number.isFinite(__routerPlan.confidence))
+          ? __routerPlan.confidence
+          : null;
+
+      const __lvAllowed = __legalSignal && (__conf0 === null || __conf0 >= 0.55);
+
+      // lv extra 조건: primary가 lv였거나, runs에 lv가 포함되어 있으면 ON
+      // 단, __lvAllowed를 통과해야만 ON
+      const wantLvExtraRaw = primaryRaw === "lv" || runsRaw.includes("lv");
+      const wantLvExtra = wantLvExtraRaw && __lvAllowed;
+      __runLvExtra = !!wantLvExtra;
+
+      // ✅ router plan도 "top-level lv"로 보이지 않도록 정규화 (diagnostics 안정화)
+      // - primary/safe_mode_final: qv or fv
+      // - plan/runs: [topPrimary] (+ lv extra면 lv를 뒤에 추가)
+      // - qv+fv 조합은 만들지 않음
+      try {
+        // ✅ 라우터를 실제로 실행/캐시히트한 경우에만 plan/runs/primary를 "top 정규화"로 덮어쓴다.
+        // (라우터 미사용/스킵/실패 fallback 진단(reason/plan)을 보존)
+        if (__routerUsed && __routerPlan && typeof __routerPlan === "object") {
+          // fv를 원했는데 스니펫이 없어서 서버가 qv로 내린 경우 흔적 남김
+          if (primaryRaw === "fv" && !__hasSnippetClaim) {
+            __routerPlan.reason = (__routerPlan.reason || "") ? __routerPlan.reason : "server_downgrade_fv_no_snippet";
+          }
+
+          // lv를 원했는데 서버가 차단한 경우 흔적 남김
+          if (wantLvExtraRaw && !__lvAllowed) {
+            __routerPlan.reason = (__routerPlan.reason || "") ? __routerPlan.reason : "server_block_lv_not_legal";
+          }
+
+          __routerPlan.safe_mode_final = topPrimary;
+          __routerPlan.primary = topPrimary;
+
+          const _plan0 = [
+            { mode: topPrimary, priority: 1, reason: "router_primary_top" },
+          ];
+
+          if (wantLvExtra) {
+            _plan0.push({ mode: "lv", priority: 2, reason: "router_lv_extra_gated" });
+            __routerPlan.lv_extra = true;
+          } else {
+            __routerPlan.lv_extra = false;
+          }
+
+          __routerPlan.plan = _plan0;
+          __routerPlan.runs = _plan0.map((x) => x.mode);
+        }
+      } catch (_) { }
+    }
+  } catch (e) {
+    // 라우터 실패해도 기존 흐름 유지 (qv/fv 강제/기본 로직으로 진행)
+    try {
+      __routerError = String(e?.code || e?.message || e || "unknown").slice(0, 160);
+    } catch (_) {
+      __routerError = "unknown";
+    }
+    __routerPlan = null;
     __runLvExtra = false;
-
-    __routerPlan = {
-      raw_mode: _rawMode,
-      safe_mode_final: "qv",
-      primary: "qv",
-
-      // ✅ "router_missing" 포함: (뒤의 9253 근처 로직) one-shot이 router_plan을 주면 덮어쓰도록 트리거
-      plan: [{ mode: "qv", priority: 1, reason: "router_missing_prefer_one_shot_preprocess" }],
-      runs: ["qv"],
-
-      model: String(process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile"),
-      cached: false,
-      lv_extra: false,
-
-      reason: "router_missing_prefer_one_shot_preprocess",
-      error: null,
-    };
-  } catch (_) {}
-}
-
-if (_shouldRoute) {
-    // auth user (best-effort) — avoid ReferenceError when authUser is not in scope
-    let __au = (typeof authUser !== "undefined" ? authUser : null) || null;
-    if (!__au) {
-      try { __au = await getSupabaseAuthUser(req); } catch (_) { __au = null; }
-    }
-
-    const __rq0 = String(req.body?.query ?? "").trim();
-    const __rPath0 = String(req.path || "");
-
-    // user hash (do not leak raw id)
-    const __rUidRaw = String(__au?.id || (typeof logUserId !== "undefined" ? logUserId : null) || "anon");
-    const __rUHash =
-      (typeof hash16 === "function")
-        ? hash16(__rUidRaw)
-        : (typeof sha16 === "function")
-          ? sha16(__rUidRaw)
-          : __rUidRaw.slice(0, 16);
-
-         const __rQHash =
-      (typeof sha16 === "function")
-        ? sha16(__rq0)
-        : __rq0.slice(0, 64);
-    
-        const __rSn0 = String(req.body?.snippet ?? req.body?.core_text ?? req.body?.snippet_meta?.snippet_core ?? "").slice(0, 1800);
-        const __rHasSn = __rSn0.trim().length >= 20 ? "1" : "0";
-        const __rSnHash = (typeof sha16 === "function") ? sha16(__rSn0) : __rSn0.slice(0, 64);
-
-        // ✅ router cache key (separate from other __cacheKey uses)
-    // - include snippet presence/hash to avoid "fv cached" leaking into non-snippet requests
-    __routerCacheKey =
-  (typeof sha16 === "function")
-    ? sha16(
-        `router:v3|u=${__rUHash}|p=${__rPath0}|m=${__cacheMode}|hs=${__rHasSn}|s=${__rSnHash}|q=${__rQHash}`.slice(0, 4000)
-      )
-    : `router:v3|u=${__rUHash}|p=${__rPath0}|m=${__cacheMode}|hs=${__rHasSn}|s=${__rSnHash}|q=${__rQHash}`.slice(0, 4000);
-
-    // cache hit?
-    const __cachedPlan = __routerCacheGet(__routerCacheKey);
-    if (__cachedPlan) {
-  __routerPlan = __cachedPlan;
-    try { if (__routerPlan && typeof __routerPlan === "object") __routerPlan._cache_key = __routerCacheKey; } catch (_) {}
-  __routerCached = true;
-  __routerUsed = true; // ✅ cache hit도 "used"
-  try { if (__routerPlan && typeof __routerPlan === "object") __routerPlan.cached = true; } catch (_) {}
-} else {
-      // ✅ load user Groq key (Supabase vault) — 없으면 라우터 스킵하고 qv로 진행
-      let __routerCacheable = false; // ✅ only cache when user has groq key and router actually ran
-      const __groqKey = await __getUserGroqKey(req);
-
-if (!__groqKey) {
-  // 라우터는 "키 없는 사용자"에겐 실행하지 않음 (기본 qv)
-  safeMode = "qv";
-  __runLvExtra = false;
-
-  __routerPlan = {
-    raw_mode: _rawMode,
-    safe_mode_final: "qv",
-    primary: "qv",
-    plan: [{ mode: "qv", priority: 1, reason: "router_skipped_no_user_groq_key" }],
-    runs: ["qv"],
-    cached: false,
-    lv_extra: false,
-  };
-
-  __routerCacheable = false; // ✅ DO NOT cache this result
-} else {
-  __routerUsed = true; // ✅ 실제 라우터 호출 경로
-  __routerCacheable = true;
-
-  __routerPlan = await groqRoutePlan({
-    authUser: __au,
-    groq_api_key: __groqKey, // ✅ extra field: groqRoutePlan이 안 쓰면 무시됨
-    query: __rq0,
-    snippet: String(req.body?.snippet ?? req.body?.core_text ?? "").slice(0, 1800),
-    question: String(req.body?.question ?? "").slice(0, 800),
-    hintMode: (_rawMode === "auto" || _rawMode === "overlay" || _rawMode === "route") ? null : _rawMode,
-  });
-  try { if (__routerPlan && typeof __routerPlan === "object") __routerPlan._cache_key = __routerCacheKey; } catch (_) {}
-}
-      __routerCached = false;
-try {
-  if (__routerCacheable && __routerCacheKey && __routerPlan) {
-    __routerCacheSet(__routerCacheKey, __routerPlan);
+    __routerCached = false;
+  } finally {
+    __routerCacheKey = null;
   }
-} catch (_) {}
-    }
-
-       // plan 해석: primary 모드 + 추가 실행
-const primaryRaw =
-  String(
-    __routerPlan?.primary ??
-      __routerPlan?.mode ??
-      (__routerPlan?.plan?.[0]?.mode ?? "qv")
-  )
-    .toLowerCase()
-    .trim();
-
-const runsRaw = Array.isArray(__routerPlan?.runs)
-  ? __routerPlan.runs.map((x) => String(x).toLowerCase().trim()).filter(Boolean)
-  : Array.isArray(__routerPlan?.plan)
-    ? __routerPlan.plan
-        .map((x) => String(x?.mode ?? x).toLowerCase().trim())
-        .filter(Boolean)
-    : [];
-
-// ✅ FV top-level 게이트: "검증할 스니펫/클레임"이 있을 때만 fv 허용
-const __snClaim0 = String(
-  req.body?.snippet ??
-  req.body?.core_text ??
-  req.body?.snippet_meta?.snippet_core ??
-  ""
-).trim();
-const __hasSnippetClaim = __snClaim0.length >= 20;
-
-// ✅ top-level safeMode는 qv/fv만 허용 (lv는 extra로만)
-let topPrimary = "qv";
-if (primaryRaw === "fv" && __hasSnippetClaim) topPrimary = "fv";
-
-// top-level mode 확정
-safeMode = topPrimary;
-
-// ─────────────────────────────
-// ✅ LV extra 게이트(서버에서 보수적으로 차단)
-// - auto에서 기본 lv로 튀는 리스크 방지
-// - "법/조항/판례/처벌/소송/계약" 등 법률 신호 있을 때만 허용
-function __looksLegalLike(s) {
-  const t = String(s || "").trim();
-  if (!t) return false;
-
-  const reKo =
-    /(민법|형법|형사|민사|행정법|상법|근로기준법|개인정보보호법|저작권법|상표법|특허법|부동산|임대차|상가임대차|소송|고소|고발|기소|항소|상고|판결|판례|대법원|헌재|헌법재판소|처벌|벌금|징역|과태료|손해배상|위자료|계약|해지|해제|위약금|조항|제\s*\d+\s*조|시행령|시행규칙|법률|법령)/i;
-
-  const reEn =
-    /\b(statute|case law|precedent|supreme court|criminal|civil|lawsuit|litigation|penalty|fine|imprisonment|contract|breach|termination)\b/i;
-
-  return reKo.test(t) || reEn.test(t);
-}
-
-const __q0 = String(req.body?.query ?? query ?? "").trim();
-const __qu0 = String(req.body?.question ?? "").trim();
-const __sn0 = String(req.body?.snippet ?? req.body?.core_text ?? req.body?.snippet_meta?.snippet_core ?? "").trim();
-
-// 법률 신호는 query/question/snippet 중 하나라도 잡히면 OK
-const __legalSignal = __looksLegalLike(__q0) || __looksLegalLike(__qu0) || __looksLegalLike(__sn0);
-
-// 라우터 confidence가 있으면 최소 기준 요구(없으면 “신호 기반”으로만)
-const __conf0 =
-  (typeof __routerPlan?.confidence === "number" && Number.isFinite(__routerPlan.confidence))
-    ? __routerPlan.confidence
-    : null;
-
-const __lvAllowed = __legalSignal && (__conf0 === null || __conf0 >= 0.55);
-
-// lv extra 조건: primary가 lv였거나, runs에 lv가 포함되어 있으면 ON
-// 단, __lvAllowed를 통과해야만 ON
-const wantLvExtraRaw = primaryRaw === "lv" || runsRaw.includes("lv");
-const wantLvExtra = wantLvExtraRaw && __lvAllowed;
-__runLvExtra = !!wantLvExtra;
-
-// ✅ router plan도 "top-level lv"로 보이지 않도록 정규화 (diagnostics 안정화)
-// - primary/safe_mode_final: qv or fv
-// - plan/runs: [topPrimary] (+ lv extra면 lv를 뒤에 추가)
-// - qv+fv 조합은 만들지 않음
-try {
-  // ✅ 라우터를 실제로 실행/캐시히트한 경우에만 plan/runs/primary를 "top 정규화"로 덮어쓴다.
-  // (라우터 미사용/스킵/실패 fallback 진단(reason/plan)을 보존)
-  if (__routerUsed && __routerPlan && typeof __routerPlan === "object") {
-    // fv를 원했는데 스니펫이 없어서 서버가 qv로 내린 경우 흔적 남김
-    if (primaryRaw === "fv" && !__hasSnippetClaim) {
-      __routerPlan.reason = (__routerPlan.reason || "") ? __routerPlan.reason : "server_downgrade_fv_no_snippet";
-    }
-
-    // lv를 원했는데 서버가 차단한 경우 흔적 남김
-    if (wantLvExtraRaw && !__lvAllowed) {
-      __routerPlan.reason = (__routerPlan.reason || "") ? __routerPlan.reason : "server_block_lv_not_legal";
-    }
-
-    __routerPlan.safe_mode_final = topPrimary;
-    __routerPlan.primary = topPrimary;
-
-    const _plan0 = [
-      { mode: topPrimary, priority: 1, reason: "router_primary_top" },
-    ];
-
-    if (wantLvExtra) {
-      _plan0.push({ mode: "lv", priority: 2, reason: "router_lv_extra_gated" });
-      __routerPlan.lv_extra = true;
-    } else {
-      __routerPlan.lv_extra = false;
-    }
-
-    __routerPlan.plan = _plan0;
-    __routerPlan.runs = _plan0.map((x) => x.mode);
-  }
-} catch (_) {}
-  }
-} catch (e) {
-  // 라우터 실패해도 기존 흐름 유지 (qv/fv 강제/기본 로직으로 진행)
-  try {
-    __routerError = String(e?.code || e?.message || e || "unknown").slice(0, 160);
-  } catch (_) {
-    __routerError = "unknown";
-  }
-  __routerPlan = null;
-  __runLvExtra = false;
-  __routerCached = false;
-} finally {
-  __routerCacheKey = null;
-}
 
   // ✅ S-17d: normalize + fallback router_plan (never keep "auto" in plan/runs/primary)
-try {
-  const __sf0 = String(safeMode || "qv").toLowerCase();
-const __sf =
-  (__sf0 === "auto" ||
-   __sf0 === "overlay" ||
-   __sf0 === "route" ||
-   __sf0 === "null" ||
-   __sf0 === "undefined")
-    ? "qv"
-    : __sf0;
+  try {
+    const __sf0 = String(safeMode || "qv").toLowerCase();
+    const __sf =
+      (__sf0 === "auto" ||
+        __sf0 === "overlay" ||
+        __sf0 === "route" ||
+        __sf0 === "null" ||
+        __sf0 === "undefined")
+        ? "qv"
+        : __sf0;
 
-      // 0) ✅ fallback: never leave __routerPlan null
-  if (!__routerPlan) {
-    // ⚠️ rawMode 변수는 선언/초기화 순서에 따라 TDZ(ReferenceError)가 날 수 있으므로
-    // 요청 바디에서 직접 읽어 안전하게 기록한다.
-    const __rawModeSafe = String(
-      (req && req.body && (req.body.mode ?? req.body.safeMode ?? req.body.raw_mode)) ?? "auto"
-    ).toLowerCase();
+    // 0) ✅ fallback: never leave __routerPlan null
+    if (!__routerPlan) {
+      // ⚠️ rawMode 변수는 선언/초기화 순서에 따라 TDZ(ReferenceError)가 날 수 있으므로
+      // 요청 바디에서 직접 읽어 안전하게 기록한다.
+      const __rawModeSafe = String(
+        (req && req.body && (req.body.mode ?? req.body.safeMode ?? req.body.raw_mode)) ?? "auto"
+      ).toLowerCase();
 
-    // ⚠️ GROQ_ROUTER_MODEL은 아래에서 const로 선언되므로(동일 스코프) 여기서 참조하면 TDZ 위험.
-    // env에서 직접 읽어 안전하게 기록한다.
-    const __routerModelSafe = String(
-      process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile"
-    );
+      // ⚠️ GROQ_ROUTER_MODEL은 아래에서 const로 선언되므로(동일 스코프) 여기서 참조하면 TDZ 위험.
+      // env에서 직접 읽어 안전하게 기록한다.
+      const __routerModelSafe = String(
+        process.env.GROQ_ROUTER_MODEL || "llama-3.3-70b-versatile"
+      );
 
-    const __err0 = (__routerError && String(__routerError).trim())
-      ? `router_error:${String(__routerError).trim().slice(0, 140)}`
-      : "router_plan_was_null";
+      const __err0 = (__routerError && String(__routerError).trim())
+        ? `router_error:${String(__routerError).trim().slice(0, 140)}`
+        : "router_plan_was_null";
 
-    __routerPlan = {
-      raw_mode: __rawModeSafe,
-      safe_mode_final: __sf,
-      primary: __sf,
-      plan: [{ mode: __sf, priority: 1, reason: "router_missing_or_failed" }],
-      runs: [__sf],
-      model: __routerModelSafe,
-      cached: false,
-      lv_extra: false,
-      reason: __err0, // ✅ 응답 reason으로 바로 노출
-      error: __err0,  // ✅ 내부 진단도 유지
+      __routerPlan = {
+        raw_mode: __rawModeSafe,
+        safe_mode_final: __sf,
+        primary: __sf,
+        plan: [{ mode: __sf, priority: 1, reason: "router_missing_or_failed" }],
+        runs: [__sf],
+        model: __routerModelSafe,
+        cached: false,
+        lv_extra: false,
+        reason: __err0, // ✅ 응답 reason으로 바로 노출
+        error: __err0,  // ✅ 내부 진단도 유지
+      };
+    }
+
+    // 1) primary / safe_mode_final normalize
+    const _p0 = String(__routerPlan.primary ?? "").toLowerCase();
+    if (_p0 === "auto" || !_p0) __routerPlan.primary = __sf;
+
+    if (!__routerPlan.safe_mode_final) __routerPlan.safe_mode_final = __sf;
+    if (String(__routerPlan.safe_mode_final).toLowerCase() === "auto") __routerPlan.safe_mode_final = __sf;
+
+    // 2) plan normalize (auto/empty -> __sf), especially for missing/failed reasons
+    if (!Array.isArray(__routerPlan.plan) || __routerPlan.plan.length === 0) {
+      __routerPlan.plan = [{ mode: __sf, priority: 1, reason: "router_plan_empty" }];
+    } else {
+      const _r0 = __routerPlan.plan[0] || {};
+      const _m0 = String(_r0?.mode ?? "").toLowerCase();
+      const _reason0 = String(_r0?.reason ?? "").toLowerCase();
+
+      if (
+        (_m0 === "auto" || !_m0) &&
+        (_reason0.includes("missing") || _reason0.includes("failed") || _reason0.includes("null"))
+      ) {
+        __routerPlan.plan = [{ ..._r0, mode: __sf }];
+      } else if (_m0 === "auto" || !_m0) {
+        // even if reason is absent, never keep auto/empty
+        __routerPlan.plan = [{ ..._r0, mode: __sf }];
+      }
+    }
+
+    // 3) runs normalize: always non-empty, no "auto"
+    if (Array.isArray(__routerPlan.runs)) {
+      const _runs = __routerPlan.runs.map(x => String(x).toLowerCase());
+      const _runs2 = _runs.map(x => (x === "auto" ? __sf : x)).filter(Boolean);
+      __routerPlan.runs = _runs2.length > 0 ? _runs2 : [__sf];
+    } else if (Array.isArray(__routerPlan.plan)) {
+      const _runs2 = __routerPlan.plan
+        .map(x => String(x?.mode ?? x).toLowerCase())
+        .map(x => (x === "auto" ? __sf : x))
+        .filter(Boolean);
+      __routerPlan.runs = _runs2.length > 0 ? _runs2 : [__sf];
+    } else {
+      __routerPlan.runs = [__sf];
+    }
+  } catch (_) { }
+
+  // ✅ safety: 라우터 미사용/실패/빈값이면 기본 qv (auto/overlay/route 포함)
+  const __sm0 = String(safeMode || "").toLowerCase();
+  if (
+    !__sm0 ||
+    __sm0 === "auto" ||
+    __sm0 === "overlay" ||
+    __sm0 === "route" ||
+    __sm0 === "null" ||
+    __sm0 === "undefined"
+  ) {
+    safeMode = "qv";
+  }
+
+  // ✅ router diagnostics
+  // - router_plan은 “응답에 붙일 때” __buildRouterPlanPublicFinal(...)로만 생성/부착한다.
+  // - 여기서는 사전 계산/캐시를 만들지 않는다. (safeMode가 뒤에서 바뀔 수 있어 불일치 위험)
+
+  // ─────────────────────────────
+  // ✅ Groq Router (mode judge) — OpenAI-compatible endpoint
+  // - key: user_secrets(integrations.groq.api_key_enc) 우선, 없으면 env GROQ_API_KEY fallback(선택)
+  // - returns: { plan: [{mode:"qv"|"fv"|"lv", priority:int, reason:string}], confidence:0..1 }
+  // ─────────────────────────────
+  // (moved) GROQ_API_BASE / GROQ_ROUTER_MODEL / GROQ_ROUTER_TIMEOUT_MS declared earlier (avoid TDZ)
+
+  function _safeJsonParse(s) {
+    try { return JSON.parse(s); } catch { return null; }
+  }
+
+  function _normalizeRouterPlan(obj) {
+    // 강제 형태 보정 + 안전장치(절대 lv가 primary가 되지 않게 / qv+fv 동시 방지)
+    const out = {
+      plan: [],
+      runs: [],
+      primary: "qv",
+      confidence: null,
+      reason: null,
+      raw: obj ?? null,
     };
-  }
 
-  // 1) primary / safe_mode_final normalize
-  const _p0 = String(__routerPlan.primary ?? "").toLowerCase();
-  if (_p0 === "auto" || !_p0) __routerPlan.primary = __sf;
+    const conf =
+      (typeof obj?.confidence === "number" && Number.isFinite(obj.confidence))
+        ? Math.max(0, Math.min(1, obj.confidence))
+        : null;
 
-  if (!__routerPlan.safe_mode_final) __routerPlan.safe_mode_final = __sf;
-  if (String(__routerPlan.safe_mode_final).toLowerCase() === "auto") __routerPlan.safe_mode_final = __sf;
+    const topReason = String(obj?.reason ?? "").slice(0, 120) || null;
 
-  // 2) plan normalize (auto/empty -> __sf), especially for missing/failed reasons
-  if (!Array.isArray(__routerPlan.plan) || __routerPlan.plan.length === 0) {
-    __routerPlan.plan = [{ mode: __sf, priority: 1, reason: "router_plan_empty" }];
-  } else {
-    const _r0 = __routerPlan.plan[0] || {};
-    const _m0 = String(_r0?.mode ?? "").toLowerCase();
-    const _reason0 = String(_r0?.reason ?? "").toLowerCase();
+    // 입력 후보: plan 우선, 없으면 runs 배열도 허용
+    const src = Array.isArray(obj?.plan) ? obj.plan : (Array.isArray(obj?.runs) ? obj.runs : []);
+    const modes = new Set(["qv", "fv", "lv"]);
+    const norm = [];
 
-    if (
-      (_m0 === "auto" || !_m0) &&
-      (_reason0.includes("missing") || _reason0.includes("failed") || _reason0.includes("null"))
-    ) {
-      __routerPlan.plan = [{ ..._r0, mode: __sf }];
-    } else if (_m0 === "auto" || !_m0) {
-      // even if reason is absent, never keep auto/empty
-      __routerPlan.plan = [{ ..._r0, mode: __sf }];
+    for (const it of src) {
+      const m = String(it?.mode ?? it?.m ?? it ?? "").trim().toLowerCase();
+      if (!modes.has(m)) continue;
+
+      const pr0 = (typeof it?.priority === "number" && Number.isFinite(it.priority)) ? it.priority : 1;
+      const r0 = String(it?.reason ?? it?.why ?? "").slice(0, 180);
+
+      norm.push({ mode: m, priority: pr0, reason: r0 });
     }
-  }
 
-  // 3) runs normalize: always non-empty, no "auto"
-  if (Array.isArray(__routerPlan.runs)) {
-    const _runs = __routerPlan.runs.map(x => String(x).toLowerCase());
-    const _runs2 = _runs.map(x => (x === "auto" ? __sf : x)).filter(Boolean);
-    __routerPlan.runs = _runs2.length > 0 ? _runs2 : [__sf];
-  } else if (Array.isArray(__routerPlan.plan)) {
-    const _runs2 = __routerPlan.plan
-      .map(x => String(x?.mode ?? x).toLowerCase())
-      .map(x => (x === "auto" ? __sf : x))
-      .filter(Boolean);
-    __routerPlan.runs = _runs2.length > 0 ? _runs2 : [__sf];
-  } else {
-    __routerPlan.runs = [__sf];
-  }
-} catch (_) {}
+    // priority 정렬
+    norm.sort((a, b) => (a.priority || 1) - (b.priority || 1));
 
-// ✅ safety: 라우터 미사용/실패/빈값이면 기본 qv (auto/overlay/route 포함)
-const __sm0 = String(safeMode || "").toLowerCase();
-if (
-  !__sm0 ||
-  __sm0 === "auto" ||
-  __sm0 === "overlay" ||
-  __sm0 === "route" ||
-  __sm0 === "null" ||
-  __sm0 === "undefined"
-) {
-  safeMode = "qv";
-}
+    // 중복 제거(첫 등장 유지)
+    const seen = new Set();
+    let plan = norm.filter(x => (seen.has(x.mode) ? false : (seen.add(x.mode), true)));
 
-// ✅ router diagnostics
-// - router_plan은 “응답에 붙일 때” __buildRouterPlanPublicFinal(...)로만 생성/부착한다.
-// - 여기서는 사전 계산/캐시를 만들지 않는다. (safeMode가 뒤에서 바뀔 수 있어 불일치 위험)
-
-// ─────────────────────────────
-// ✅ Groq Router (mode judge) — OpenAI-compatible endpoint
-// - key: user_secrets(integrations.groq.api_key_enc) 우선, 없으면 env GROQ_API_KEY fallback(선택)
-// - returns: { plan: [{mode:"qv"|"fv"|"lv", priority:int, reason:string}], confidence:0..1 }
-// ─────────────────────────────
-// (moved) GROQ_API_BASE / GROQ_ROUTER_MODEL / GROQ_ROUTER_TIMEOUT_MS declared earlier (avoid TDZ)
-
-function _safeJsonParse(s) {
-  try { return JSON.parse(s); } catch { return null; }
-}
-
-function _normalizeRouterPlan(obj) {
-  // 강제 형태 보정 + 안전장치(절대 lv가 primary가 되지 않게 / qv+fv 동시 방지)
-  const out = {
-    plan: [],
-    runs: [],
-    primary: "qv",
-    confidence: null,
-    reason: null,
-    raw: obj ?? null,
-  };
-
-  const conf =
-    (typeof obj?.confidence === "number" && Number.isFinite(obj.confidence))
-      ? Math.max(0, Math.min(1, obj.confidence))
-      : null;
-
-  const topReason = String(obj?.reason ?? "").slice(0, 120) || null;
-
-  // 입력 후보: plan 우선, 없으면 runs 배열도 허용
-  const src = Array.isArray(obj?.plan) ? obj.plan : (Array.isArray(obj?.runs) ? obj.runs : []);
-  const modes = new Set(["qv", "fv", "lv"]);
-  const norm = [];
-
-  for (const it of src) {
-    const m = String(it?.mode ?? it?.m ?? it ?? "").trim().toLowerCase();
-    if (!modes.has(m)) continue;
-
-    const pr0 = (typeof it?.priority === "number" && Number.isFinite(it.priority)) ? it.priority : 1;
-    const r0 = String(it?.reason ?? it?.why ?? "").slice(0, 180);
-
-    norm.push({ mode: m, priority: pr0, reason: r0 });
-  }
-
-  // priority 정렬
-  norm.sort((a, b) => (a.priority || 1) - (b.priority || 1));
-
-  // 중복 제거(첫 등장 유지)
-  const seen = new Set();
-  let plan = norm.filter(x => (seen.has(x.mode) ? false : (seen.add(x.mode), true)));
-
-  // plan 비면 안전 fallback
-  if (!plan.length) {
-    plan = [{ mode: "qv", priority: 1, reason: "fallback" }];
-  }
-
-  // ✅ qv+fv 동시 방지: 둘 다 있으면 priority가 더 낮은 것만 유지(동률이면 qv 우선)
-  const hasQv = plan.some(x => x.mode === "qv");
-  const hasFv = plan.some(x => x.mode === "fv");
-  if (hasQv && hasFv) {
-    const qv = plan.find(x => x.mode === "qv");
-    const fv = plan.find(x => x.mode === "fv");
-    const keep = (fv.priority < qv.priority) ? "fv" : "qv";
-    plan = plan.filter(x => x.mode === keep || x.mode === "lv");
-  }
-
-  // ✅ lv가 1순위로 오면 절대 허용하지 않음: lv는 뒤로 내리고, primary는 qv/fv로 강제
-  if (plan[0]?.mode === "lv") {
-    const maxP = Math.max(...plan.map(x => Number(x.priority || 1)));
-    plan = plan
-      .filter(x => x.mode !== "lv")
-      .concat([{ mode: "lv", priority: maxP + 1, reason: "demote_lv_primary" }]);
-  }
-
-  // runs/primary 구성
-  out.plan = plan;
-  out.runs = plan.map(x => x.mode);
-
-  // primary는 qv/fv만
-  const p0 = String(plan[0]?.mode || "qv").toLowerCase();
-  out.primary = (p0 === "fv") ? "fv" : "qv";
-
-  out.confidence = conf;
-  out.reason = topReason;
-
-  return out;
-}
-
-async function _getGroqApiKeyForUser(authUser) {
-  // authUser 없으면 null
-  if (!authUser) return null;
-
-  // ✅ 핵심: user_secrets.user_id 는 "users" 테이블 id 기준
-  // - authUser.id(=au.id)로만 조회하면 키를 못 찾는 케이스가 발생
-  let usersId = null;
-
-  // 0) users.id resolve (best-effort)
-  try {
-    if (typeof resolveLogUserId === "function") {
-      usersId = await resolveLogUserId({
-        user_id: null,
-        user_email: authUser?.email || null,
-        user_name: authUser?.user_metadata?.full_name || authUser?.user_metadata?.name || null,
-        auth_user: authUser,
-        bearer_token: null,
-      });
+    // plan 비면 안전 fallback
+    if (!plan.length) {
+      plan = [{ mode: "qv", priority: 1, reason: "fallback" }];
     }
-  } catch (_) {
-    usersId = null;
+
+    // ✅ qv+fv 동시 방지: 둘 다 있으면 priority가 더 낮은 것만 유지(동률이면 qv 우선)
+    const hasQv = plan.some(x => x.mode === "qv");
+    const hasFv = plan.some(x => x.mode === "fv");
+    if (hasQv && hasFv) {
+      const qv = plan.find(x => x.mode === "qv");
+      const fv = plan.find(x => x.mode === "fv");
+      const keep = (fv.priority < qv.priority) ? "fv" : "qv";
+      plan = plan.filter(x => x.mode === keep || x.mode === "lv");
+    }
+
+    // ✅ lv가 1순위로 오면 절대 허용하지 않음: lv는 뒤로 내리고, primary는 qv/fv로 강제
+    if (plan[0]?.mode === "lv") {
+      const maxP = Math.max(...plan.map(x => Number(x.priority || 1)));
+      plan = plan
+        .filter(x => x.mode !== "lv")
+        .concat([{ mode: "lv", priority: maxP + 1, reason: "demote_lv_primary" }]);
+    }
+
+    // runs/primary 구성
+    out.plan = plan;
+    out.runs = plan.map(x => x.mode);
+
+    // primary는 qv/fv만
+    const p0 = String(plan[0]?.mode || "qv").toLowerCase();
+    out.primary = (p0 === "fv") ? "fv" : "qv";
+
+    out.confidence = conf;
+    out.reason = topReason;
+
+    return out;
   }
 
-  // ✅ 1) 단일 소스: user_secrets(integrations.groq.api_key_enc) 우선
-  // - users.id → (fallback) au.id 순서
-  try {
-    if (typeof __getGroqApiKeyForUser === "function") {
-      const tryIds = [];
-      if (usersId) tryIds.push(String(usersId).trim());
-      if (authUser?.id) tryIds.push(String(authUser.id).trim());
+  async function _getGroqApiKeyForUser(authUser) {
+    // authUser 없으면 null
+    if (!authUser) return null;
 
-      for (const uid of tryIds) {
-        const k1 = await __getGroqApiKeyForUser({ supabase, userId: uid });
-        const kk1 = String(k1 || "").trim();
-        if (kk1) return kk1;
+    // ✅ 핵심: user_secrets.user_id 는 "users" 테이블 id 기준
+    // - authUser.id(=au.id)로만 조회하면 키를 못 찾는 케이스가 발생
+    let usersId = null;
+
+    // 0) users.id resolve (best-effort)
+    try {
+      if (typeof resolveLogUserId === "function") {
+        usersId = await resolveLogUserId({
+          user_id: null,
+          user_email: authUser?.email || null,
+          user_name: authUser?.user_metadata?.full_name || authUser?.user_metadata?.name || null,
+          auth_user: authUser,
+          bearer_token: null,
+        });
       }
+    } catch (_) {
+      usersId = null;
     }
-  } catch (_) {}
 
-  // ✅ 2) 레거시(있으면만): loadUserSecretsRow + decryptIntegrationsSecrets fallback
-  // - users.id → (fallback) au.id 순서
-  try {
-    if (typeof loadUserSecretsRow === "function" && typeof decryptIntegrationsSecrets === "function") {
-      const tryIds = [];
-      if (usersId) tryIds.push(String(usersId).trim());
-      if (authUser?.id) tryIds.push(String(authUser.id).trim());
+    // ✅ 1) 단일 소스: user_secrets(integrations.groq.api_key_enc) 우선
+    // - users.id → (fallback) au.id 순서
+    try {
+      if (typeof __getGroqApiKeyForUser === "function") {
+        const tryIds = [];
+        if (usersId) tryIds.push(String(usersId).trim());
+        if (authUser?.id) tryIds.push(String(authUser.id).trim());
 
-      for (const uid of tryIds) {
-        const row = await loadUserSecretsRow(uid);
-        const secrets = row?.secrets || {};
-        const dec = decryptIntegrationsSecrets(secrets);
-        const k2 = String(dec?.groq_key || dec?.groq_api_key || "").trim();
-        if (k2) return k2;
+        for (const uid of tryIds) {
+          const k1 = await __getGroqApiKeyForUser({ supabase, userId: uid });
+          const kk1 = String(k1 || "").trim();
+          if (kk1) return kk1;
+        }
       }
+    } catch (_) { }
+
+    // ✅ 2) 레거시(있으면만): loadUserSecretsRow + decryptIntegrationsSecrets fallback
+    // - users.id → (fallback) au.id 순서
+    try {
+      if (typeof loadUserSecretsRow === "function" && typeof decryptIntegrationsSecrets === "function") {
+        const tryIds = [];
+        if (usersId) tryIds.push(String(usersId).trim());
+        if (authUser?.id) tryIds.push(String(authUser.id).trim());
+
+        for (const uid of tryIds) {
+          const row = await loadUserSecretsRow(uid);
+          const secrets = row?.secrets || {};
+          const dec = decryptIntegrationsSecrets(secrets);
+          const k2 = String(dec?.groq_key || dec?.groq_api_key || "").trim();
+          if (k2) return k2;
+        }
+      }
+    } catch (_) { }
+
+    // ✅ 3) (선택) env fallback
+    try {
+      const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+      if (__allowEnvFallback) {
+        const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+        if (envK) return envK;
+      }
+    } catch (_) { }
+
+    return null;
+  }
+
+  async function groqRoutePlan({ authUser, groq_api_key, query, snippet, question, hintMode }) {
+    if (!GROQ_ROUTER_ENABLE) {
+      return {
+        plan: [{ mode: (hintMode || "qv"), priority: 1, reason: "router_disabled" }],
+        confidence: null,
+        raw: null,
+      };
     }
-  } catch (_) {}
-
-  // ✅ 3) (선택) env fallback
-  try {
-    const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
-    if (__allowEnvFallback) {
-      const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
-      if (envK) return envK;
-    }
-  } catch (_) {}
-
-  return null;
-}
-
-async function groqRoutePlan({ authUser, groq_api_key, query, snippet, question, hintMode }) {
-  if (!GROQ_ROUTER_ENABLE) {
-  return {
-    plan: [{ mode: (hintMode || "qv"), priority: 1, reason: "router_disabled" }],
-    confidence: null,
-    raw: null,
-  };
-}
 
     const apiKey = (groq_api_key && String(groq_api_key).trim().length >= 10)
-    ? String(groq_api_key).trim()
-    : await _getGroqApiKeyForUser(authUser);
+      ? String(groq_api_key).trim()
+      : await _getGroqApiKeyForUser(authUser);
 
-  if (!apiKey) {
-    return {
-      plan: [{ mode: (hintMode || (String(snippet || "").trim() ? "fv" : "qv")), priority: 1, reason: "no_groq_key" }],
-      confidence: null,
-      raw: null,
-      router_ms: 0,
-      model: GROQ_ROUTER_MODEL,
-    };
-  }
+    if (!apiKey) {
+      return {
+        plan: [{ mode: (hintMode || (String(snippet || "").trim() ? "fv" : "qv")), priority: 1, reason: "no_groq_key" }],
+        confidence: null,
+        raw: null,
+        router_ms: 0,
+        model: GROQ_ROUTER_MODEL,
+      };
+    }
 
     const q = String(query || "").trim();
-  const sn = String(snippet || "").trim();
-  const qu = String(question || "").trim();
+    const sn = String(snippet || "").trim();
+    const qu = String(question || "").trim();
 
-  // ✅ FV는 “검증할 claim/snippet”이 있을 때만 의미가 있음 (너무 짧으면 질문일 확률 ↑)
-  const __hasSnippetClaim = sn.length >= 20;
+    // ✅ FV는 “검증할 claim/snippet”이 있을 때만 의미가 있음 (너무 짧으면 질문일 확률 ↑)
+    const __hasSnippetClaim = sn.length >= 20;
 
-  // 라우터 입력 구성(너무 길면 잘라서 비용/지연 감소)
-  const input = {
-    query: q.slice(0, 1200),
-    snippet: (__hasSnippetClaim ? sn : "").slice(0, 1800),
-    question: qu.slice(0, 800),
-    hint_mode: String(hintMode || "").trim().toLowerCase() || null,
-    has_snippet_claim: __hasSnippetClaim,
-    snippet_len: sn.length,
-    policy: {
-      allow_multi: true,
-      prefer: "qv_or_fv",
-      note: "Return JSON only.",
-    },
-  };
-
-  const sys = [
-  "You are a strict mode router for a fact-checking / verification system.",
-  "Return ONLY valid JSON. No prose. No markdown. No code fences.",
-  "",
-  "Allowed modes: qv, fv, lv.",
-  "Definitions:",
-  "- qv: general fact questions / knowledge queries.",
-  "- fv: verifying a provided factual sentence/snippet/AI answer (claim-check).",
-  "- lv: explicit Korean legal/statute/case interpretation (조/항/호, 법령/시행령/시행규칙, 판례/대법원/헌재, specific law names, or asks for 조문/법적근거).",
-  "",
-  "STRICT RULES:",
-  "- Default is qv.",
-  "- Use fv ONLY when user supplies a snippet/claim to verify (not just a question).",
-  "- Use lv ONLY when explicit legal/statute/case interpretation is requested.",
-  "- NEVER output lv as the first (primary) plan item.",
-  "  If legal is needed, output: [{mode:'qv',priority:1,...},{mode:'lv',priority:2,...}]",
-  "- Do NOT output qv+fv together.",
-  "- If unsure, output ONLY [{mode:'qv',priority:1,reason:'default_uncertain'}] and set confidence <= 0.60.",
-  "- Keep reason short (<= 8 words).",
-  "",
-  "JSON schema:",
-  '{"plan":[{"mode":"qv|fv|lv","priority":1,"reason":"short"}],"confidence":0.0,"reason":"short"}',
-].join("\n");
-
-  const user = JSON.stringify(input);
-  const payload = {
-    model: GROQ_ROUTER_MODEL,
-    temperature: 0.0,
-    messages: [
-      { role: "system", content: sys },
-      { role: "user", content: user },
-    ],
-    // Groq가 지원하면 JSON 강제(미지원이어도 무시될 수 있음)
-    response_format: { type: "json_object" },
-  };
-
-  const t0 = Date.now();
-  try {
-    const resp = await axios.post(
-      `${GROQ_API_BASE}/chat/completions`,
-      payload,
-      {
-        timeout: GROQ_ROUTER_TIMEOUT_MS,
-        headers: {
-  Authorization: `Bearer ${apiKey}`,
-  "Content-Type": "application/json",
-  Accept: "application/json",
-},
-      }
-    );
-
-    const txt =
-      resp?.data?.choices?.[0]?.message?.content ??
-      resp?.data?.choices?.[0]?.text ??
-      "";
-
-    const parsed = _safeJsonParse(String(txt).trim()) || _safeJsonParse(String(txt).replace(/`{3}json|`{3}/g, "").trim()) || null;
-    const norm = _normalizeRouterPlan(parsed || {});
-    norm.router_ms = Date.now() - t0;
-    norm.model = GROQ_ROUTER_MODEL;
-        // ✅ 서버측 sanitize: 모델이 규칙을 어겨도 최종 plan을 보수적으로 고정
-    try {
-      const __hasSnippetClaim = String(sn || "").trim().length >= 20;
-
-      let plan = Array.isArray(norm?.plan) ? norm.plan : [];
-      plan = plan
-        .map((x) => ({
-          mode: String(x?.mode || "").toLowerCase().trim(),
-          priority: Number.isFinite(Number(x?.priority)) ? Number(x.priority) : 1,
-          reason: String(x?.reason || "").slice(0, 120),
-        }))
-        .filter((x) => x.mode === "qv" || x.mode === "fv" || x.mode === "lv");
-
-      // 1) snippet claim 없으면 fv 제거
-      if (!__hasSnippetClaim) plan = plan.filter((x) => x.mode !== "fv");
-
-      // 2) qv+fv 동시 나오면 fv만 남김(단, claim 있을 때)
-      const hasQv = plan.some((x) => x.mode === "qv");
-      const hasFv = plan.some((x) => x.mode === "fv");
-      if (hasQv && hasFv) {
-        plan = plan.filter((x) => x.mode !== "qv");
-      }
-
-      // 3) lv가 첫 아이템이면 qv를 앞에 강제 삽입 (lv primary 금지)
-      if (plan.length > 0 && plan[0].mode === "lv") {
-        plan = [
-          { mode: "qv", priority: 1, reason: "server_insert_qv" },
-          ...plan.map((x, i) => ({ ...x, priority: i + 2 })),
-        ];
-      }
-
-      // 4) plan 비면 qv fallback
-      if (!plan.length) {
-        plan = [{ mode: "qv", priority: 1, reason: "server_fallback" }];
-      }
-
-      norm.plan = plan;
-      norm.primary = plan[0]?.mode || "qv";
-      norm.runs = plan.map((x) => x.mode);
-      if (!norm.reason) norm.reason = plan[0]?.reason || null;
-      norm.has_snippet_claim = __hasSnippetClaim;
-    } catch (_) {}
-    return norm;
-  } catch (e) {
-    return {
-      plan: [{ mode: (hintMode || (sn ? "fv" : "qv")), priority: 1, reason: `router_error:${String(e?.code || e?.message || "unknown").slice(0,60)}` }],
-      confidence: null,
-      raw: null,
-      router_ms: Date.now() - t0,
-      model: GROQ_ROUTER_MODEL,
+    // 라우터 입력 구성(너무 길면 잘라서 비용/지연 감소)
+    const input = {
+      query: q.slice(0, 1200),
+      snippet: (__hasSnippetClaim ? sn : "").slice(0, 1800),
+      question: qu.slice(0, 800),
+      hint_mode: String(hintMode || "").trim().toLowerCase() || null,
+      has_snippet_claim: __hasSnippetClaim,
+      snippet_len: sn.length,
+      policy: {
+        allow_multi: true,
+        prefer: "qv_or_fv",
+        note: "Return JSON only.",
+      },
     };
-  }
-}
 
-// ✅ get Groq api key (user_secrets 우선, env fallback optional)
-async function __getGroqApiKeyForUser({ supabase, userId }) {
-  // 1) user_secrets.secrets.integrations.groq.api_key_enc 우선
-  try {
-    if (supabase && userId) {
-      const { data, error } = await supabase
-        .from("user_secrets")
-        .select("secrets")
-        .eq("user_id", userId)
-        .maybeSingle();
+    const sys = [
+      "You are a strict mode router for a fact-checking / verification system.",
+      "Return ONLY valid JSON. No prose. No markdown. No code fences.",
+      "",
+      "Allowed modes: qv, fv, lv.",
+      "Definitions:",
+      "- qv: general fact questions / knowledge queries.",
+      "- fv: verifying a provided factual sentence/snippet/AI answer (claim-check).",
+      "- lv: explicit Korean legal/statute/case interpretation (조/항/호, 법령/시행령/시행규칙, 판례/대법원/헌재, specific law names, or asks for 조문/법적근거).",
+      "",
+      "STRICT RULES:",
+      "- Default is qv.",
+      "- Use fv ONLY when user supplies a snippet/claim to verify (not just a question).",
+      "- Use lv ONLY when explicit legal/statute/case interpretation is requested.",
+      "- NEVER output lv as the first (primary) plan item.",
+      "  If legal is needed, output: [{mode:'qv',priority:1,...},{mode:'lv',priority:2,...}]",
+      "- Do NOT output qv+fv together.",
+      "- If unsure, output ONLY [{mode:'qv',priority:1,reason:'default_uncertain'}] and set confidence <= 0.60.",
+      "- Keep reason short (<= 8 words).",
+      "",
+      "JSON schema:",
+      '{"plan":[{"mode":"qv|fv|lv","priority":1,"reason":"short"}],"confidence":0.0,"reason":"short"}',
+    ].join("\n");
 
-      if (!error && data?.secrets?.integrations?.groq?.api_key_enc) {
-        const enc = data.secrets.integrations.groq.api_key_enc;
+    const user = JSON.stringify(input);
+    const payload = {
+      model: GROQ_ROUTER_MODEL,
+      temperature: 0.0,
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: user },
+      ],
+      // Groq가 지원하면 JSON 강제(미지원이어도 무시될 수 있음)
+      response_format: { type: "json_object" },
+    };
 
-        // 프로젝트 내 기존 복호화 함수 우선 사용(있으면 그걸로)
-        let key = null;
-        if (typeof decryptSecret === "function") key = await decryptSecret(enc);
-        else if (typeof decryptUserSecret === "function") key = await decryptUserSecret(enc);
-        else if (typeof decryptField === "function") key = await decryptField(enc);
-        else if (typeof decryptAES === "function") key = await decryptAES(enc);
+    const t0 = Date.now();
+    try {
+      const resp = await axios.post(
+        `${GROQ_API_BASE}/chat/completions`,
+        payload,
+        {
+          timeout: GROQ_ROUTER_TIMEOUT_MS,
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+        }
+      );
 
-        if (key && String(key).trim()) return String(key).trim();
-      }
+      const txt =
+        resp?.data?.choices?.[0]?.message?.content ??
+        resp?.data?.choices?.[0]?.text ??
+        "";
+
+      const parsed = _safeJsonParse(String(txt).trim()) || _safeJsonParse(String(txt).replace(/`{3}json|`{3}/g, "").trim()) || null;
+      const norm = _normalizeRouterPlan(parsed || {});
+      norm.router_ms = Date.now() - t0;
+      norm.model = GROQ_ROUTER_MODEL;
+      // ✅ 서버측 sanitize: 모델이 규칙을 어겨도 최종 plan을 보수적으로 고정
+      try {
+        const __hasSnippetClaim = String(sn || "").trim().length >= 20;
+
+        let plan = Array.isArray(norm?.plan) ? norm.plan : [];
+        plan = plan
+          .map((x) => ({
+            mode: String(x?.mode || "").toLowerCase().trim(),
+            priority: Number.isFinite(Number(x?.priority)) ? Number(x.priority) : 1,
+            reason: String(x?.reason || "").slice(0, 120),
+          }))
+          .filter((x) => x.mode === "qv" || x.mode === "fv" || x.mode === "lv");
+
+        // 1) snippet claim 없으면 fv 제거
+        if (!__hasSnippetClaim) plan = plan.filter((x) => x.mode !== "fv");
+
+        // 2) qv+fv 동시 나오면 fv만 남김(단, claim 있을 때)
+        const hasQv = plan.some((x) => x.mode === "qv");
+        const hasFv = plan.some((x) => x.mode === "fv");
+        if (hasQv && hasFv) {
+          plan = plan.filter((x) => x.mode !== "qv");
+        }
+
+        // 3) lv가 첫 아이템이면 qv를 앞에 강제 삽입 (lv primary 금지)
+        if (plan.length > 0 && plan[0].mode === "lv") {
+          plan = [
+            { mode: "qv", priority: 1, reason: "server_insert_qv" },
+            ...plan.map((x, i) => ({ ...x, priority: i + 2 })),
+          ];
+        }
+
+        // 4) plan 비면 qv fallback
+        if (!plan.length) {
+          plan = [{ mode: "qv", priority: 1, reason: "server_fallback" }];
+        }
+
+        norm.plan = plan;
+        norm.primary = plan[0]?.mode || "qv";
+        norm.runs = plan.map((x) => x.mode);
+        if (!norm.reason) norm.reason = plan[0]?.reason || null;
+        norm.has_snippet_claim = __hasSnippetClaim;
+      } catch (_) { }
+      return norm;
+    } catch (e) {
+      return {
+        plan: [{ mode: (hintMode || (sn ? "fv" : "qv")), priority: 1, reason: `router_error:${String(e?.code || e?.message || "unknown").slice(0, 60)}` }],
+        confidence: null,
+        raw: null,
+        router_ms: Date.now() - t0,
+        model: GROQ_ROUTER_MODEL,
+      };
     }
-  } catch (_) {
-    // fall through
   }
 
-  // 2) env fallback (옵션)
+  // ✅ get Groq api key (user_secrets 우선, env fallback optional)
+  async function __getGroqApiKeyForUser({ supabase, userId }) {
+    // 1) user_secrets.secrets.integrations.groq.api_key_enc 우선
+    try {
+      if (supabase && userId) {
+        const { data, error } = await supabase
+          .from("user_secrets")
+          .select("secrets")
+          .eq("user_id", userId)
+          .maybeSingle();
+
+        if (!error && data?.secrets?.integrations?.groq?.api_key_enc) {
+          const enc = data.secrets.integrations.groq.api_key_enc;
+
+          // 프로젝트 내 기존 복호화 함수 우선 사용(있으면 그걸로)
+          let key = null;
+          if (typeof decryptSecret === "function") key = await decryptSecret(enc);
+          else if (typeof decryptUserSecret === "function") key = await decryptUserSecret(enc);
+          else if (typeof decryptField === "function") key = await decryptField(enc);
+          else if (typeof decryptAES === "function") key = await decryptAES(enc);
+
+          if (key && String(key).trim()) return String(key).trim();
+        }
+      }
+    } catch (_) {
+      // fall through
+    }
+
+    // 2) env fallback (옵션)
     const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
-  if (__allowEnvFallback) {
-    const envKey = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
-if (envKey) return envKey;
-  }
-  return null;
-}
-
-// ✅ (DV/CV 보강) GitHub 결과 relevance 필터(헛다리 repo로 검증 진행되는 것 방지)
-const tokenizeGhQuery = (s) => {
-  const t = String(s || "").toLowerCase();
-  const tokens = (t.match(/[a-z0-9][a-z0-9._-]{1,}|[가-힣]{2,}/g) || [])
-    .map(x => x.trim())
-    .filter(Boolean);
-
-  // GitHub 검색 qualifier/불용어 제거
-  const stop = new Set([
-    "in", "name", "description", "readme", "stars", "forks", "language",
-    "sort", "order", "repo", "repos", "repository", "repositories",
-    "example", "examples", "dataset", "data", "검증", "예시", "레포", "repo로"
-  ]);
-
-  const out = [];
-  for (const tok of tokens) {
-    if (stop.has(tok)) continue;
-    if (/^\d+$/.test(tok)) continue;
-    if (tok.length <= 1) continue;
-    out.push(tok);
-  }
-  // unique
-  return Array.from(new Set(out)).slice(0, 24);
-};
-
-const scoreGithubItem = (item, tokens) => {
-  const name =
-    String(item?.full_name || item?.name || item?.repo || item?.repository || "").toLowerCase();
-  const desc =
-    String(item?.description || item?.summary || item?.snippet || item?.text || "").toLowerCase();
-  const url =
-    String(item?.html_url || item?.url || "").toLowerCase();
-  const blob = `${name} ${desc} ${url}`.trim();
-
-  const isStrong = (tok) => tok.includes("-") || tok.includes(".") || tok.length >= 8;
-
-  let total = 0;
-  let strong = 0;
-
-  for (const tok of tokens) {
-    if (!tok) continue;
-    if (!blob.includes(tok)) continue;
-
-    total += 1;
-    if (isStrong(tok)) strong += 1;
-
-    // name에 직접 박혀있으면 가중
-    if (name && name.includes(tok)) total += 1;
+    if (__allowEnvFallback) {
+      const envKey = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+      if (envKey) return envKey;
+    }
+    return null;
   }
 
-  const stars = Number(item?.stargazers_count ?? item?.stars ?? 0) || 0;
-  return { total, strong, stars };
-};
+  // ✅ (DV/CV 보강) GitHub 결과 relevance 필터(헛다리 repo로 검증 진행되는 것 방지)
+  const tokenizeGhQuery = (s) => {
+    const t = String(s || "").toLowerCase();
+    const tokens = (t.match(/[a-z0-9][a-z0-9._-]{1,}|[가-힣]{2,}/g) || [])
+      .map(x => x.trim())
+      .filter(Boolean);
 
-const filterGithubEvidence = (items, rawQuery) => {
-  const list = Array.isArray(items) ? items : [];
-  const tokens = tokenizeGhQuery(rawQuery);
+    // GitHub 검색 qualifier/불용어 제거
+    const stop = new Set([
+      "in", "name", "description", "readme", "stars", "forks", "language",
+      "sort", "order", "repo", "repos", "repository", "repositories",
+      "example", "examples", "dataset", "data", "검증", "예시", "레포", "repo로"
+    ]);
 
-  if (!tokens.length || !list.length) {
-    return { items: list, info: { in: list.length, out: list.length, reason: "no_tokens_or_items" } };
-  }
-
-  // dedupe by url/full_name
-  const seen = new Set();
-  const uniq = [];
-  for (const it of list) {
-    const key = String(it?.html_url || it?.url || it?.full_name || it?.name || "").toLowerCase();
-    if (!key) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    uniq.push(it);
-  }
-
-  const scored = uniq.map(it => {
-    const s = scoreGithubItem(it, tokens);
-    return { it, ...s };
-  });
-
-  scored.sort((a, b) => {
-    if (b.strong !== a.strong) return b.strong - a.strong;
-    if (b.total !== a.total) return b.total - a.total;
-    if (b.stars !== a.stars) return b.stars - a.stars;
-    return 0;
-  });
-
-  // ✅ 기준: (strong>=1 && total>=2) OR total>=4
-  const kept = scored.filter(x => (x.strong >= 1 && x.total >= 2) || x.total >= 4);
-
-  // fallback: 전부 탈락이면, “가장 높은 점수 1개”만(단, total>=2) 유지
-  let final = kept;
-  if (final.length === 0 && scored.length > 0) {
-    const best = scored[0];
-    final = (best.total >= 2) ? [best] : [];
-  }
-
-  return {
-    items: final.map(x => x.it),
-    info: {
-      in: list.length,
-      uniq: uniq.length,
-      out: final.length,
-      top: scored[0] ? { total: scored[0].total, strong: scored[0].strong, stars: scored[0].stars } : null,
-      rule: "(strong>=1 && total>=2) OR total>=4; fallback best if total>=2",
-    },
+    const out = [];
+    for (const tok of tokens) {
+      if (stop.has(tok)) continue;
+      if (/^\d+$/.test(tok)) continue;
+      if (tok.length <= 1) continue;
+      out.push(tok);
+    }
+    // unique
+    return Array.from(new Set(out)).slice(0, 24);
   };
-};
+
+  const scoreGithubItem = (item, tokens) => {
+    const name =
+      String(item?.full_name || item?.name || item?.repo || item?.repository || "").toLowerCase();
+    const desc =
+      String(item?.description || item?.summary || item?.snippet || item?.text || "").toLowerCase();
+    const url =
+      String(item?.html_url || item?.url || "").toLowerCase();
+    const blob = `${name} ${desc} ${url}`.trim();
+
+    const isStrong = (tok) => tok.includes("-") || tok.includes(".") || tok.length >= 8;
+
+    let total = 0;
+    let strong = 0;
+
+    for (const tok of tokens) {
+      if (!tok) continue;
+      if (!blob.includes(tok)) continue;
+
+      total += 1;
+      if (isStrong(tok)) strong += 1;
+
+      // name에 직접 박혀있으면 가중
+      if (name && name.includes(tok)) total += 1;
+    }
+
+    const stars = Number(item?.stargazers_count ?? item?.stars ?? 0) || 0;
+    return { total, strong, stars };
+  };
+
+  const filterGithubEvidence = (items, rawQuery) => {
+    const list = Array.isArray(items) ? items : [];
+    const tokens = tokenizeGhQuery(rawQuery);
+
+    if (!tokens.length || !list.length) {
+      return { items: list, info: { in: list.length, out: list.length, reason: "no_tokens_or_items" } };
+    }
+
+    // dedupe by url/full_name
+    const seen = new Set();
+    const uniq = [];
+    for (const it of list) {
+      const key = String(it?.html_url || it?.url || it?.full_name || it?.name || "").toLowerCase();
+      if (!key) continue;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniq.push(it);
+    }
+
+    const scored = uniq.map(it => {
+      const s = scoreGithubItem(it, tokens);
+      return { it, ...s };
+    });
+
+    scored.sort((a, b) => {
+      if (b.strong !== a.strong) return b.strong - a.strong;
+      if (b.total !== a.total) return b.total - a.total;
+      if (b.stars !== a.stars) return b.stars - a.stars;
+      return 0;
+    });
+
+    // ✅ 기준: (strong>=1 && total>=2) OR total>=4
+    const kept = scored.filter(x => (x.strong >= 1 && x.total >= 2) || x.total >= 4);
+
+    // fallback: 전부 탈락이면, “가장 높은 점수 1개”만(단, total>=2) 유지
+    let final = kept;
+    if (final.length === 0 && scored.length > 0) {
+      const best = scored[0];
+      final = (best.total >= 2) ? [best] : [];
+    }
+
+    return {
+      items: final.map(x => x.it),
+      info: {
+        in: list.length,
+        uniq: uniq.length,
+        out: final.length,
+        top: scored[0] ? { total: scored[0].total, strong: scored[0].strong, stars: scored[0].stars } : null,
+        rule: "(strong>=1 && total>=2) OR total>=4; fallback best if total>=2",
+      },
+    };
+  };
 
   // ✅ FV 검증 대상(사실 문장) 우선 입력값
   const userCoreText = String(core_text || req.body?.snippet_meta?.snippet_core || "").trim();
@@ -9712,53 +9728,53 @@ const filterGithubEvidence = (items, rawQuery) => {
       .json(buildError("VALIDATION_ERROR", "query가 누락되었습니다."));
   }
 
-// ✅ allow auto/overlay/route: 아직 raw 값이면 (라우터 결과가 있으면 그걸 우선) 최종 top-level로 정규화
-if (safeMode === "auto" || safeMode === "overlay" || safeMode === "route") {
-  const __sf = String(__routerPlan?.safe_mode_final || "qv").toLowerCase();
-  safeMode = (__sf === "fv") ? "fv" : "qv";
-}
-
-// ✅ /api/verify에서 lv 직접 호출 금지 (LV는 /api/lv 전용)
-// - 라우터가 qv + lv_extra 형태로 추가실행하는 건 OK
-try {
-  const __path0 = String(req.path || "");
-} catch (_) {}
-
-// ✅ FV는 “검증할 스니펫/클레임”이 있을 때만 허용 (없으면 QV로 강제)
-// - /api/verify-snippet은 이미 위에서 FV 고정이라 여기서 건드리지 않음
-try {
-  if (!__isVerifySnippetPath && String(safeMode || "").toLowerCase() === "fv") {
-    const __snClaim = String(
-      req.body?.snippet ??
-      req.body?.core_text ??
-      req.body?.snippet_meta?.snippet_core ??
-      ""
-    ).trim();
-
-    const __hasSnippetClaim = __snClaim.length >= 20;
-    if (!__hasSnippetClaim) {
-      safeMode = "qv";
-      // (선택) router plan이 있으면 진단용으로 같이 정리
-      try {
-        if (__routerPlan && typeof __routerPlan === "object") {
-          __routerPlan.primary = "qv";
-          __routerPlan.safe_mode_final = "qv";
-          __routerPlan.plan = [{ mode: "qv", priority: 1, reason: "server_downgrade_fv_no_snippet" }];
-          __routerPlan.runs = ["qv"];
-          __routerPlan.lv_extra = !!(__routerPlan.lv_extra || __runLvExtra);
-          __routerPlan.reason = __routerPlan.reason || "server_downgrade_fv_no_snippet";
-        }
-      } catch (_) {}
-    }
+  // ✅ allow auto/overlay/route: 아직 raw 값이면 (라우터 결과가 있으면 그걸 우선) 최종 top-level로 정규화
+  if (safeMode === "auto" || safeMode === "overlay" || safeMode === "route") {
+    const __sf = String(__routerPlan?.safe_mode_final || "qv").toLowerCase();
+    safeMode = (__sf === "fv") ? "fv" : "qv";
   }
-} catch (_) {}
 
-const allowedModes = ["qv", "fv", "dv"];
-if (!allowedModes.includes(safeMode)) {
-  return res
-    .status(400)
-    .json(buildError("INVALID_MODE", `지원하지 않는 모드입니다: ${safeMode || mode || "(empty)"}`));
-}
+  // ✅ /api/verify에서 lv 직접 호출 금지 (LV는 /api/lv 전용)
+  // - 라우터가 qv + lv_extra 형태로 추가실행하는 건 OK
+  try {
+    const __path0 = String(req.path || "");
+  } catch (_) { }
+
+  // ✅ FV는 “검증할 스니펫/클레임”이 있을 때만 허용 (없으면 QV로 강제)
+  // - /api/verify-snippet은 이미 위에서 FV 고정이라 여기서 건드리지 않음
+  try {
+    if (!__isVerifySnippetPath && String(safeMode || "").toLowerCase() === "fv") {
+      const __snClaim = String(
+        req.body?.snippet ??
+        req.body?.core_text ??
+        req.body?.snippet_meta?.snippet_core ??
+        ""
+      ).trim();
+
+      const __hasSnippetClaim = __snClaim.length >= 20;
+      if (!__hasSnippetClaim) {
+        safeMode = "qv";
+        // (선택) router plan이 있으면 진단용으로 같이 정리
+        try {
+          if (__routerPlan && typeof __routerPlan === "object") {
+            __routerPlan.primary = "qv";
+            __routerPlan.safe_mode_final = "qv";
+            __routerPlan.plan = [{ mode: "qv", priority: 1, reason: "server_downgrade_fv_no_snippet" }];
+            __routerPlan.runs = ["qv"];
+            __routerPlan.lv_extra = !!(__routerPlan.lv_extra || __runLvExtra);
+            __routerPlan.reason = __routerPlan.reason || "server_downgrade_fv_no_snippet";
+          }
+        } catch (_) { }
+      }
+    }
+  } catch (_) { }
+
+  const allowedModes = ["qv", "fv", "dv", "uv"];
+  if (!allowedModes.includes(safeMode)) {
+    return res
+      .status(400)
+      .json(buildError("INVALID_MODE", `지원하지 않는 모드입니다: ${safeMode || mode || "(empty)"}`));
+  }
 
   // 🧠 QV/FV에서 Gemini 모델 선택 (기본: flash, 옵션: pro)
   // - 클라이언트에서 gemini_model: "flash" | "pro" | undefined 로 전달 가능
@@ -9768,34 +9784,34 @@ if (!allowedModes.includes(safeMode)) {
   let verifyModelUsed = null;    // 실제로 사용된 verify 모델(로그/응답용)
 
   // ✅ verify 단계는 flash/flash-lite만 허용 (pro 금지)
-// - 모델명 하드코딩 금지: env 상수로 단일화
-if (safeMode === "qv" || safeMode === "fv" || safeMode === "dv") {
-  const g = String(geminiModelRaw || "");
-  if (g === "flash-lite" || g === "lite" || /flash-lite/i.test(g)) {
-    verifyModel = GEMINI_VERIFY_LITE_MODEL || GEMINI_QVFV_PRE_MODEL || GEMINI_VERIFY_MODEL;
-  } else {
-    verifyModel = GEMINI_VERIFY_MODEL;
+  // - 모델명 하드코딩 금지: env 상수로 단일화
+  if (safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "uv") {
+    const g = String(geminiModelRaw || "");
+    if (g === "flash-lite" || g === "lite" || /flash-lite/i.test(g)) {
+      verifyModel = GEMINI_VERIFY_LITE_MODEL || GEMINI_QVFV_PRE_MODEL || GEMINI_VERIFY_MODEL;
+    } else {
+      verifyModel = GEMINI_VERIFY_MODEL;
+    }
   }
-}
 
   // 🌱 기본값은 "선택된 verify 모델"로 설정 (fallback 등에서 사용)
   verifyModelUsed = verifyModel;
 
-    const engines = [];
+  const engines = [];
   const external = {};
   const start = Date.now();
   let partial_scores = {};
   // ✅ attach router diagnostics to partial_scores (avoid TDZ issues)
-try {
-  if (partial_scores && typeof partial_scores === "object") {
-    partial_scores.router_plan = __buildRouterPlanPublicFinal({
-      safeMode,
-      rawMode,
-      routerPlan: __routerPlan,
-      runLvExtra: __runLvExtra,
-    });
-  }
-} catch (_) {}
+  try {
+    if (partial_scores && typeof partial_scores === "object") {
+      partial_scores.router_plan = __buildRouterPlanPublicFinal({
+        safeMode,
+        rawMode,
+        routerPlan: __routerPlan,
+        runLvExtra: __runLvExtra,
+      });
+    }
+  } catch (_) { }
 
   let truthscore = 0.0;
   let engineStatsMap = {};
@@ -9805,9 +9821,9 @@ try {
   const engineTimes = {};
   const engineMetrics = {};
 
-// ✅ snake_case alias (어딘가에 engine_times / engine_metrics 참조가 남아있어도 런타임 에러 방지)
-const engine_times = engineTimes;
-const engine_metrics = engineMetrics;
+  // ✅ snake_case alias (어딘가에 engine_times / engine_metrics 참조가 남아있어도 런타임 에러 방지)
+  const engine_times = engineTimes;
+  const engine_metrics = engineMetrics;
 
   const geminiTimes = {};
   const geminiMetrics = {};
@@ -9817,4729 +9833,4976 @@ const engine_metrics = engineMetrics;
   const NAVER_QUERY_MAX = Math.max(1, Math.min(5, parseInt(process.env.NAVER_QUERY_MAX || "3", 10)));
 
   // =======================================================
-// ✅ Naver query expansion helpers (widen pool via diversity)
-// - place here (right above qvfvBlocksForVerifyFull) so it's easy to find
-// =======================================================
+  // ✅ Naver query expansion helpers (widen pool via diversity)
+  // - place here (right above qvfvBlocksForVerifyFull) so it's easy to find
+  // =======================================================
 
-function __uniqStrings(arr, maxN = 0) {
-  const out = [];
-  const seen = new Set();
-  for (const v of arr || []) {
-    const s = String(v || "").trim();
-    if (!s) continue;
-    const k = s.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(s);
+  function __uniqStrings(arr, maxN = 0) {
+    const out = [];
+    const seen = new Set();
+    for (const v of arr || []) {
+      const s = String(v || "").trim();
+      if (!s) continue;
+      const k = s.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(s);
 
-    if (maxN > 0 && out.length >= maxN) break;
+      if (maxN > 0 && out.length >= maxN) break;
+    }
+    return out;
   }
-  return out;
-}
 
-function __expandNaverQueries(baseQueries, seedInfo = {}) {
-  // baseQueries: 기본 Naver 쿼리 배열
-  const base = Array.isArray(baseQueries)
-    ? baseQueries.map((q) => String(q || "").trim()).filter(Boolean)
-    : [];
+  function __expandNaverQueries(baseQueries, seedInfo = {}) {
+    // baseQueries: 기본 Naver 쿼리 배열
+    const base = Array.isArray(baseQueries)
+      ? baseQueries.map((q) => String(q || "").trim()).filter(Boolean)
+      : [];
 
-  // seedInfo: { korean_core, english_core } 같은 구조
-  const ko = String(seedInfo.korean_core || "").trim();
-  const en = String(seedInfo.english_core || "").trim();
+    // seedInfo: { korean_core, english_core } 같은 구조
+    const ko = String(seedInfo.korean_core || "").trim();
+    const en = String(seedInfo.english_core || "").trim();
 
-  const extraSeeds = [];
-  if (ko) extraSeeds.push(ko);
-  if (en) extraSeeds.push(en);
+    const extraSeeds = [];
+    if (ko) extraSeeds.push(ko);
+    if (en) extraSeeds.push(en);
 
-  // ✅ whitelist 기반 "공식 site:" 시드 호스트(가중치/순위) 추출
-  // - 하드코딩 대신 whitelist(티어/가중치) 순위를 따른다.
-  // - 파싱 실패 시: 시드 없이 기존 동작 유지
-  const __normHost = (h) =>
-    String(h || "")
-      .trim()
-      .toLowerCase()
-      .replace(/^https?:\/\//i, "")
-      .replace(/\/.*$/, "")
-      .replace(/:\d+$/, "")
-      .replace(/^www\./, "");
+    // ✅ whitelist 기반 "공식 site:" 시드 호스트(가중치/순위) 추출
+    // - 하드코딩 대신 whitelist(티어/가중치) 순위를 따른다.
+    // - 파싱 실패 시: 시드 없이 기존 동작 유지
+    const __normHost = (h) =>
+      String(h || "")
+        .trim()
+        .toLowerCase()
+        .replace(/^https?:\/\//i, "")
+        .replace(/\/.*$/, "")
+        .replace(/:\d+$/, "")
+        .replace(/^www\./, "");
 
-  let seedHosts = [];
-  try {
-    const wl = loadNaverWhitelist();
-    const tiers = wl?.tiers;
+    let seedHosts = [];
+    try {
+      const wl = loadNaverWhitelist();
+      const tiers = wl?.tiers;
 
-    const __push = (host, weight, displayOnly) => {
-      const hh = __normHost(host);
-      if (!hh) return;
-      if (!hh.includes(".")) return; // 도메인 형태만
-      seedHosts.push({
-        host: hh,
-        weight: Number.isFinite(Number(weight)) ? Number(weight) : 1,
-        display_only: displayOnly === true,
-      });
+      const __push = (host, weight, displayOnly) => {
+        const hh = __normHost(host);
+        if (!hh) return;
+        if (!hh.includes(".")) return; // 도메인 형태만
+        seedHosts.push({
+          host: hh,
+          weight: Number.isFinite(Number(weight)) ? Number(weight) : 1,
+          display_only: displayOnly === true,
+        });
+      };
+
+      if (Array.isArray(tiers)) {
+        for (const t of tiers) {
+          const tierWeight = Number.isFinite(Number(t?.weight)) ? Number(t.weight) : 1;
+          const tierDisplayOnly = t?.display_only === true;
+
+          const hs = t?.hosts ?? t?.domains ?? t?.host_list ?? t?.items ?? null;
+
+          if (Array.isArray(hs)) {
+            for (const h of hs) __push(h, tierWeight, tierDisplayOnly);
+          } else if (hs && typeof hs === "object") {
+            for (const [k, v] of Object.entries(hs)) {
+              if (typeof v === "number") __push(k, v, tierDisplayOnly);
+              else if (v && typeof v === "object")
+                __push(k, v.weight ?? tierWeight, v.display_only ?? tierDisplayOnly);
+              else __push(k, tierWeight, tierDisplayOnly);
+            }
+          }
+        }
+      } else if (tiers && typeof tiers === "object") {
+        for (const [, t] of Object.entries(tiers)) {
+          const tierWeight = Number.isFinite(Number(t?.weight)) ? Number(t.weight) : 1;
+          const tierDisplayOnly = t?.display_only === true;
+
+          if (Array.isArray(t)) {
+            for (const h of t) __push(h, tierWeight, tierDisplayOnly);
+            continue;
+          }
+
+          const hs = t?.hosts ?? t?.domains ?? t?.host_list ?? t?.items ?? t;
+
+          if (Array.isArray(hs)) {
+            for (const h of hs) __push(h, tierWeight, tierDisplayOnly);
+          } else if (hs && typeof hs === "object") {
+            for (const [k, v] of Object.entries(hs)) {
+              if (k === "weight" || k === "display_only" || k === "meta" || k === "version" || k === "lastUpdate")
+                continue;
+              if (typeof v === "number") __push(k, v, tierDisplayOnly);
+              else if (v && typeof v === "object")
+                __push(k, v.weight ?? tierWeight, v.display_only ?? tierDisplayOnly);
+              else __push(k, tierWeight, tierDisplayOnly);
+            }
+          }
+        }
+      }
+
+      // dedupe + sort by weight desc
+      const seen = new Set();
+      seedHosts = seedHosts
+        .filter((x) => x && x.host && x.display_only !== true)
+        .sort((a, b) => (b.weight || 0) - (a.weight || 0))
+        .filter((x) => {
+          if (seen.has(x.host)) return false;
+          seen.add(x.host);
+          return true;
+        })
+        .slice(0, 8);
+    } catch (_) {
+      seedHosts = [];
+    }
+
+    // [교체] UV: URL host 우선, 없으면 핀 안 함 (화이트리스트로 강제 핀 금지)
+    const __pickPinnedHost = (q) => {
+      const urlHost = __normHost(seedInfo?.url_host || seedInfo?.host || "");
+
+      // ✅ UV(링크 검증): whitelist pin 대신 URL host로만 pin
+      if (safeMode === "uv") {
+        return urlHost || "";
+      }
+
+      if (!Array.isArray(seedHosts) || seedHosts.length === 0) return "";
+      const qq = String(q || "");
+      const qLower = qq.toLowerCase();
+
+      // KOSIS/테이블코드(DT_*) 같은 케이스는 whitelist 내 kosis 후보를 우선
+      if (/\bdt_[a-z0-9_]+\b/i.test(qq) || /\bkosis\b/i.test(qLower)) {
+        const k = seedHosts.find((x) => String(x.host || "").includes("kosis"));
+        if (k && k.host) return k.host;
+      }
+
+      // 기본은 whitelist 최상위(host weight 기준)
+      return seedHosts[0].host || "";
     };
 
-    if (Array.isArray(tiers)) {
-      for (const t of tiers) {
-        const tierWeight = Number.isFinite(Number(t?.weight)) ? Number(t.weight) : 1;
-        const tierDisplayOnly = t?.display_only === true;
+    const expanded = [];
 
-        const hs = t?.hosts ?? t?.domains ?? t?.host_list ?? t?.items ?? null;
+    // ✅ 1) base 쿼리: whitelist 기반 site: 핀 버전(우선) + 원본(후순위)
+    const pinned = [];
+    const originals = [];
 
-        if (Array.isArray(hs)) {
-          for (const h of hs) __push(h, tierWeight, tierDisplayOnly);
-        } else if (hs && typeof hs === "object") {
-          for (const [k, v] of Object.entries(hs)) {
-            if (typeof v === "number") __push(k, v, tierDisplayOnly);
-            else if (v && typeof v === "object")
-              __push(k, v.weight ?? tierWeight, v.display_only ?? tierDisplayOnly);
-            else __push(k, tierWeight, tierDisplayOnly);
-          }
-        }
-      }
-    } else if (tiers && typeof tiers === "object") {
-      for (const [, t] of Object.entries(tiers)) {
-        const tierWeight = Number.isFinite(Number(t?.weight)) ? Number(t.weight) : 1;
-        const tierDisplayOnly = t?.display_only === true;
+    for (const q of base) {
+      if (!q) continue;
+      originals.push(q);
 
-        if (Array.isArray(t)) {
-          for (const h of t) __push(h, tierWeight, tierDisplayOnly);
-          continue;
-        }
-
-        const hs = t?.hosts ?? t?.domains ?? t?.host_list ?? t?.items ?? t;
-
-        if (Array.isArray(hs)) {
-          for (const h of hs) __push(h, tierWeight, tierDisplayOnly);
-        } else if (hs && typeof hs === "object") {
-          for (const [k, v] of Object.entries(hs)) {
-            if (k === "weight" || k === "display_only" || k === "meta" || k === "version" || k === "lastUpdate")
-              continue;
-            if (typeof v === "number") __push(k, v, tierDisplayOnly);
-            else if (v && typeof v === "object")
-              __push(k, v.weight ?? tierWeight, v.display_only ?? tierDisplayOnly);
-            else __push(k, tierWeight, tierDisplayOnly);
-          }
-        }
-      }
+      const host = !/\bsite:/i.test(q) ? __pickPinnedHost(q) : "";
+      if (host) pinned.push(`site:${host} ${q}`);
+      else pinned.push(q);
     }
 
-    // dedupe + sort by weight desc
-    const seen = new Set();
-    seedHosts = seedHosts
-      .filter((x) => x && x.host && x.display_only !== true)
-      .sort((a, b) => (b.weight || 0) - (a.weight || 0))
-      .filter((x) => {
-        if (seen.has(x.host)) return false;
-        seen.add(x.host);
-        return true;
-      })
-      .slice(0, 8);
-  } catch (_) {
-    seedHosts = [];
-  }
+    expanded.push(...pinned, ...originals);
 
-  const __pickPinnedHost = (q) => {
-    if (!Array.isArray(seedHosts) || seedHosts.length === 0) return "";
-    const qq = String(q || "");
-    const qLower = qq.toLowerCase();
+    // ✅ 2) seed (ko/en) 확장: 기존 동작 유지
+    for (const s of extraSeeds) {
+      if (!s) continue;
+      expanded.push(s);
 
-    // KOSIS/테이블코드(DT_*) 같은 케이스는 whitelist 내 kosis 후보를 우선
-    if (/\bdt_[a-z0-9_]+\b/i.test(qq) || /\bkosis\b/i.test(qLower)) {
-      const k = seedHosts.find((x) => String(x.host || "").includes("kosis"));
-      if (k && k.host) return k.host;
+      const stripped = s.replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
+      if (stripped && stripped !== s) expanded.push(stripped);
     }
 
-    // 기본은 whitelist 최상위(host weight 기준)
-    return seedHosts[0].host || "";
-  };
-
-  const expanded = [];
-
-  // ✅ 1) base 쿼리: whitelist 기반 site: 핀 버전(우선) + 원본(후순위)
-  const pinned = [];
-  const originals = [];
-
-  for (const q of base) {
-    if (!q) continue;
-    originals.push(q);
-
-    const host = !/\bsite:/i.test(q) ? __pickPinnedHost(q) : "";
-    if (host) pinned.push(`site:${host} ${q}`);
-    else pinned.push(q);
+    // ✅ 이 스코프에서는 항상 __uniqStrings로 정규화/상한 적용
+    return __uniqStrings(expanded, 12);
   }
-
-  expanded.push(...pinned, ...originals);
-
-  // ✅ 2) seed (ko/en) 확장: 기존 동작 유지
-  for (const s of extraSeeds) {
-    if (!s) continue;
-    expanded.push(s);
-
-    const stripped = s.replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
-    if (stripped && stripped !== s) expanded.push(stripped);
-  }
-
-  // ✅ 이 스코프에서는 항상 __uniqStrings로 정규화/상한 적용
-  return __uniqStrings(expanded, 12);
-}
 
   let qvfvBlocksForVerifyFull = null; // [{id,text,queries,evidence...}, ...]
   let qvfvPreDone = false;            // 전처리 성공 여부
 
   try {
-  // ✅ 추가: verification_logs.user_id NOT NULL 대응
-  authUser = await getSupabaseAuthUser(req);
+    // ✅ 추가: verification_logs.user_id NOT NULL 대응
+    authUser = await getSupabaseAuthUser(req);
 
-// ✅ 운영모드: 로그인 토큰 없으면 차단
-if (REQUIRE_USER_AUTH && !authUser) {
-  return res
-    .status(401)
-    .json(buildError("UNAUTHORIZED", "로그인이 필요합니다. (Authorization: Bearer <token>)"));
-}
+    // ✅ 운영모드: 로그인 토큰 없으면 차단
+    if (REQUIRE_USER_AUTH && !authUser) {
+      return res
+        .status(401)
+        .json(buildError("UNAUTHORIZED", "로그인이 필요합니다. (Authorization: Bearer <token>)"));
+    }
 
-  logUserId = req._resolvedLogUserId || await resolveLogUserId({
-  user_id,
-  user_email,
-  user_name,
-  auth_user: authUser,
-  bearer_token: getBearerToken(req), // ✅ Bearer localtest 같은 값도 로그 식별에 사용
-});
-try { req._resolvedLogUserId = logUserId || null; } catch (_) {}
+    logUserId = req._resolvedLogUserId || await resolveLogUserId({
+      user_id,
+      user_email,
+      user_name,
+      auth_user: authUser,
+      bearer_token: getBearerToken(req), // ✅ Bearer localtest 같은 값도 로그 식별에 사용
+    });
+    try { req._resolvedLogUserId = logUserId || null; } catch (_) { }
 
-if (!logUserId) {
-  return res.status(400).json(
-    buildError(
-      "VALIDATION_ERROR",
-      "로그 식별자(user) 확정 실패: Authorization Bearer 토큰 또는 DEFAULT_USER_ID가 필요합니다."
-    )
-  );
-}
-
-// ✅ per-user vault에서 Naver / K-Law / GitHub / DeepL 키 복호화
-const secretsRow = await loadUserSecretsRow(logUserId);
-let userSecrets = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(secretsRow.secrets));
-const vault = decryptIntegrationsSecrets(userSecrets);
-
-const naverIdFinal = (naver_id && String(naver_id).trim()) || vault.naver_id;
-const naverSecretFinal = (naver_secret && String(naver_secret).trim()) || vault.naver_secret;
-const klawKeyFinal = (klaw_key && String(klaw_key).trim()) || vault.klaw_key;
-const githubTokenFinal = (github_token && String(github_token).trim()) || vault.github_token;
-
-const geminiKeysCount = (userSecrets?.gemini?.keyring?.keys || []).length;
-
-// ✅ legal-ish 감지 (LV 제거 전제: qv/fv에서만 klaw “추가 엔진”으로 선택 실행)
-function _looksLegalishText(s) {
-  const t = String(s || "").toLowerCase();
-  if (!t) return false;
-  // 한국 법률/판례/조문/소송/계약 등 “질문 의도” 힌트만 넓게
-  return /(\bklaw\b|law\.go\.kr|easylaw|법령|조문|조항|판례|대법원|헌법|민법|형법|상법|행정|소송|소장|가처분|고소|고발|벌금|처벌|합의|손해배상|계약|위약금|해고|임금|근로기준법|노동청|퇴직금|산재)/i.test(t);
-}
-const __looksLegalish =
-  _looksLegalishText(query) ||
-  _looksLegalishText(req?.body?.question) ||
-  _looksLegalishText(userCoreText);
-
-// ✅ 모드별 필수키 검증(body → vault 순서)
-if ((safeMode === "qv" || safeMode === "fv") && (!naverIdFinal || !naverSecretFinal)) {
-  return res.status(400).json(
-    buildError(
-      "VALIDATION_ERROR",
-      "QV/FV 모드에서는 Naver client id / secret이 필요합니다. (설정 저장 또는 body 포함)"
-    )
-  );
-}
-
-if (safeMode === "dv" && !githubTokenFinal) {
-  return res.status(400).json(
-    buildError("VALIDATION_ERROR", "DV 모드에서는 github_token이 필요합니다. (설정 저장 또는 body 포함)")
-  );
-}
-
-// ✅ qv/fv에서 klaw를 “추가 실행”할지(키 없으면 그냥 스킵)
-const __runKlawExtra = !!(__looksLegalish && klawKeyFinal);
-
-if (!logUserId) {
-  return res.status(400).json(
-    buildError(
-      "VALIDATION_ERROR",
-      "로그 식별자(user) 확정 실패: Authorization Bearer 토큰 또는 DEFAULT_USER_ID가 필요합니다."
-    )
-  );
-}
-
-// ✅ ADD: Gemini 키 필요조건(기본: QV/FV에서만)
-// - 옵션: ALLOW_GROQ_ONLY_NO_GEMINI=1 이고 "요청 기준으로 Groq 키가 실제로 있으면" Gemini 없이도 진행
-const __needGeminiKey = (() => {
-  if (!(safeMode === "qv" || safeMode === "fv")) return false;
-
-  // ✅ Gemini 키(또는 keyring)가 있으면 requirement 없음
-  try {
-    const hasHint = !!(gemini_key && String(gemini_key).trim());
-    const keysCount = Number(geminiKeysCount || 0);
-    if (hasHint || keysCount > 0) return false;
-  } catch (_) {}
-
-  const allowGroqOnly = String(process.env.ALLOW_GROQ_ONLY_NO_GEMINI || "0") === "1";
-  if (!allowGroqOnly) return true;
-
-  const preOn =
-    String(process.env.GROQ_QVFV_PRE_ENABLE ?? process.env.GROQ_PREPROCESS_ENABLE ?? "1") !== "0";
-  const verifyOn = String(process.env.GROQ_VERIFY_ENABLE || "1") !== "0";
-
-  // Groq pre/verify 둘 다 켜져있지 않으면 Groq-only 불가 → Gemini 필요
-  if (!(preOn && verifyOn)) return true;
-
-  // ✅ "요청 기준" Groq 키 존재 여부 체크 (body > user_secrets(vault) > env fallback(옵션))
-  let hasGroqKey = false;
-
-  // 0) body override
-  try {
-    const kBody = String(req?.body?.groq_api_key || req?.body?.groq_key || "").trim();
-    if (kBody) hasGroqKey = true;
-  } catch (_) {}
-
-  // 1) user_secrets 복호화 결과(vault) 또는 userSecrets 직접 복호화
-  if (!hasGroqKey) {
-    try {
-      if (typeof vault !== "undefined" && vault) {
-        const k = String(vault?.groq_api_key || vault?.groq_key || "").trim();
-        if (k) hasGroqKey = true;
-      } else if (typeof userSecrets !== "undefined" && userSecrets && typeof decryptIntegrationsSecrets === "function") {
-        const v = decryptIntegrationsSecrets(userSecrets);
-        const k = String(v?.groq_api_key || v?.groq_key || "").trim();
-        if (k) hasGroqKey = true;
-      }
-    } catch (_) {}
-  }
-
-  // 2) (선택) env fallback
-  if (!hasGroqKey) {
-    try {
-      const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
-      if (__allowEnvFallback) {
-        const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
-        if (envK) hasGroqKey = true;
-      }
-    } catch (_) {}
-  }
-
-  // Groq-only가 진짜 가능하면 Gemini 불필요(false), 아니면 필요(true)
-  return !hasGroqKey;
-})();
-
-if (__needGeminiKey) {
-  const hasHint = !!(gemini_key && String(gemini_key).trim());
-  if (!hasHint) {
-    const keysCount = geminiKeysCount;
-
-    if (!keysCount) {
+    if (!logUserId) {
       return res.status(400).json(
         buildError(
           "VALIDATION_ERROR",
-          "Gemini 키가 없습니다. 앱 설정에서 Gemini 키를 저장하거나, 요청 바디에 gemini_key를 포함하세요."
+          "로그 식별자(user) 확정 실패: Authorization Bearer 토큰 또는 DEFAULT_USER_ID가 필요합니다."
         )
       );
     }
-  }
-}
 
-// ─────────────────────────────
-// ① 모드별 외부엔진 호출 (DV/CV/QV/FV/LV)
-// ─────────────────────────────
-switch (safeMode) {
-  case "qv":
-  case "fv": {
-            // ✅ 요청 engines가 있으면 "실제 실행 엔진"을 그걸로 제한
-    const __normEng = (x) => String(x || "").trim().toLowerCase();
+    // ✅ per-user vault에서 Naver / K-Law / GitHub / DeepL 키 복호화
+    const secretsRow = await loadUserSecretsRow(logUserId);
+    let userSecrets = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(secretsRow.secrets));
+    const vault = decryptIntegrationsSecrets(userSecrets);
 
-    // ✅ engines 입력 허용 형태:
-    //   - engines: ["crossref","openalex"]
-    //   - engines: "crossref" 또는 "crossref,openalex"
-    //   - engines_requested / enginesRequested 도 동일 지원
-    const __rawEng =
-      (req && req.body && typeof req.body === "object")
-        ? (req.body.engines ?? req.body.engines_requested ?? req.body.enginesRequested)
-        : null;
+    const naverIdFinal = (naver_id && String(naver_id).trim()) || vault.naver_id;
+    const naverSecretFinal = (naver_secret && String(naver_secret).trim()) || vault.naver_secret;
+    const klawKeyFinal = (klaw_key && String(klaw_key).trim()) || vault.klaw_key;
+    const githubTokenFinal = (github_token && String(github_token).trim()) || vault.github_token;
 
-    let __reqArrRaw = null;
-    if (Array.isArray(__rawEng)) {
-      __reqArrRaw = __rawEng;
-    } else if (typeof __rawEng === "string") {
-      const s = __rawEng.trim();
-      if (s) {
-        __reqArrRaw = s
-          .split(/[,\s]+/g)
-          .map((x) => x.trim())
-          .filter(Boolean);
+    const geminiKeysCount = (userSecrets?.gemini?.keyring?.keys || []).length;
+
+    // ✅ legal-ish 감지 (LV 제거 전제: qv/fv에서만 klaw “추가 엔진”으로 선택 실행)
+    function _looksLegalishText(s) {
+      const t = String(s || "").toLowerCase();
+      if (!t) return false;
+      // 한국 법률/판례/조문/소송/계약 등 “질문 의도” 힌트만 넓게
+      return /(\bklaw\b|law\.go\.kr|easylaw|법령|조문|조항|판례|대법원|헌법|민법|형법|상법|행정|소송|소장|가처분|고소|고발|벌금|처벌|합의|손해배상|계약|위약금|해고|임금|근로기준법|노동청|퇴직금|산재)/i.test(t);
+    }
+    const __looksLegalish =
+      _looksLegalishText(query) ||
+      _looksLegalishText(req?.body?.question) ||
+      _looksLegalishText(userCoreText);
+
+    // ✅ 모드별 필수키 검증(body → vault 순서)
+    if ((safeMode === "qv" || safeMode === "fv") && (!naverIdFinal || !naverSecretFinal)) {
+      return res.status(400).json(
+        buildError(
+          "VALIDATION_ERROR",
+          "QV/FV 모드에서는 Naver client id / secret이 필요합니다. (설정 저장 또는 body 포함)"
+        )
+      );
+    }
+
+    if (safeMode === "dv" && !githubTokenFinal) {
+      return res.status(400).json(
+        buildError("VALIDATION_ERROR", "DV 모드에서는 github_token이 필요합니다. (설정 저장 또는 body 포함)")
+      );
+    }
+
+    // ✅ qv/fv에서 klaw를 “추가 실행”할지(키 없으면 그냥 스킵)
+    const __runKlawExtra = !!(__looksLegalish && klawKeyFinal);
+
+    if (!logUserId) {
+      return res.status(400).json(
+        buildError(
+          "VALIDATION_ERROR",
+          "로그 식별자(user) 확정 실패: Authorization Bearer 토큰 또는 DEFAULT_USER_ID가 필요합니다."
+        )
+      );
+    }
+
+    // ✅ ADD: Gemini 키 필요조건(기본: QV/FV에서만)
+    // - 옵션: ALLOW_GROQ_ONLY_NO_GEMINI=1 이고 "요청 기준으로 Groq 키가 실제로 있으면" Gemini 없이도 진행
+    const __needGeminiKey = (() => {
+      if (!(safeMode === "qv" || safeMode === "fv" || safeMode === "uv")) return false;
+
+      // ✅ Gemini 키(또는 keyring)가 있으면 requirement 없음
+      try {
+        const hasHint = !!(gemini_key && String(gemini_key).trim());
+        const keysCount = Number(geminiKeysCount || 0);
+        if (hasHint || keysCount > 0) return false;
+      } catch (_) { }
+
+      const allowGroqOnly = String(process.env.ALLOW_GROQ_ONLY_NO_GEMINI || "0") === "1";
+      if (!allowGroqOnly) return true;
+
+      const preOn =
+        String(process.env.GROQ_QVFV_PRE_ENABLE ?? process.env.GROQ_PREPROCESS_ENABLE ?? "1") !== "0";
+      const verifyOn = String(process.env.GROQ_VERIFY_ENABLE || "1") !== "0";
+
+      // Groq pre/verify 둘 다 켜져있지 않으면 Groq-only 불가 → Gemini 필요
+      if (!(preOn && verifyOn)) return true;
+
+      // ✅ "요청 기준" Groq 키 존재 여부 체크 (body > user_secrets(vault) > env fallback(옵션))
+      let hasGroqKey = false;
+
+      // 0) body override
+      try {
+        const kBody = String(req?.body?.groq_api_key || req?.body?.groq_key || "").trim();
+        if (kBody) hasGroqKey = true;
+      } catch (_) { }
+
+      // 1) user_secrets 복호화 결과(vault) 또는 userSecrets 직접 복호화
+      if (!hasGroqKey) {
+        try {
+          if (typeof vault !== "undefined" && vault) {
+            const k = String(vault?.groq_api_key || vault?.groq_key || "").trim();
+            if (k) hasGroqKey = true;
+          } else if (typeof userSecrets !== "undefined" && userSecrets && typeof decryptIntegrationsSecrets === "function") {
+            const v = decryptIntegrationsSecrets(userSecrets);
+            const k = String(v?.groq_api_key || v?.groq_key || "").trim();
+            if (k) hasGroqKey = true;
+          }
+        } catch (_) { }
+      }
+
+      // 2) (선택) env fallback
+      if (!hasGroqKey) {
+        try {
+          const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+          if (__allowEnvFallback) {
+            const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+            if (envK) hasGroqKey = true;
+          }
+        } catch (_) { }
+      }
+
+      // Groq-only가 진짜 가능하면 Gemini 불필요(false), 아니면 필요(true)
+      return !hasGroqKey;
+    })();
+
+    if (__needGeminiKey) {
+      const hasHint = !!(gemini_key && String(gemini_key).trim());
+      if (!hasHint) {
+        const keysCount = geminiKeysCount;
+
+        if (!keysCount) {
+          return res.status(400).json(
+            buildError(
+              "VALIDATION_ERROR",
+              "Gemini 키가 없습니다. 앱 설정에서 Gemini 키를 저장하거나, 요청 바디에 gemini_key를 포함하세요."
+            )
+          );
+        }
       }
     }
 
-    const __reqSet = new Set(
-      Array.isArray(__reqArrRaw) ? __reqArrRaw.map(__normEng).filter(Boolean) : []
-    );
+    // ─────────────────────────────
+    // ① 모드별 외부엔진 호출 (DV/CV/QV/FV/LV)
+    // ─────────────────────────────
+    switch (safeMode) {
+      case "qv":
+      case "fv":
+      case "uv": {
+        // ✅ 요청 engines가 있으면 "실제 실행 엔진"을 그걸로 제한
+        const __normEng = (x) => String(x || "").trim().toLowerCase();
 
-    const __defaults = ENABLE_WIKIDATA_QVFV
-      ? ["crossref", "openalex", "wikidata", "gdelt", "naver"]
-      : ["crossref", "openalex", "gdelt", "naver"];
+        // ✅ engines 입력 허용 형태:
+        //   - engines: ["crossref","openalex"]
+        //   - engines: "crossref" 또는 "crossref,openalex"
+        //   - engines_requested / enginesRequested 도 동일 지원
+        const __rawEng =
+          (req && req.body && typeof req.body === "object")
+            ? (req.body.engines ?? req.body.engines_requested ?? req.body.enginesRequested)
+            : null;
 
-    const __final = (__reqSet.size > 0)
-      ? __defaults.filter((e) => __reqSet.has(e))
-      : __defaults.slice();
-
-    // ✅ 요청이 있었는데 기본 엔진셋에 하나도 매칭 안 되면 "아무것도 실행하지 않음"
-    // (기본값으로 다시 전체 실행되는 사고 방지)
-    if (__reqSet.size > 0 && __final.length === 0) {
-      try {
-        if (partial_scores && typeof partial_scores === "object") {
-          partial_scores.engines_filter_warning = {
-            requested_raw: __rawEng,
-            requested_norm: Array.from(__reqSet),
-            allowed_defaults: __defaults.slice(),
-            final: [],
-            reason: "no_matching_engine_in_defaults",
-          };
+        let __reqArrRaw = null;
+        if (Array.isArray(__rawEng)) {
+          __reqArrRaw = __rawEng;
+        } else if (typeof __rawEng === "string") {
+          const s = __rawEng.trim();
+          if (s) {
+            __reqArrRaw = s
+              .split(/[,\s]+/g)
+              .map((x) => x.trim())
+              .filter(Boolean);
+          }
         }
-      } catch (_) {}
-    }
+
+        const __reqSet = new Set(
+          Array.isArray(__reqArrRaw) ? __reqArrRaw.map(__normEng).filter(Boolean) : []
+        );
+
+        const __defaults0 = ENABLE_WIKIDATA_QVFV
+          ? ["crossref", "openalex", "wikidata", "gdelt", "naver"]
+          : ["crossref", "openalex", "gdelt", "naver"];
+
+        let __defaults = __defaults0.slice();
+
+        try {
+          if (String(safeMode || "").toLowerCase() === "uv") {
+            const wantsNaver = (__reqSet.size > 0 && __reqSet.has("naver"));
+
+            // ✅ UV는 naver 기본 OFF (요청 시에만)
+            if (!wantsNaver) {
+              __defaults = __defaults.filter((e) => e !== "naver");
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.naver_skipped = { mode: "uv", reason: "uv_default_off" };
+              }
+            } else {
+              // 요청했는데 키 없으면 안전하게 제외
+              const hasNaverKeys =
+                !!(naverIdFinal && String(naverIdFinal).trim() && naverSecretFinal && String(naverSecretFinal).trim());
+
+              if (!hasNaverKeys) {
+                __defaults = __defaults.filter((e) => e !== "naver");
+                if (partial_scores && typeof partial_scores === "object") {
+                  partial_scores.naver_skipped = { mode: "uv", reason: "missing_naver_keys" };
+                }
+              }
+            }
+          }
+        } catch (_) { }
+
+        const __final = (__reqSet.size > 0)
+          ? __defaults.filter((e) => __reqSet.has(e))
+          : __defaults.slice();
+
+        // ✅ 요청이 있었는데 기본 엔진셋에 하나도 매칭 안 되면 "아무것도 실행하지 않음"
+        // (기본값으로 다시 전체 실행되는 사고 방지)
+        if (__reqSet.size > 0 && __final.length === 0) {
+          try {
+            if (partial_scores && typeof partial_scores === "object") {
+              partial_scores.engines_filter_warning = {
+                requested_raw: __rawEng,
+                requested_norm: Array.from(__reqSet),
+                allowed_defaults: __defaults.slice(),
+                final: [],
+                reason: "no_matching_engine_in_defaults",
+              };
+            }
+          } catch (_) { }
+        }
 
         // ✅ IMPORTANT: engines 배열이 이미 기본값/플랜으로 채워져 있을 수 있으므로,
-    //    qv/fv에서는 여기서 "실제 실행 엔진"을 확정(초기화 후 주입)한다.
-    const __engineFilterSet = new Set(__final);
+        //    qv/fv에서는 여기서 "실제 실행 엔진"을 확정(초기화 후 주입)한다.
+        const __engineFilterSet = new Set(__final);
 
-    try {
-      if (Array.isArray(engines)) engines.length = 0;
-    } catch (_) {}
-
-    engines.push(...__final);
-
-    // ✅ later stages(쿼리 생성/엔진 실행 루프)에서도 동일 필터를 참조할 수 있게 req에 심어둔다.
-    try {
-      if (req) req._engine_filter_set = __engineFilterSet;
-    } catch (_) {}
-
-    try {
-      if (partial_scores && typeof partial_scores === "object") {
-        partial_scores.engines_effective = __final.slice();
-
-        // diag(나중에 “왜 호출됐지?” 추적용)
-        partial_scores.engines_filter = {
-          requested_raw: __rawEng,
-          requested_norm: Array.from(__reqSet),
-          allowed_defaults: __defaults.slice(),
-          effective: __final.slice(),
-        };
-      }
-    } catch (_) {}
-
-    // ✅ qv/fv + legal-ish면 klaw “추가 엔진”으로 1회 실행
-    // - 요청 engines가 있으면, 거기에 klaw가 포함된 경우에만 실행
-    const __allowKlawExtra = __runKlawExtra && (__reqSet.size === 0 || __reqSet.has("klaw"));
-
-    if (__allowKlawExtra) {
-      engines.push("klaw");
-
-      try {
-        const t_klaw = Date.now();
-        external.klaw = await fetchKLawAll(klawKeyFinal, query);
-        const ms_klaw = Date.now() - t_klaw;
-
-        // time/metric 흔적 남기기(형식 불명확해도 안전하게 누적)
-        try { recordTime(engineTimes, "klaw_ms", ms_klaw); } catch {}
-        try { recordMetric(engineMetrics, "klaw", ms_klaw); } catch {}
         try {
-          if (!engineMetrics.klaw || typeof engineMetrics.klaw !== "object") engineMetrics.klaw = {};
-          engineMetrics.klaw.calls = Number(engineMetrics.klaw.calls || 0) + 1;
-          engineMetrics.klaw.ms_total = Number(engineMetrics.klaw.ms_total || 0) + ms_klaw;
-        } catch {}
+          if (Array.isArray(engines)) engines.length = 0;
+        } catch (_) { }
+
+        engines.push(...__final);
+
+        // ✅ later stages(쿼리 생성/엔진 실행 루프)에서도 동일 필터를 참조할 수 있게 req에 심어둔다.
+        try {
+          if (req) req._engine_filter_set = __engineFilterSet;
+        } catch (_) { }
 
         try {
           if (partial_scores && typeof partial_scores === "object") {
-            partial_scores.klaw_extra = { wanted: true, used: true, ms: ms_klaw };
-          }
-        } catch {}
-      } catch (e) {
-        // klaw 실패는 qv/fv 자체를 죽이지 않음(추가 엔진이므로)
-        try { external.klaw = null; } catch {}
-        try {
-          if (partial_scores && typeof partial_scores === "object") {
-            partial_scores.klaw_extra = {
-              wanted: true,
-              used: false,
-              error: String(e?.message || e || "klaw_failed"),
+            partial_scores.engines_effective = __final.slice();
+
+            // diag(나중에 “왜 호출됐지?” 추적용)
+            partial_scores.engines_filter = {
+              requested_raw: __rawEng,
+              requested_norm: Array.from(__reqSet),
+              allowed_defaults: __defaults.slice(),
+              effective: __final.slice(),
             };
           }
-        } catch {}
-      }
-    } else {
-      // 키 없거나 legal-ish 아님 → klaw 미실행
-      try {
-        if (__looksLegalish && partial_scores && typeof partial_scores === "object") {
-          partial_scores.klaw_extra = { wanted: true, used: false, reason: "missing_klaw_key_or_not_requested_or_not_legalish" };
+        } catch (_) { }
+
+        // ✅ qv/fv + legal-ish면 klaw “추가 엔진”으로 1회 실행
+        // - 요청 engines가 있으면, 거기에 klaw가 포함된 경우에만 실행
+        const __allowKlawExtra = __runKlawExtra && (__reqSet.size === 0 || __reqSet.has("klaw"));
+
+        if (__allowKlawExtra) {
+          engines.push("klaw");
+
+          try {
+            const t_klaw = Date.now();
+            external.klaw = await fetchKLawAll(klawKeyFinal, query);
+            const ms_klaw = Date.now() - t_klaw;
+
+            // time/metric 흔적 남기기(형식 불명확해도 안전하게 누적)
+            try { recordTime(engineTimes, "klaw_ms", ms_klaw); } catch { }
+            try { recordMetric(engineMetrics, "klaw", ms_klaw); } catch { }
+            try {
+              if (!engineMetrics.klaw || typeof engineMetrics.klaw !== "object") engineMetrics.klaw = {};
+              engineMetrics.klaw.calls = Number(engineMetrics.klaw.calls || 0) + 1;
+              engineMetrics.klaw.ms_total = Number(engineMetrics.klaw.ms_total || 0) + ms_klaw;
+            } catch { }
+
+            try {
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.klaw_extra = { wanted: true, used: true, ms: ms_klaw };
+              }
+            } catch { }
+          } catch (e) {
+            // klaw 실패는 qv/fv 자체를 죽이지 않음(추가 엔진이므로)
+            try { external.klaw = null; } catch { }
+            try {
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.klaw_extra = {
+                  wanted: true,
+                  used: false,
+                  error: String(e?.message || e || "klaw_failed"),
+                };
+              }
+            } catch { }
+          }
+        } else {
+          // 키 없거나 legal-ish 아님 → klaw 미실행
+          try {
+            if (__looksLegalish && partial_scores && typeof partial_scores === "object") {
+              partial_scores.klaw_extra = { wanted: true, used: false, reason: "missing_klaw_key_or_not_requested_or_not_legalish" };
+            }
+          } catch { }
         }
-      } catch {}
-    }
 
         // QV/FV 전처리는 항상 lite 계열 모델 사용
-    //   - 기본값: gemini-2.0-flash-lite
-    //   - 필요하면 환경변수 GEMINI_QVFV_PRE_MODEL 로 override 가능
-    // QV/FV 전처리: 기본은 Gemini lite, 하지만 preprocessQVFVOneShot 내부에서 Groq-first(옵션) 후 Gemini fallback
-const geminiPreprocessModel =
-  (process.env.GEMINI_QVFV_PRE_MODEL && process.env.GEMINI_QVFV_PRE_MODEL.trim())
-    || "gemini-2.0-flash-lite";
+        //   - 기본값: gemini-2.0-flash-lite
+        //   - 필요하면 환경변수 GEMINI_QVFV_PRE_MODEL 로 override 가능
+        // QV/FV 전처리: 기본은 Gemini lite, 하지만 preprocessQVFVOneShot 내부에서 Groq-first(옵션) 후 Gemini fallback
+        const geminiPreprocessModel =
+          (process.env.GEMINI_QVFV_PRE_MODEL && process.env.GEMINI_QVFV_PRE_MODEL.trim())
+          || "gemini-2.0-flash-lite";
 
-const groqPreprocessModel =
-  (process.env.GROQ_QVFV_PRE_MODEL && process.env.GROQ_QVFV_PRE_MODEL.trim())
-    || (typeof GROQ_ROUTER_MODEL !== "undefined" ? String(GROQ_ROUTER_MODEL) : "llama-3.3-70b-versatile");
+        const groqPreprocessModel =
+          (process.env.GROQ_QVFV_PRE_MODEL && process.env.GROQ_QVFV_PRE_MODEL.trim())
+          || (typeof GROQ_ROUTER_MODEL !== "undefined" ? String(GROQ_ROUTER_MODEL) : "llama-3.3-70b-versatile");
 
-const __sm0 = String(safeMode || "").toLowerCase();
+        const __sm0 = String(safeMode || "").toLowerCase();
 
-// ✅ 요청 raw mode를 우선 사용 (라우터 스킵/실패/지연 시에도 전처리가 auto/fv 힌트를 잃지 않게)
-const __reqMode0 = String(
-  req?.body?.mode ?? req?.body?.safeMode ?? req?.body?.raw_mode ?? ""
-).toLowerCase().trim();
-
-// ✅ baseText 선택에서 safeMode 기본값(qv)이 끼어들면 core_text를 잃는다.
-//    req raw mode가 없으면 ""로 두고, core_text(userCoreText)가 있으면 우선 사용할 수 있게 한다.
-const __modeForBase = (__reqMode0 || "");
-
-const qvfvBaseText =
-  (((__modeForBase === "fv" ||
-     __modeForBase === "auto" ||
-     __modeForBase === "overlay" ||
-     __modeForBase === "route" ||
-     __modeForBase === "") && userCoreText)
-    ? userCoreText
-    : query);
-
-// ✅ QV/FV 전처리 원샷 (답변+블록+블록별 쿼리)
-try {
-  const t_pre = Date.now();
-  const userQuestion = String(req?.body?.question || "").trim();
-  const groqKeyBody = String(req?.body?.groq_api_key || req?.body?.groq_key || "").trim();
-
-  // ✅ 요청이 mode를 명시하지 않았으면 one-shot이 qv/fv를 결정하도록 auto로 넘긴다.
-//    (빈값일 때 "qv"로 주면 프롬프트 규칙상 safe_mode_final이 qv로 강제됨)
-  const __preModeHint = (__reqMode0 || "auto");
-
-  // ✅ RESOLVE GROQ KEY HERE (body > req-cache > user_secrets(req) > user_secrets(uid) > legacy > env(opt))
-  let groqKeyForPre = String(groqKeyBody || "").trim();
-  let groqKeyForPreSrc = groqKeyForPre ? "body" : "none";
-
-  // 0) request cache
-  try {
-    if (!groqKeyForPre && req && Object.prototype.hasOwnProperty.call(req, "_groq_pre_key_cache")) {
-      const kk = String(req._groq_pre_key_cache || "").trim();
-      if (kk) {
-        groqKeyForPre = kk;
-        groqKeyForPreSrc = "req_cache";
-      }
-    }
-  } catch (_) {}
-
-  // 1) user_secrets via req helper (router/verify path)
-  try {
-    if (!groqKeyForPre && req && typeof __getUserGroqKey === "function") {
-      const kReq = await __getUserGroqKey(req);
-      const kkReq = String(kReq || "").trim();
-      if (kkReq) {
-        groqKeyForPre = kkReq;
-        groqKeyForPreSrc = "user_secrets:req";
-      }
-    }
-  } catch (_) {}
-
-  // 2) userId direct fallback (supabase helper)
-  try {
-    if (!groqKeyForPre && logUserId && typeof __getGroqApiKeyForUser === "function") {
-      const k1 = await __getGroqApiKeyForUser({ supabase, userId: String(logUserId).trim() });
-      const kk1 = String(k1 || "").trim();
-      if (kk1) {
-        groqKeyForPre = kk1;
-        groqKeyForPreSrc = "user_secrets:uid";
-      }
-    }
-  } catch (_) {}
-
-  // 3) legacy auth uid fallback (rare)
-  try {
-    if (!groqKeyForPre && authUser && typeof _getGroqApiKeyForUser === "function") {
-      const k2 = await _getGroqApiKeyForUser(authUser);
-      const kk2 = String(k2 || "").trim();
-      if (kk2) {
-        groqKeyForPre = kk2;
-        groqKeyForPreSrc = "user_secrets:legacy";
-      }
-    }
-  } catch (_) {}
-
-  // 4) env fallback (optional)
-  try {
-    const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
-    if (!groqKeyForPre && __allowEnvFallback) {
-      const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
-      if (envK) {
-        groqKeyForPre = envK;
-        groqKeyForPreSrc = "env";
-      }
-    }
-  } catch (_) {}
-
-  // cache back
-  try {
-    if (groqKeyForPre && req) req._groq_pre_key_cache = groqKeyForPre;
-  } catch (_) {}
-
-  // diag
-  try {
-    if (partial_scores && typeof partial_scores === "object") {
-      partial_scores.groq_pre_key_source = groqKeyForPreSrc;
-      partial_scores.groq_pre_key_present = !!groqKeyForPre;
-    }
-  } catch (_) {}
-
-  let pre = await preprocessQVFVOneShot({
-    req,
-    mode: __preModeHint,
-    query,
-    core_text: qvfvBaseText,
-    question: userQuestion,
-
-    gemini_key,
-    geminiModelName: geminiPreprocessModel,
-    groqModelName: groqPreprocessModel,
-
-    userId: logUserId,
-    authUser,
-
-    groq_api_key: groqKeyForPre,
-  });
-
-    // ✅ (NEW) one-shot preprocess가 router_plan을 같이 반환하면 우선 기록/반영
-  try {
-    const __rpPre = pre?.router_plan;
-    if (__rpPre && typeof __rpPre === "object") {
-      // 1) partial_scores에 저장(진단/비교용)
-      try {
-        if (partial_scores && typeof partial_scores === "object") {
-          partial_scores.router_plan_pre = __rpPre;
-        }
-      } catch {}
-
-      // 2) 기존 __routerPlan이 없거나, 실패/폴백 상태면 one-shot 결과로 대체(보수적)
-      try {
-  const __rr = String(__routerPlan?.reason || "");
-  const __isFallbackRouterPlan =
-    /router_missing|router_plan_was_null|router_plan_empty|router_error/i.test(__rr);
-
-  if (typeof __routerPlan === "undefined" || !__routerPlan || __isFallbackRouterPlan) {
-    __routerPlan = __rpPre;
-  }
-} catch (_) {}
-
-            // 3) 요청 모드가 auto/overlay/route/빈값이면 safeMode를 qv/fv로 확정
-      //    ⚠️ prefer one-shot 경로(S-17)에서 safeMode를 "qv"로 보수 설정해도,
-      //    요청 raw mode 기준으로는 auto/overlay/route/빈값이므로 여기서 최종 확정되어야 한다.
-      try {
-        const __reqRaw = String(
+        // ✅ 요청 raw mode를 우선 사용 (라우터 스킵/실패/지연 시에도 전처리가 auto/fv 힌트를 잃지 않게)
+        const __reqMode0Raw = String(
           req?.body?.mode ?? req?.body?.safeMode ?? req?.body?.raw_mode ?? ""
         ).toLowerCase().trim();
 
-        const __wouldRouteReq =
-          (!__reqRaw || __reqRaw === "auto" || __reqRaw === "overlay" || __reqRaw === "route");
+        const __reqMode0 = (__reqMode0Raw === "uv") ? "" : __reqMode0Raw;
 
-        const __rr2 = String(__routerPlan?.reason || "");
-        const __wasPreferOneShot =
-          /router_missing_prefer_one_shot_preprocess/i.test(__rr2);
+        // ✅ UV: URL 본문 텍스트 추출(간이) → 전처리(core_text)로 투입
+        let __uvCoreText = "";
 
-        // 요청이 auto 계열이거나, prefer-one-shot로 router_missing 플랜을 세팅한 상태면
-        // one-shot router_plan.safe_mode_final로 safeMode를 확정한다.
-        if (__wouldRouteReq || __wasPreferOneShot) {
-          const __sf = String(__rpPre?.safe_mode_final || "").toLowerCase().trim();
-          safeMode = (__sf === "fv") ? "fv" : "qv";
-        }
-      } catch {}
-    }
-  } catch {}
+        async function __tryExtractUvCoreText(urlLike) {
+          const urlStr = String(urlLike || "").trim();
+          if (!urlStr) return "";
 
-  const ms_pre = Date.now() - t_pre;
-  recordTime(geminiTimes, "qvfv_preprocess_ms", ms_pre);
-  recordMetric(geminiMetrics, "qvfv_preprocess", ms_pre);
+          let u = null;
+          try {
+            u = new URL(urlStr);
+          } catch (_) {
+            try {
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.uv_extract = { ok: false, reason: "invalid_url", url: urlStr };
+              }
+            } catch { }
+            return "";
+          }
 
-  //    블록 텍스트는 무조건 snippet_core(또는 core_text)로 고정한다.
-  const __isSnippet =
-    !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
+          const proto = String(u.protocol || "").toLowerCase();
+          if (proto !== "http:" && proto !== "https:") {
+            try {
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.uv_extract = { ok: false, reason: "unsupported_protocol", url: urlStr, protocol: proto };
+              }
+            } catch { }
+            return "";
+          }
 
-  if (__isSnippet) {
-    const __core = String(
-      snippet_meta?.snippet_core ?? core_text ?? qvfvBaseText ?? query ?? ""
-    ).trim();
+          const host = String(u.hostname || "").toLowerCase().trim();
+          const __isPrivateHost = (() => {
+            if (!host) return true;
+            if (host === "localhost" || host === "0.0.0.0" || host === "127.0.0.1") return true;
+            if (host.endsWith(".local")) return true;
 
-    if (__core) {
-      const __ko = String(pre?.korean_core || "").trim() || normalizeKoreanQuestion(__core);
-      const __en = String(pre?.english_core || "").trim() || String(__core).trim();
+            const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+            if (!m) return false;
 
-      const __makeBlock = (id, txt) => {
-  const text = clipBlockText(txt, 260);
+            const a = Number(m[1]), b = Number(m[2]);
+            if (![a, b].every((x) => Number.isFinite(x) && x >= 0 && x <= 255)) return true;
 
-  const __baseForDetect = String(query || __core || "").trim();
-  const __isPop = /(인구|총인구|주민등록인구|명)/i.test(__baseForDetect);
+            if (a === 10) return true;
+            if (a === 127) return true;
+            if (a === 169 && b === 254) return true;
+            if (a === 192 && b === 168) return true;
+            if (a === 172 && b >= 16 && b <= 31) return true;
 
-  const __isNumericLike =
-    /\d/.test(__baseForDetect) ||
-    /(인구|명|금액|원|달러|USD|KRW|비율|퍼센트|%|수치|규모|GDP|성장률|물가|인플레이션|실업률|환율|통계|추계|집계)/i.test(__baseForDetect);
+            return false;
+          })();
 
-  const __year = (() => {
-    const m = __baseForDetect.match(/\b(19|20)\d{2}\b/);
-    return m ? m[0] : "";
-  })();
+          if (__isPrivateHost) {
+            try {
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.uv_extract = { ok: false, reason: "blocked_host", url: urlStr, host };
+              }
+            } catch { }
+            return "";
+          }
 
-  const __dedupeQ = (arr) => {
-    const seen = new Set();
-    const out = [];
-    for (const it of (arr || [])) {
-      const s = String(it || "").trim();
-      if (!s) continue;
-      const k = s.toLowerCase();
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(s);
-    }
-    return out;
-  };
+          const t0 = Date.now();
 
-  const __cleanSeed = (s) => {
-    let t = String(s || "").trim();
-    t = t.replace(/^질문:\s*/g, "");
-    t = t.replace(/예:\s*/g, "");
-    t = t.replace(/[()]/g, " ");
-    t = t.replace(/\s+/g, " ").trim();
-    if (t.length > 60) t = t.slice(0, 60).trim();
-    return t;
-  };
+          try {
+            const resp = await axios.get(urlStr, {
+              timeout: Math.min(HTTP_TIMEOUT_MS, 12000),
+              maxRedirects: 5,
+              responseType: "text",
+              maxContentLength: 1024 * 1024,
+              validateStatus: () => true,
+              headers: {
+                "User-Agent": "cross-verified-ai-proxy/uv",
+                "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
+              },
+            });
 
-  // 숫자/인구류는 블록텍스트(text)보다 "질문(query)" 기반 seed가 더 안전
-  let seed = (__isPop || __isNumericLike)
-    ? __cleanSeed(__baseForDetect || __ko || text)
-    : __cleanSeed(text || __ko);
+            const status = Number(resp?.status || 0);
+            const ct = String(resp?.headers?.["content-type"] || "").toLowerCase();
+            const raw = (typeof resp?.data === "string") ? resp.data : "";
 
-  let naverQ = fallbackNaverQueryFromText(seed);
+            const ms = Date.now() - t0;
 
-  // ✅ official seed prepend (cap가 작을수록 효과 큼)
-  const __officialSeeds = __isPop
-  ? [
-      "KOSIS DT_1BPA002 총인구",
-      "통계청 장래인구추계 총인구",
-      "주민등록인구 mois",
-      "KOSIS 인구 통계표",
-    ]
-  : __isNumericLike
-    ? [
-        "KOSIS 통계표",
-        "통계청 통계",
-      ]
-    : [];
+            if (!raw || !(ct.includes("text/html") || ct.includes("application/xhtml+xml") || ct.includes("text/plain"))) {
+              try {
+                if (partial_scores && typeof partial_scores === "object") {
+                  partial_scores.uv_extract = {
+                    ok: false,
+                    reason: "no_text_body_or_unsupported_content_type",
+                    url: urlStr,
+                    host,
+                    status,
+                    content_type: ct || null,
+                    ms,
+                  };
+                }
+              } catch { }
+              return "";
+            }
 
-const __mkYearQ = (seed) => {
-  const s = String(seed || "").trim();
-  if (!s) return "";
-  const y = String(__year || "").trim();
+            let text = raw;
 
-  if (y) {
-    const cand1 = `${y} ${s}`.trim();
-    if (cand1.length <= 30) return cand1;
+            text = text.replace(/<script[\s\S]*?<\/script>/gi, " ");
+            text = text.replace(/<style[\s\S]*?<\/style>/gi, " ");
+            text = text.replace(/<noscript[\s\S]*?<\/noscript>/gi, " ");
+            text = text.replace(/<svg[\s\S]*?<\/svg>/gi, " ");
+            text = text.replace(/<[^>]+>/g, " ");
 
-    const cand2 = `${y}${s}`.replace(/\s+/g, "").trim();
-    if (cand2.length <= 30) return cand2;
-  }
+            text = text
+              .replace(/&nbsp;/gi, " ")
+              .replace(/&amp;/gi, "&")
+              .replace(/&lt;/gi, "<")
+              .replace(/&gt;/gi, ">")
+              .replace(/&#39;/g, "'")
+              .replace(/&quot;/gi, '"');
 
-  return s.length <= 30 ? s : s.slice(0, 30);
-};
+            text = text.replace(/\s+/g, " ").trim();
 
-if (__officialSeeds.length) {
-  const __officialQ = __officialSeeds.map(__mkYearQ).filter(Boolean);
+            if (text.length > 3500) text = text.slice(0, 3500).trim();
 
-  // ✅ 여기서도 cap을 맞춰 공식 시드 우선 유지
-  naverQ = __dedupeQ([ ...__officialQ, ...(naverQ || []) ]).slice(0, BLOCK_NAVER_MAX_QUERIES);
-}
+            if (!text) {
+              try {
+                if (partial_scores && typeof partial_scores === "object") {
+                  partial_scores.uv_extract = {
+                    ok: false,
+                    reason: "empty_text_after_strip",
+                    url: urlStr,
+                    host,
+                    status,
+                    content_type: ct || null,
+                    ms,
+                    chars: 0,
+                  };
+                }
+              } catch { }
+              return "";
+            }
 
-  naverQ = __dedupeQ(naverQ).slice(0, BLOCK_NAVER_MAX_QUERIES);
+            const __minChars = (() => {
+              const v = Number(process.env.UV_MIN_CHARS ?? 120);
+              const n = (Number.isFinite(v) && v >= 0) ? Math.floor(v) : 120;
+              return n;
+            })();
 
-  return {
-    id,
-    text,
-    engine_queries: {
-      crossref: limitChars(__en, 90),
-      openalex: limitChars(__en, 90),
-      wikidata: limitChars(__ko, 50),
-      gdelt: limitChars(__en, 120),
-      naver: naverQ,
-    },
-  };
-};
+            const ok = text.length >= __minChars;
 
-      pre = {
-        ...pre,
-        answer_ko: "", // snippet-FV에서는 answer 필요 없음(확장 서술 방지)
-        korean_core: __ko,
-        english_core: __en,
-        blocks: [__makeBlock(1, __core)].filter((b) => b && b.text),
-      };
-    }
-  }
+            try {
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.uv_extract = {
+                  ok,
+                  url: urlStr,
+                  host,
+                  status,
+                  content_type: ct || null,
+                  ms,
+                  chars: text.length,
+                  min_chars: __minChars,
+                  thin_page: !ok,
+                };
+              }
+            } catch { }
 
-    // ✅ (IMPORTANT) 요청 engines가 있으면, one-shot이 만든 블록별 queries 자체도 그 엔진으로 "실제 호출" 제한해야 한다.
-  //    (engines 배열만 줄여도 engine_queries가 남아있으면 openalex/gdelt/naver 등이 계속 호출됨)
-  try {
-    const __engineFilterSet =
-      (typeof __final !== "undefined" && Array.isArray(__final) && __final.length)
-        ? new Set(__final)
-        : ((req && req._engine_filter_set instanceof Set) ? req._engine_filter_set : null);
-
-    if (__engineFilterSet && pre && typeof pre === "object") {
-      const __filterObjKeys = (obj) => {
-        if (!obj || typeof obj !== "object") return obj;
-        for (const k of Object.keys(obj)) {
-          if (!__engineFilterSet.has(String(k).toLowerCase().trim())) {
-            delete obj[k];
+            // ✅ 짧아도 core_text로는 사용(전처리/블록 생성에 필요)
+            return text;
+          } catch (e) {
+            const ms = Date.now() - t0;
+            try {
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.uv_extract = {
+                  ok: false,
+                  reason: "fetch_exception",
+                  url: urlStr,
+                  host,
+                  ms,
+                  error: String(e?.message || e || "uv_fetch_failed"),
+                };
+              }
+            } catch { }
+            return "";
           }
         }
-        return obj;
-      };
 
-      // diag(before)
-      let __beforeKeys = [];
-      try {
-        const b0 = pre?.blocks?.[0];
-        const q0 = (b0 && (b0.engine_queries || b0.queries)) ? (b0.engine_queries || b0.queries) : null;
-        __beforeKeys = q0 ? Object.keys(q0) : [];
-      } catch (_) {}
+        if (__sm0 === "uv") {
+          __uvCoreText = await __tryExtractUvCoreText(query);
+        }
 
-      // top-level engine_queries (있을 수도 있음)
-      try { if (pre.engine_queries) __filterObjKeys(pre.engine_queries); } catch (_) {}
+        // ✅ baseText 선택에서 safeMode 기본값(qv)이 끼어들면 core_text를 잃는다.
+        //    req raw mode가 없으면 ""로 두고, core_text(userCoreText)가 있으면 우선 사용할 수 있게 한다.
+        const __modeForBase = (__reqMode0 || "");
 
-      // blocks[*].engine_queries / blocks[*].queries
-      try {
-        if (Array.isArray(pre.blocks)) {
-          for (const b of pre.blocks) {
-            if (!b || typeof b !== "object") continue;
+        const qvfvBaseText =
+          (((__modeForBase === "fv" ||
+            __modeForBase === "auto" ||
+            __modeForBase === "overlay" ||
+            __modeForBase === "route" ||
+            __modeForBase === "") && (userCoreText || __uvCoreText))
+            ? (userCoreText || __uvCoreText)
+            : query);
 
-            // snake_case
-            if (b.engine_queries && typeof b.engine_queries === "object") {
-              __filterObjKeys(b.engine_queries);
+        // ✅ QV/FV 전처리 원샷 (답변+블록+블록별 쿼리)
+        try {
+          const t_pre = Date.now();
+          const userQuestion = String(req?.body?.question || "").trim();
+          const groqKeyBody = String(req?.body?.groq_api_key || req?.body?.groq_key || "").trim();
+
+          // ✅ 요청이 mode를 명시하지 않았으면 one-shot이 qv/fv를 결정하도록 auto로 넘긴다.
+          //    (빈값일 때 "qv"로 주면 프롬프트 규칙상 safe_mode_final이 qv로 강제됨)
+          const __preModeHint = (__reqMode0 || "auto");
+
+          // ✅ RESOLVE GROQ KEY HERE (body > req-cache > user_secrets(req) > user_secrets(uid) > legacy > env(opt))
+          let groqKeyForPre = String(groqKeyBody || "").trim();
+          let groqKeyForPreSrc = groqKeyForPre ? "body" : "none";
+
+          // 0) request cache
+          try {
+            if (!groqKeyForPre && req && Object.prototype.hasOwnProperty.call(req, "_groq_pre_key_cache")) {
+              const kk = String(req._groq_pre_key_cache || "").trim();
+              if (kk) {
+                groqKeyForPre = kk;
+                groqKeyForPreSrc = "req_cache";
+              }
             }
-            // camel/alt
-            if (b.queries && typeof b.queries === "object") {
-              __filterObjKeys(b.queries);
+          } catch (_) { }
+
+          // 1) user_secrets via req helper (router/verify path)
+          try {
+            if (!groqKeyForPre && req && typeof __getUserGroqKey === "function") {
+              const kReq = await __getUserGroqKey(req);
+              const kkReq = String(kReq || "").trim();
+              if (kkReq) {
+                groqKeyForPre = kkReq;
+                groqKeyForPreSrc = "user_secrets:req";
+              }
+            }
+          } catch (_) { }
+
+          // 2) userId direct fallback (supabase helper)
+          try {
+            if (!groqKeyForPre && logUserId && typeof __getGroqApiKeyForUser === "function") {
+              const k1 = await __getGroqApiKeyForUser({ supabase, userId: String(logUserId).trim() });
+              const kk1 = String(k1 || "").trim();
+              if (kk1) {
+                groqKeyForPre = kk1;
+                groqKeyForPreSrc = "user_secrets:uid";
+              }
+            }
+          } catch (_) { }
+
+          // 3) legacy auth uid fallback (rare)
+          try {
+            if (!groqKeyForPre && authUser && typeof _getGroqApiKeyForUser === "function") {
+              const k2 = await _getGroqApiKeyForUser(authUser);
+              const kk2 = String(k2 || "").trim();
+              if (kk2) {
+                groqKeyForPre = kk2;
+                groqKeyForPreSrc = "user_secrets:legacy";
+              }
+            }
+          } catch (_) { }
+
+          // 4) env fallback (optional)
+          try {
+            const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+            if (!groqKeyForPre && __allowEnvFallback) {
+              const envK = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+              if (envK) {
+                groqKeyForPre = envK;
+                groqKeyForPreSrc = "env";
+              }
+            }
+          } catch (_) { }
+
+          // cache back
+          try {
+            if (groqKeyForPre && req) req._groq_pre_key_cache = groqKeyForPre;
+          } catch (_) { }
+
+          // diag
+          try {
+            if (partial_scores && typeof partial_scores === "object") {
+              partial_scores.groq_pre_key_source = groqKeyForPreSrc;
+              partial_scores.groq_pre_key_present = !!groqKeyForPre;
+            }
+          } catch (_) { }
+
+          let pre = await preprocessQVFVOneShot({
+            req,
+            mode: __preModeHint,
+            query,
+            core_text: qvfvBaseText,
+            question: userQuestion,
+
+            gemini_key,
+            geminiModelName: geminiPreprocessModel,
+            groqModelName: groqPreprocessModel,
+
+            userId: logUserId,
+            authUser,
+
+            groq_api_key: groqKeyForPre,
+          });
+
+          // ✅ (NEW) one-shot preprocess가 router_plan을 같이 반환하면 우선 기록/반영
+          try {
+            const __rpPre = pre?.router_plan;
+            if (__rpPre && typeof __rpPre === "object") {
+              // 1) partial_scores에 저장(진단/비교용)
+              try {
+                if (partial_scores && typeof partial_scores === "object") {
+                  partial_scores.router_plan_pre = __rpPre;
+                }
+              } catch { }
+
+              // 2) 기존 __routerPlan이 없거나, 실패/폴백 상태면 one-shot 결과로 대체(보수적)
+              try {
+                const __rr = String(__routerPlan?.reason || "");
+                const __isFallbackRouterPlan =
+                  /router_missing|router_plan_was_null|router_plan_empty|router_error/i.test(__rr);
+
+                if (typeof __routerPlan === "undefined" || !__routerPlan || __isFallbackRouterPlan) {
+                  __routerPlan = __rpPre;
+                }
+              } catch (_) { }
+
+              // 3) 요청 모드가 auto/overlay/route/빈값이면 safeMode를 qv/fv로 확정
+              //    ⚠️ prefer one-shot 경로(S-17)에서 safeMode를 "qv"로 보수 설정해도,
+              //    요청 raw mode 기준으로는 auto/overlay/route/빈값이므로 여기서 최종 확정되어야 한다.
+              try {
+                const __reqRaw = String(
+                  req?.body?.mode ?? req?.body?.safeMode ?? req?.body?.raw_mode ?? ""
+                ).toLowerCase().trim();
+
+                const __wouldRouteReq =
+                  (!__reqRaw || __reqRaw === "auto" || __reqRaw === "overlay" || __reqRaw === "route");
+
+                const __rr2 = String(__routerPlan?.reason || "");
+                const __wasPreferOneShot =
+                  /router_missing_prefer_one_shot_preprocess/i.test(__rr2);
+
+                // 요청이 auto 계열이거나, prefer-one-shot로 router_missing 플랜을 세팅한 상태면
+                // one-shot router_plan.safe_mode_final로 safeMode를 확정한다.
+                if ((__wouldRouteReq || __wasPreferOneShot) && __reqRaw !== "uv") {
+                  const __sf = String(__rpPre?.safe_mode_final || "").toLowerCase().trim();
+                  safeMode = (__sf === "fv") ? "fv" : "qv";
+                }
+              } catch { }
+            }
+          } catch { }
+
+          const ms_pre = Date.now() - t_pre;
+          recordTime(geminiTimes, "qvfv_preprocess_ms", ms_pre);
+          recordMetric(geminiMetrics, "qvfv_preprocess", ms_pre);
+
+          //    블록 텍스트는 무조건 snippet_core(또는 core_text)로 고정한다.
+          const __isSnippet =
+            !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
+
+          if (__isSnippet) {
+            const __core = String(
+              snippet_meta?.snippet_core ?? core_text ?? qvfvBaseText ?? query ?? ""
+            ).trim();
+
+            if (__core) {
+              const __ko = String(pre?.korean_core || "").trim() || normalizeKoreanQuestion(__core);
+              const __en = String(pre?.english_core || "").trim() || String(__core).trim();
+
+              const __makeBlock = (id, txt) => {
+                const text = clipBlockText(txt, 260);
+
+                const __baseForDetect = String(query || __core || "").trim();
+                const __isPop = /(인구|총인구|주민등록인구|명)/i.test(__baseForDetect);
+
+                const __isNumericLike =
+                  /\d/.test(__baseForDetect) ||
+                  /(인구|명|금액|원|달러|USD|KRW|비율|퍼센트|%|수치|규모|GDP|성장률|물가|인플레이션|실업률|환율|통계|추계|집계)/i.test(__baseForDetect);
+
+                const __year = (() => {
+                  const m = __baseForDetect.match(/\b(19|20)\d{2}\b/);
+                  return m ? m[0] : "";
+                })();
+
+                const __dedupeQ = (arr) => {
+                  const seen = new Set();
+                  const out = [];
+                  for (const it of (arr || [])) {
+                    const s = String(it || "").trim();
+                    if (!s) continue;
+                    const k = s.toLowerCase();
+                    if (seen.has(k)) continue;
+                    seen.add(k);
+                    out.push(s);
+                  }
+                  return out;
+                };
+
+                const __cleanSeed = (s) => {
+                  let t = String(s || "").trim();
+                  t = t.replace(/^질문:\s*/g, "");
+                  t = t.replace(/예:\s*/g, "");
+                  t = t.replace(/[()]/g, " ");
+                  t = t.replace(/\s+/g, " ").trim();
+                  if (t.length > 60) t = t.slice(0, 60).trim();
+                  return t;
+                };
+
+                // 숫자/인구류는 블록텍스트(text)보다 "질문(query)" 기반 seed가 더 안전
+                let seed = (__isPop || __isNumericLike)
+                  ? __cleanSeed(__baseForDetect || __ko || text)
+                  : __cleanSeed(text || __ko);
+
+                let naverQ = fallbackNaverQueryFromText(seed);
+
+                // ✅ official seed prepend (cap가 작을수록 효과 큼)
+                const __officialSeeds = __isPop
+                  ? [
+                    "KOSIS DT_1BPA002 총인구",
+                    "통계청 장래인구추계 총인구",
+                    "주민등록인구 mois",
+                    "KOSIS 인구 통계표",
+                  ]
+                  : __isNumericLike
+                    ? [
+                      "KOSIS 통계표",
+                      "통계청 통계",
+                    ]
+                    : [];
+
+                const __mkYearQ = (seed) => {
+                  const s = String(seed || "").trim();
+                  if (!s) return "";
+                  const y = String(__year || "").trim();
+
+                  if (y) {
+                    const cand1 = `${y} ${s}`.trim();
+                    if (cand1.length <= 30) return cand1;
+
+                    const cand2 = `${y}${s}`.replace(/\s+/g, "").trim();
+                    if (cand2.length <= 30) return cand2;
+                  }
+
+                  return s.length <= 30 ? s : s.slice(0, 30);
+                };
+
+                if (__officialSeeds.length) {
+                  const __officialQ = __officialSeeds.map(__mkYearQ).filter(Boolean);
+
+                  // ✅ 여기서도 cap을 맞춰 공식 시드 우선 유지
+                  naverQ = __dedupeQ([...__officialQ, ...(naverQ || [])]).slice(0, BLOCK_NAVER_MAX_QUERIES);
+                }
+
+                naverQ = __dedupeQ(naverQ).slice(0, BLOCK_NAVER_MAX_QUERIES);
+
+                return {
+                  id,
+                  text,
+                  engine_queries: {
+                    crossref: limitChars(__en, 90),
+                    openalex: limitChars(__en, 90),
+                    wikidata: limitChars(__ko, 50),
+                    gdelt: limitChars(__en, 120),
+                    naver: naverQ,
+                  },
+                };
+              };
+
+              pre = {
+                ...pre,
+                answer_ko: "", // snippet-FV에서는 answer 필요 없음(확장 서술 방지)
+                korean_core: __ko,
+                english_core: __en,
+                blocks: [__makeBlock(1, __core)].filter((b) => b && b.text),
+              };
             }
           }
+
+          // ✅ (IMPORTANT) 요청 engines가 있으면, one-shot이 만든 블록별 queries 자체도 그 엔진으로 "실제 호출" 제한해야 한다.
+          //    (engines 배열만 줄여도 engine_queries가 남아있으면 openalex/gdelt/naver 등이 계속 호출됨)
+          try {
+            const __engineFilterSet =
+              (typeof __final !== "undefined" && Array.isArray(__final) && __final.length)
+                ? new Set(__final)
+                : ((req && req._engine_filter_set instanceof Set) ? req._engine_filter_set : null);
+
+            if (__engineFilterSet && pre && typeof pre === "object") {
+              const __filterObjKeys = (obj) => {
+                if (!obj || typeof obj !== "object") return obj;
+                for (const k of Object.keys(obj)) {
+                  if (!__engineFilterSet.has(String(k).toLowerCase().trim())) {
+                    delete obj[k];
+                  }
+                }
+                return obj;
+              };
+
+              // diag(before)
+              let __beforeKeys = [];
+              try {
+                const b0 = pre?.blocks?.[0];
+                const q0 = (b0 && (b0.engine_queries || b0.queries)) ? (b0.engine_queries || b0.queries) : null;
+                __beforeKeys = q0 ? Object.keys(q0) : [];
+              } catch (_) { }
+
+              // top-level engine_queries (있을 수도 있음)
+              try { if (pre.engine_queries) __filterObjKeys(pre.engine_queries); } catch (_) { }
+
+              // blocks[*].engine_queries / blocks[*].queries
+              try {
+                if (Array.isArray(pre.blocks)) {
+                  for (const b of pre.blocks) {
+                    if (!b || typeof b !== "object") continue;
+
+                    // snake_case
+                    if (b.engine_queries && typeof b.engine_queries === "object") {
+                      __filterObjKeys(b.engine_queries);
+                    }
+                    // camel/alt
+                    if (b.queries && typeof b.queries === "object") {
+                      __filterObjKeys(b.queries);
+                    }
+                  }
+                }
+              } catch (_) { }
+
+              // diag(after)
+              let __afterKeys = [];
+              try {
+                const b0 = pre?.blocks?.[0];
+                const q0 = (b0 && (b0.engine_queries || b0.queries)) ? (b0.engine_queries || b0.queries) : null;
+                __afterKeys = q0 ? Object.keys(q0) : [];
+              } catch (_) { }
+
+              try {
+                if (partial_scores && typeof partial_scores === "object") {
+                  partial_scores.engine_filter_applied_preprocess = {
+                    applied: true,
+                    allowed: Array.from(__engineFilterSet),
+                    before_keys: __beforeKeys,
+                    after_keys: __afterKeys,
+                  };
+                }
+              } catch (_) { }
+            } else {
+              try {
+                if (partial_scores && typeof partial_scores === "object") {
+                  partial_scores.engine_filter_applied_preprocess = {
+                    applied: false,
+                    reason: "no_engine_filter_set",
+                  };
+                }
+              } catch (_) { }
+            }
+          } catch (_) { }
+
+          qvfvPre = pre;
+          qvfvPreDone = true;
+
+          partial_scores.qvfv_pre = {
+            korean_core: pre.korean_core,
+            english_core: pre.english_core,
+            blocks_count: pre.blocks.length,
+            provider: (pre?._meta?.provider || null),
+            model_used: (pre?._meta?.model_used || pre?._meta?.model || geminiPreprocessModel),
+            groq_pre_error: (pre?._meta?.groq_pre_error || null),
+          };
+
+          const __modeForQVAnswer = String(safeMode || "").trim().toLowerCase();
+          partial_scores.qv_answer =
+            (__modeForQVAnswer === "qv" ||
+              __modeForQVAnswer === "auto" ||
+              __modeForQVAnswer === "overlay" ||
+              __modeForQVAnswer === "route" ||
+              __modeForQVAnswer === "")
+              ? (pre?.answer_ko ?? null)
+              : null;
+        } catch (e) {
+          if (
+            e?.code === "INVALID_GEMINI_KEY" ||
+            e?.code === "GEMINI_KEY_EXHAUSTED" ||
+            e?.code === "GEMINI_KEY_MISSING" ||
+            e?.code === "GEMINI_RATE_LIMIT"
+          ) throw e;
+
+          qvfvPre = null;
+          qvfvPreDone = false;
+          if (DEBUG) console.warn("⚠️ QV/FV preprocess one-shot fail:", e.message);
         }
-      } catch (_) {}
 
-      // diag(after)
-      let __afterKeys = [];
-      try {
-        const b0 = pre?.blocks?.[0];
-        const q0 = (b0 && (b0.engine_queries || b0.queries)) ? (b0.engine_queries || b0.queries) : null;
-        __afterKeys = q0 ? Object.keys(q0) : [];
-      } catch (_) {}
+        // ✅ 전처리 실패 fallback
+        if (!qvfvPre) {
+          const baseCore = qvfvBaseText || query || "";
+          const [t1, t2] = splitIntoTwoParts(baseCore);
 
-      try {
-        if (partial_scores && typeof partial_scores === "object") {
-          partial_scores.engine_filter_applied_preprocess = {
-            applied: true,
-            allowed: Array.from(__engineFilterSet),
-            before_keys: __beforeKeys,
-            after_keys: __afterKeys,
+          const ko = normalizeKoreanQuestion(baseCore);
+          const en = String(baseCore).trim();
+
+          const makeBlock = (id, txt) => {
+            const text = clipBlockText(txt, 260);
+            // ✅ 전처리 실패여도 naver 쿼리는 1개 보장 (짧으면 1블록만 남아도 naver가 살아있게)
+            const naverQ = fallbackNaverQueryFromText(text || ko);
+            return {
+              id,
+              text,
+              engine_queries: {
+                crossref: limitChars(en, 90),
+                openalex: limitChars(en, 90),
+                wikidata: limitChars(ko, 50),
+                gdelt: limitChars(en, 120),
+                naver: naverQ.slice(0, BLOCK_NAVER_MAX_QUERIES),
+              },
+            };
+          };
+
+          qvfvPre = {
+            answer_ko: "",
+            korean_core: ko,
+            english_core: en,
+            blocks: [
+              makeBlock(1, t1),
+              makeBlock(2, t2),
+            ].filter((b) => b.text),
           };
         }
-      } catch (_) {}
-    } else {
-      try {
-        if (partial_scores && typeof partial_scores === "object") {
-          partial_scores.engine_filter_applied_preprocess = {
-            applied: false,
-            reason: "no_engine_filter_set",
-          };
+
+        // ✅ 블록별 엔진 호출 → verify에 넣을 “블록+증거” 패키지 구성
+
+        // ✅ (NEW) block cap: snippet이면 더 공격적으로 제한해서 전체 runtime 줄이기
+        const __isSnippetVerify =
+          !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
+
+        const __maxBlocksNormal = (() => {
+          const v = Number(process.env.QVFV_MAX_BLOCKS ?? process.env.QVFV_BLOCKS_MAX ?? 2);
+          return Number.isFinite(v) && v > 0 ? Math.floor(v) : 2;
+        })();
+        const __maxBlocksSnippet = (() => {
+          const v = Number(process.env.QVFV_SNIPPET_MAX_BLOCKS ?? 1);
+          return Number.isFinite(v) && v > 0 ? Math.floor(v) : 1;
+        })();
+        const __maxBlocks = __isSnippetVerify ? __maxBlocksSnippet : __maxBlocksNormal;
+
+        try {
+          if (qvfvPre && Array.isArray(qvfvPre.blocks)) {
+            const beforeN = qvfvPre.blocks.length;
+            if (beforeN > __maxBlocks) {
+              qvfvPre.blocks = qvfvPre.blocks.slice(0, __maxBlocks);
+            }
+            if (partial_scores && typeof partial_scores === "object") {
+              partial_scores.qvfv_blocks_capped = {
+                before: beforeN,
+                after: Array.isArray(qvfvPre.blocks) ? qvfvPre.blocks.length : 0,
+                max: __maxBlocks,
+                is_snippet: __isSnippetVerify,
+              };
+            }
+          }
+        } catch (e) {
+          try {
+            if (partial_scores && typeof partial_scores === "object") {
+              partial_scores.qvfv_blocks_capped = { error: true, message: e?.message || String(e) };
+            }
+          } catch { }
         }
-      } catch (_) {}
-    }
-  } catch (_) {}
 
-  qvfvPre = pre;
-  qvfvPreDone = true;
-
-  partial_scores.qvfv_pre = {
-    korean_core: pre.korean_core,
-    english_core: pre.english_core,
-    blocks_count: pre.blocks.length,
-    provider: (pre?._meta?.provider || null),
-    model_used: (pre?._meta?.model_used || pre?._meta?.model || geminiPreprocessModel),
-    groq_pre_error: (pre?._meta?.groq_pre_error || null),
-  };
-
-  const __modeForQVAnswer = String(safeMode || "").trim().toLowerCase();
-partial_scores.qv_answer =
-  (__modeForQVAnswer === "qv" ||
-    __modeForQVAnswer === "auto" ||
-    __modeForQVAnswer === "overlay" ||
-    __modeForQVAnswer === "route" ||
-    __modeForQVAnswer === "")
-    ? (pre?.answer_ko ?? null)
-    : null;
-} catch (e) {
-      if (
-  e?.code === "INVALID_GEMINI_KEY" ||
-  e?.code === "GEMINI_KEY_EXHAUSTED" ||
-  e?.code === "GEMINI_KEY_MISSING" ||
-  e?.code === "GEMINI_RATE_LIMIT"
-) throw e;
-
-      qvfvPre = null;
-      qvfvPreDone = false;
-      if (DEBUG) console.warn("⚠️ QV/FV preprocess one-shot fail:", e.message);
-    }
-
- // ✅ 전처리 실패 fallback
-if (!qvfvPre) {
-  const baseCore = qvfvBaseText || query || "";
-  const [t1, t2] = splitIntoTwoParts(baseCore);
-
-  const ko = normalizeKoreanQuestion(baseCore);
-  const en = String(baseCore).trim();
-
-  const makeBlock = (id, txt) => {
-    const text = clipBlockText(txt, 260);
-    // ✅ 전처리 실패여도 naver 쿼리는 1개 보장 (짧으면 1블록만 남아도 naver가 살아있게)
-    const naverQ = fallbackNaverQueryFromText(text || ko);
-    return {
-      id,
-      text,
-      engine_queries: {
-        crossref: limitChars(en, 90),
-        openalex: limitChars(en, 90),
-        wikidata: limitChars(ko, 50),
-        gdelt: limitChars(en, 120),
-        naver: naverQ.slice(0, BLOCK_NAVER_MAX_QUERIES),
-      },
-    };
-  };
-
-  qvfvPre = {
-    answer_ko: "",
-    korean_core: ko,
-    english_core: en,
-    blocks: [
-      makeBlock(1, t1),
-      makeBlock(2, t2),
-    ].filter((b) => b.text),
-  };
-}
-
-   // ✅ 블록별 엔진 호출 → verify에 넣을 “블록+증거” 패키지 구성
-
-// ✅ (NEW) block cap: snippet이면 더 공격적으로 제한해서 전체 runtime 줄이기
-const __isSnippetVerify =
-  !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
-
-const __maxBlocksNormal = (() => {
-  const v = Number(process.env.QVFV_MAX_BLOCKS ?? process.env.QVFV_BLOCKS_MAX ?? 2);
-  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 2;
-})();
-const __maxBlocksSnippet = (() => {
-  const v = Number(process.env.QVFV_SNIPPET_MAX_BLOCKS ?? 1);
-  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 1;
-})();
-const __maxBlocks = __isSnippetVerify ? __maxBlocksSnippet : __maxBlocksNormal;
-
-try {
-  if (qvfvPre && Array.isArray(qvfvPre.blocks)) {
-    const beforeN = qvfvPre.blocks.length;
-    if (beforeN > __maxBlocks) {
-      qvfvPre.blocks = qvfvPre.blocks.slice(0, __maxBlocks);
-    }
-    if (partial_scores && typeof partial_scores === "object") {
-      partial_scores.qvfv_blocks_capped = {
-        before: beforeN,
-        after: Array.isArray(qvfvPre.blocks) ? qvfvPre.blocks.length : 0,
-        max: __maxBlocks,
-        is_snippet: __isSnippetVerify,
-      };
-    }
-  }
-} catch (e) {
-  try {
-    if (partial_scores && typeof partial_scores === "object") {
-      partial_scores.qvfv_blocks_capped = { error: true, message: e?.message || String(e) };
-    }
-  } catch {}
-}
-
-external.crossref = [];
-external.openalex = [];
-external.wikidata = [];
-external.gdelt = [];
-external.naver = [];
-
-const engineQueriesUsed = {
-  crossref: [],
-  openalex: [],
-  wikidata: [],
-  gdelt: [],
-  naver: [],
-};
-
-// ✅ NOTE: switch-case(블록 스코프) 밖에서도 접근 가능해야 함
-// - payload.naver_results / E_eff / no_block_evidence 판정에서 blocksForVerify를 참조하는 구간이 있음
-var blocksForVerify = [];
-
-// ✅ Naver total call budget (요청 전체: 블록 합산)
-// - ⚠️ __caps 초기화 전에 접근하면 TDZ 에러가 나므로, 여기서는 선언만 해두고
-//   실제 초기화/로깅은 const __caps 선언 직후에 수행한다.
-let __naverBudget = null;
-
-// ✅ call caps + early-stop (QV/FV)
-const __capNum = (v, d) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
-};
-
-const __caps = {
-  total: __capNum(process.env.ENGINE_CALL_CAP_TOTAL, 999),
-  academic: __capNum(process.env.ENGINE_CALL_CAP_ACADEMIC, 999), // crossref+openalex 합
-  gdelt: __capNum(process.env.ENGINE_CALL_CAP_GDELT, 999),
-  naver: __capNum(process.env.ENGINE_CALL_CAP_NAVER, 999), // ✅ 요청 전체 naver query 호출 상한
-
-  // ✅ Naver per-block cap (블록당 naver query cap)
-  naver_per_block: __capNum(process.env.NAVER_QUERIES_PER_BLOCK_CAP, 2),
-  naver_per_block_snippet: __capNum(process.env.NAVER_QUERIES_PER_BLOCK_CAP_SNIPPET, 1),
-
-  // ✅ blocks cap (verify prompt size / runtime cap)
-  blocks: __capNum(process.env.QVFV_BLOCKS_CAP, 4),
-  blocks_snippet: __capNum(process.env.QVFV_BLOCKS_CAP_SNIPPET, 2),
-
-  early_min_eeff: __capNum(process.env.EARLY_STOP_MIN_EEFF, 2),
-  early_min_evidence: __capNum(process.env.EARLY_STOP_MIN_EVIDENCE, 6),
-  early_require_strong:
-    String(process.env.EARLY_STOP_REQUIRE_STRONG_OFFICIAL ?? "true").toLowerCase() !== "false",
-};
-
-// ✅ Naver total call budget (요청 전체: 블록 합산)
-// - __caps.naver 는 "naver query 호출 수" 총 상한
-__naverBudget =
-  (Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : 999999);
-
-try {
-  if (partial_scores && typeof partial_scores === "object") {
-    partial_scores.naver_budget_total_cap =
-      Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : null;
-    partial_scores.naver_budget_remaining = __naverBudget;
-  }
-} catch {}
-
-const __capState = {
-  calls_total: 0,
-  calls_academic: 0,
-  calls_gdelt: 0,
-  calls_naver: 0,
-  early_stop: false,
-  early_stop_reason: null,
-};
-
-const __capConsume = (name) => {
-  if (__capState.calls_total >= __caps.total) return false;
-
-  if (name === "crossref" || name === "openalex") {
-    if (__capState.calls_academic >= __caps.academic) return false;
-    __capState.calls_total += 1;
-    __capState.calls_academic += 1;
-    return true;
-  }
-
-  if (name === "gdelt") {
-    if (__capState.calls_gdelt >= __caps.gdelt) return false;
-    __capState.calls_total += 1;
-    __capState.calls_gdelt += 1;
-    return true;
-  }
-
-  if (name === "naver") {
-    if (__capState.calls_naver >= __caps.naver) return false;
-    __capState.calls_total += 1;
-    __capState.calls_naver += 1;
-    return true;
-  }
-
-  __capState.calls_total += 1;
-  return true;
-};
-
-const __hasStrongOfficialEvidence = (arr) => {
-  try {
-    if (!Array.isArray(arr) || arr.length === 0) return false;
-
-    const isOfficialHost = (host) => {
-      const h = String(host || "").toLowerCase();
-      if (!h) return false;
-      if (h.includes("kosis.kr")) return true;
-      if (h.endsWith(".go.kr")) return true;
-      if (typeof hostLooksOfficial === "function" && hostLooksOfficial(h)) return true;
-      return false;
-    };
-
-    for (const x of arr) {
-      if (typeof __isEvidenceLikeItem === "function" && !__isEvidenceLikeItem(x)) continue;
-
-      const host = String(x?.source_host || x?.host || x?.domain || "").toLowerCase();
-      const tw =
-        (typeof x?.tier_weight === "number" && Number.isFinite(x.tier_weight))
-          ? x.tier_weight
-          : null;
-
-      const tier = String(x?.tier || "").toLowerCase();
-      const wl = (x?.whitelisted === true) || !!x?.tier;
-      const inferred = x?.inferred === true;
-
-      if (tw != null && tw >= 0.95) return true;
-      if (tier === "tier1") return true;
-      if (wl && !inferred && isOfficialHost(host)) return true;
-      if (isOfficialHost(host)) return true;
-    }
-    return false;
-  } catch (_) {
-    return false;
-  }
-};
-
-// ✅ early-stop helper (mid-block checkpoints)
-const __sliceN = (a, n = 24) => (Array.isArray(a) ? a.slice(0, Math.max(0, Math.trunc(n))) : []);
-
-const __tryEarlyStop = (where, packs = {}) => {
-  try {
-    if (__capState.early_stop) return true;
-
-    const chk = __shouldEarlyStopApprox({
-      cr: __sliceN(packs?.cr, 24),
-      oa: __sliceN(packs?.oa, 24),
-      wd: __sliceN(packs?.wd, 24),
-      gd: __sliceN(packs?.gd, 24),
-      nv: __sliceN(packs?.nv, 24),
-    });
-
-    if (chk && chk.ok) {
-      __capState.early_stop = true;
-      __capState.early_stop_reason = { where, ...chk };
-      return true;
-    }
-    return false;
-  } catch (_e) {
-    return false;
-  }
-};
-
-// ✅ requested engines hard-filter (runtime guard)
-const __wantEngines = new Set(
-  (Array.isArray(engines) ? engines : []).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
-);
-
-const runOrEmpty = async (name, fn, q) => {
-  const nn = String(name || "").trim().toLowerCase();
-
-  // ✅ 엔진 요청 필터: 요청되지 않은 엔진은 절대 호출하지 않는다
-  if (nn && __wantEngines.size > 0 && !__wantEngines.has(nn)) {
-    return { result: [], ms: 0, skipped: true, skipped_reason: "engine_not_requested" };
-  }
-
-  const qq = String(q || "").trim();
-  if (!qq) return { result: [], ms: 0, skipped: true, skipped_reason: "empty_query" };
-
-  return await safeFetchTimed(nn, fn, qq, engineTimes, engineMetrics);
-};
-
-// ✅ 쿼리가 비면 호출하지 않고 result=[]로 처리 + cap 초과도 호출 안 함
-// ✅ ACADEMIC(Crossref/OpenAlex) + GDELT: block마다 돌리지 말고 "요청당 1회"만(기본 on)
-// - env: ACADEMIC_SINGLE_QUERY=false 로 끄면 기존처럼 block별 호출
-// - env: GDELT_SINGLE_QUERY=false 로 끄면 기존처럼 block별 호출
-const __academicSingle = String(process.env.ACADEMIC_SINGLE_QUERY ?? "true").toLowerCase() !== "false";
-const __gdeltSingle = String(process.env.GDELT_SINGLE_QUERY ?? "true").toLowerCase() !== "false";
-
-// "대표 엔진 쿼리"를 블록 0개여도 안정적으로 만든다
-const __firstEq =
-  (Array.isArray(qvfvPre?.blocks) && qvfvPre.blocks[0] && typeof qvfvPre.blocks[0] === "object")
-    ? (qvfvPre.blocks[0].engine_queries || {})
-    : {};
-
-const academicBaseEn = String(qvfvPre?.english_core || qvfvBaseText || query || "").trim();
-
-const crossrefGlobalQ = __academicSingle
-  ? String(__firstEq.crossref || academicBaseEn || "").trim()
-  : "";
-
-const openalexGlobalQ = __academicSingle
-  ? String(__firstEq.openalex || academicBaseEn || "").trim()
-  : "";
-
-const gdeltGlobalQ = __gdeltSingle
-  ? String(__firstEq.gdelt || academicBaseEn || "").trim()
-  : "";
-
-// ✅ snippet request 여부를 먼저 확정 (GDELT 등 비용 큰 엔진 제어에 사용)
-// - 기존 코드에 __isSnippetVerify가 있으면 그 값을 우선 사용(중복 플래그 방지)
-const __isSnippetReq =
-  (typeof __isSnippetVerify === "boolean")
-    ? __isSnippetVerify
-    : !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
-
-// ✅ 기본 정책: snippet 검증에서는 GDELT 호출을 끈다 (환경변수로만 허용)
-const __gdeltDisableSnippet =
-  String(process.env.GDELT_DISABLE_SNIPPET ?? "true").toLowerCase() !== "false";
-
-let crossrefGlobalPack = { result: [], ms: 0, skipped: true };
-let openalexGlobalPack = { result: [], ms: 0, skipped: true };
-let gdeltGlobalPack = { result: [], ms: 0, skipped: true };
-
-if (__academicSingle) {
-  const qc = limitChars(crossrefGlobalQ, 90);
-  const qo = limitChars(openalexGlobalQ, 90);
-
-  if (String(qc || "").trim()) {
-    try {
-      if (__capConsume("crossref")) {
-        crossrefGlobalPack = await safeFetchTimed("crossref", fetchCrossref, qc, engineTimes, engineMetrics);
-        try { engineQueriesUsed.crossref.push(qc); } catch {}
-      } else {
-        crossrefGlobalPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-      }
-    } catch (e) {
-      crossrefGlobalPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
-    }
-  }
-
-  if (String(qo || "").trim()) {
-    try {
-      if (__capConsume("openalex")) {
-        openalexGlobalPack = await safeFetchTimed("openalex", fetchOpenAlex, qo, engineTimes, engineMetrics);
-        try { engineQueriesUsed.openalex.push(qo); } catch {}
-      } else {
-        openalexGlobalPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-      }
-    } catch (e) {
-      openalexGlobalPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
-    }
-  }
-}
-
-let __gdeltGlobalFetched = false;
-
-// ✅ strong official 충분하면 GDELT까지 갈 이유가 적음 (기본 ON, env로 OFF 가능)
-const __gdeltDisableOnStrongOfficial =
-  String(process.env.GDELT_DISABLE_ON_STRONG_OFFICIAL ?? "true").toLowerCase() !== "false";
-
-const __ensureGdeltGlobal = async (why = "single", ctx = {}) => {
-  if (!__gdeltSingle) return gdeltGlobalPack;
-  if (__gdeltGlobalFetched) return gdeltGlobalPack;
-  __gdeltGlobalFetched = true;
-
-  // ✅ snippet 기본: GDELT 호출 스킵
-  if (__isSnippetReq && __gdeltDisableSnippet) {
-    gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "snippet_disabled" };
-    return gdeltGlobalPack;
-  }
-
-  // ✅ strong official evidence가 이미 있으면 스킵(선택)
-  if (__gdeltDisableOnStrongOfficial) {
-    try {
-      const _candidates = [
-        external?.naver,
-        external?.wikidata,
-        external?.crossref,
-        external?.openalex,
-
-        // ✅ "현재 블록에서 막 얻은 pack"도 같이 본다 (external에 merge되기 전이라도 감지)
-        ctx?.nv,
-        ctx?.wd,
-        ctx?.cr,
-        ctx?.oa,
-
-        // ✅ academicSingle이면 globalPack.result도 참고(혹시 external merge 전이면)
-        crossrefGlobalPack?.result,
-        openalexGlobalPack?.result,
-      ];
-
-      let hasStrong = false;
-      for (const arr of _candidates) {
-        if (__hasStrongOfficialEvidence(arr)) { hasStrong = true; break; }
-      }
-
-      if (hasStrong) {
-        gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "strong_official_skip", why };
-        return gdeltGlobalPack;
-      }
-    } catch {}
-  }
-
-  const qq = limitChars(gdeltGlobalQ, 120);
-  if (!String(qq || "").trim()) {
-    gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "empty" };
-    return gdeltGlobalPack;
-  }
-
-  try {
-    if (__capConsume("gdelt")) {
-      gdeltGlobalPack = await safeFetchTimed("gdelt", fetchGDELT, qq, engineTimes, engineMetrics);
-      try { engineQueriesUsed.gdelt.push(qq); } catch {}
-    } else {
-      gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-    }
-  } catch (e) {
-    gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
-  }
-
-  return gdeltGlobalPack;
-};
-
-// ✅ single 모드여도 여기서 선호출하지 않음 (블록 진행 + early-stop 이후 필요할 때만 1회 호출)
-if (__gdeltSingle) {
-  // (옵션) 강제로 선호출하고 싶으면 env로만 켜기
-  const __prefetch = String(process.env.GDELT_PREFETCH_SINGLE ?? "false").toLowerCase() === "true";
-  if (__prefetch) {
-    try { await __ensureGdeltGlobal("prefetch"); } catch {}
-  }
-}
-
-const __maxBlocksInput = __isSnippetReq ? __caps.blocks_snippet : __caps.blocks;
-
-const __blocksInput = Array.isArray(qvfvPre.blocks)
-  ? qvfvPre.blocks.slice(0, Math.max(1, Math.trunc(__maxBlocksInput)))
-  : [];
-
-try {
-  partial_scores.qvfv_block_cap = {
-    is_snippet: __isSnippetReq,
-    cap: Math.max(1, Math.trunc(__maxBlocksInput)),
-    original: Array.isArray(qvfvPre.blocks) ? qvfvPre.blocks.length : 0,
-    used: __blocksInput.length,
-    truncated: Array.isArray(qvfvPre.blocks) ? (qvfvPre.blocks.length > __blocksInput.length) : false,
-  };
-} catch {}
-
-for (const b of __blocksInput) {
-  if (__capState.early_stop) break;
-
-  const eq = b.engine_queries || {};
-
-  const qCrossref = __academicSingle ? String(crossrefGlobalQ || "").trim() : String(eq.crossref || "").trim();
-  const qOpenalex = __academicSingle ? String(openalexGlobalQ || "").trim() : String(eq.openalex || "").trim();
-  const qWikidata = String(eq.wikidata || "").trim();
-  const qGdelt = __gdeltSingle ? String(gdeltGlobalQ || "").trim() : String(eq.gdelt || "").trim();
-
-  // ✅ 엔진별 쿼리 기록은 "실제 호출(cap 통과)" 시점에만 push 한다.
-// (여기서는 push 하지 않음)
-
-  // ✅ 핵심: crPack/oaPack/wdPack/gdPack "항상 정의" (ReferenceError 방지)
-  // - academicSingle / gdeltSingle 이면 globalPack을 재사용
-  // - 아니면 per-block로 호출하되, cap/empty/snip-disable 모두 안전 처리
-  let crPack = { result: [], ms: 0, skipped: true };
-  let oaPack = { result: [], ms: 0, skipped: true };
-  let wdPack = { result: [], ms: 0, skipped: true };
-  let gdPack = { result: [], ms: 0, skipped: true };
-
-  // crossref/openalex
-  if (__academicSingle) {
-    crPack = crossrefGlobalPack || crPack;
-    oaPack = openalexGlobalPack || oaPack;
-  } else {
-    if (String(qCrossref || "").trim()) {
-  try {
-    if (__capConsume("crossref")) {
-      crPack = await safeFetchTimed("crossref", fetchCrossref, qCrossref, engineTimes, engineMetrics);
-      try { engineQueriesUsed.crossref.push(qCrossref); } catch {}
-    } else {
-      crPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-    }
-  } catch (e) {
-    crPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
-  }
-}
-
-    if (String(qOpenalex || "").trim()) {
-  try {
-    if (__capConsume("openalex")) {
-      oaPack = await safeFetchTimed("openalex", fetchOpenAlex, qOpenalex, engineTimes, engineMetrics);
-      try { engineQueriesUsed.openalex.push(qOpenalex); } catch {}
-    } else {
-      oaPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-    }
-  } catch (e) {
-    oaPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
-  }
-}
-  }
-
-    // wikidata (per-block) - ✅ early-stop checkpoint(academic 이후)
-  try {
-    __tryEarlyStop("mid_block_after_academic", {
-      cr: [
-        ...__sliceN((external && Array.isArray(external.crossref)) ? external.crossref : [], 12),
-        ...__sliceN((crPack && Array.isArray(crPack.result)) ? crPack.result : [], 12),
-      ],
-      oa: [
-        ...__sliceN((external && Array.isArray(external.openalex)) ? external.openalex : [], 12),
-        ...__sliceN((oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [], 12),
-      ],
-      wd: __sliceN((external && Array.isArray(external.wikidata)) ? external.wikidata : [], 24),
-      gd: __sliceN((external && Array.isArray(external.gdelt)) ? external.gdelt : [], 24),
-      nv: __sliceN((external && Array.isArray(external.naver)) ? external.naver : [], 24),
-    });
-  } catch {}
-
-  if (__capState.early_stop) {
-    wdPack = { result: [], ms: 0, skipped: true, reason: "early_stop" };
-  } else if (String(qWikidata || "").trim()) {
-    try {
-      if (__capConsume("wikidata")) {
-        wdPack = await safeFetchTimed("wikidata", fetchWikidata, qWikidata, engineTimes, engineMetrics);
-        try { engineQueriesUsed.wikidata.push(qWikidata); } catch {}
-      } else {
-        wdPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-      }
-    } catch (e) {
-      wdPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
-    }
-  }
-
-  // ✅ checkpoint: wikidata 이후(= gdelt/naver 스킵 판단)
-  try {
-    __tryEarlyStop("mid_block_after_wikidata", {
-      cr: [
-        ...__sliceN((external && Array.isArray(external.crossref)) ? external.crossref : [], 12),
-        ...__sliceN((crPack && Array.isArray(crPack.result)) ? crPack.result : [], 12),
-      ],
-      oa: [
-        ...__sliceN((external && Array.isArray(external.openalex)) ? external.openalex : [], 12),
-        ...__sliceN((oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [], 12),
-      ],
-      wd: [
-        ...__sliceN((external && Array.isArray(external.wikidata)) ? external.wikidata : [], 12),
-        ...__sliceN((wdPack && Array.isArray(wdPack.result)) ? wdPack.result : [], 12),
-      ],
-      gd: __sliceN((external && Array.isArray(external.gdelt)) ? external.gdelt : [], 24),
-      nv: __sliceN((external && Array.isArray(external.naver)) ? external.naver : [], 24),
-    });
-  } catch {}
-
-    // gdelt - ✅ early-stop이면 스킵
-  if (__capState.early_stop) {
-    gdPack = { result: [], ms: 0, skipped: true, reason: "early_stop" };
-  } else if (__gdeltSingle) {
-  gdPack = (await __ensureGdeltGlobal("single", {
-  cr: (crPack && Array.isArray(crPack.result)) ? crPack.result : [],
-  oa: (oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [],
-  wd: (wdPack && Array.isArray(wdPack.result)) ? wdPack.result : [],
-  nv: (external && Array.isArray(external.naver)) ? external.naver : [],
-})) || gdPack;
-} else {
-    // ✅ snippet 기본: GDELT 호출 스킵 (global과 동일 정책)
-    if (__isSnippetReq && __gdeltDisableSnippet) {
-      gdPack = { result: [], ms: 0, skipped: true, reason: "snippet_disabled" };
-    } else if (String(qGdelt || "").trim()) {
-      try {
-        if (__capConsume("gdelt")) {
-          gdPack = await safeFetchTimed("gdelt", fetchGDELT, qGdelt, engineTimes, engineMetrics);
-          try { engineQueriesUsed.gdelt.push(qGdelt); } catch {}
-        } else {
-          gdPack = { result: [], ms: 0, skipped: true, reason: "cap" };
-        }
-      } catch (e) {
-        gdPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
-      }
-    }
-  }
-
-  // ✅ checkpoint: gdelt 이후(= naver 스킵 판단)
-  try {
-    __tryEarlyStop("mid_block_after_gdelt", {
-      cr: [
-        ...__sliceN((external && Array.isArray(external.crossref)) ? external.crossref : [], 12),
-        ...__sliceN((crPack && Array.isArray(crPack.result)) ? crPack.result : [], 12),
-      ],
-      oa: [
-        ...__sliceN((external && Array.isArray(external.openalex)) ? external.openalex : [], 12),
-        ...__sliceN((oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [], 12),
-      ],
-      wd: [
-        ...__sliceN((external && Array.isArray(external.wikidata)) ? external.wikidata : [], 12),
-        ...__sliceN((wdPack && Array.isArray(wdPack.result)) ? wdPack.result : [], 12),
-      ],
-      gd: [
-        ...__sliceN((external && Array.isArray(external.gdelt)) ? external.gdelt : [], 12),
-        ...__sliceN((gdPack && Array.isArray(gdPack.result)) ? gdPack.result : [], 12),
-      ],
-      nv: __sliceN((external && Array.isArray(external.naver)) ? external.naver : [], 24),
-    });
-  } catch {}
-
-  let naverQueriesBase = Array.isArray(eq.naver) ? eq.naver : [];
-  naverQueriesBase = naverQueriesBase
-    .map((q) => limitChars(buildNaverAndQuery(q), 30))
-    .filter(Boolean)
-    .slice(0, BLOCK_NAVER_MAX_QUERIES);
-
-  // ✅ 혹시 여기까지 왔는데도 비면, 최소 1개는 생성해서 Naver 호출이 끊기지 않게
-  if (!naverQueriesBase.length) {
-    const seed = String(b?.text || "").trim() || qvfvPre?.korean_core || qvfvBaseText || query;
-    naverQueriesBase = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
-  }
-
-  // ✅ qvfvPre에서 korean_core / english_core를 안전하게 꺼냄
-  const qvfvKoreanCore = String(qvfvPre?.korean_core ?? "").trim();
-  const qvfvEnglishCore = String(qvfvPre?.english_core ?? "").trim();
-
-  // ✅ Naver용 확장 쿼리: 여기서 한 번만 계산 → "블록당 cap" 적용
-  const naverQueriesExpandedAll = __expandNaverQueries(naverQueriesBase, {
-    korean_core: qvfvKoreanCore,
-    english_core: qvfvEnglishCore,
-  });
-
-  const __naverPerBlockCap =
-    (__isSnippetReq ? __caps.naver_per_block_snippet : __caps.naver_per_block);
-
-  let naverQueriesExpanded = Array.isArray(naverQueriesExpandedAll)
-    ? naverQueriesExpandedAll.map((q) => String(q || "").trim()).filter(Boolean)
-    : [];
-
-  naverQueriesExpanded = naverQueriesExpanded.slice(0, Math.max(1, Math.trunc(__naverPerBlockCap)));
-
-  // ✅ 아래 Naver 루프에서 naverQueries 변수를 쓰고 있으니, 여기서 확정해준다(ReferenceError 방지)
-  const naverQueries = naverQueriesExpanded;
-
-  // ─────────────────────────────
-  // ✅ Naver 결과: 표시용(all)과 verify용(topK + whitelist + relevance) 분리
-  // - 블록당 쿼리 cap + 요청 전체 budget(__naverBudget) 적용
-  // ─────────────────────────────
-  let naverItemsAll = [];
-
-  // ✅ (FIX) request-level Naver call budget (logging) + __capConsume("naver") enforcement
-  // - source of truth: __capState.calls_naver / __caps.naver
-    let __naverBudgetLog = null;
-  try {
-    if (partial_scores && typeof partial_scores === "object") {
-      if (!partial_scores.__naver_call_budget || typeof partial_scores.__naver_call_budget !== "object") {
-        partial_scores.__naver_call_budget = {};
-      }
-
-      const b = partial_scores.__naver_call_budget;
-
-      // per-request static fields
-      b.is_snippet = __isSnippetReq;
-      b.max = (Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : 999999);
-
-      const usedNow = Number(__capState?.calls_naver || 0);
-      const maxNow = Number(b.max || 0);
-
-      // per-block snapshots (reset each block)
-      b.used_before_block = usedNow;
-      b.left_before_block = Math.max(0, maxNow - usedNow);
-      b.used_last_block = 0;
-
-      // ✅ 항상 "현재 used/left"를 채워둔다 (이 블록에서 0회 호출/early-stop이어도 undefined 방지)
-      b.used = usedNow;
-      b.left = Math.max(0, maxNow - usedNow);
-      b.applied = true;
-
-      __naverBudgetLog = b;
-    }
-  } catch {}
-
-    // ✅ 실제 Naver 호출에 사용할 쿼리 리스트: naverQueries(블록당 cap 적용된 상태)
-  if (__capState.early_stop) {
-    try {
-      if (partial_scores && typeof partial_scores === "object") {
-        partial_scores.naver_skipped_by_early_stop = true;
-      }
-    } catch {}
-  } else {
-    for (const nq0 of naverQueries) {
-      const nq = String(nq0 || "").trim();
-      if (!nq) continue;
-
-      // ✅ 요청 전체 cap / naver cap 모두 여기서 같이 enforcement
-      if (!__capConsume("naver")) break;
-
-      // ✅ 엔진별 쿼리 기록(호출한 것만)
-      try { engineQueriesUsed.naver.push(nq); } catch {}
-
-      // ✅ budget log update
-      try {
-        if (__naverBudgetLog && typeof __naverBudgetLog === "object") {
-          __naverBudgetLog.used_last_block = Number(__naverBudgetLog.used_last_block || 0) + 1;
-
-          const usedNow = Number(__capState?.calls_naver || 0);
-          __naverBudgetLog.used = usedNow;
-          __naverBudgetLog.left = Math.max(0, Number(__naverBudgetLog.max || 0) - usedNow);
-        }
-      } catch {}
-
-      const { result } = await safeFetchTimed(
-        "naver",
-        (qq, ctx) => callNaver(qq, naverIdFinal, naverSecretFinal, ctx),
-        nq,
-        engineTimes,
-        engineMetrics
-      );
-      if (Array.isArray(result) && result.length) naverItemsAll.push(...result);
-    }
-  }
-
-    // ✅ budget snapshot after this block
-  try {
-    if (__naverBudgetLog && typeof __naverBudgetLog === "object") {
-      const usedNow = Number(__capState?.calls_naver || 0);
-      const maxNow = Number(__naverBudgetLog.max || 0);
-
-      __naverBudgetLog.used_after_block = usedNow;
-      __naverBudgetLog.left_after_block = Math.max(0, maxNow - usedNow);
-
-      // ✅ current 값도 after snapshot으로 동기화 (최종 표시/호환 필드 안정화)
-      __naverBudgetLog.used = usedNow;
-      __naverBudgetLog.left = Math.max(0, maxNow - usedNow);
-    }
-  } catch {}
-
-  naverItemsAll = dedupeByLink(naverItemsAll).slice(0, BLOCK_NAVER_MAX_ITEMS);
-
-  try {
-    if (partial_scores && typeof partial_scores === "object") {
-      // ✅ 블록당 Naver 쿼리 cap + 실제 사용 쿼리 기록
-      partial_scores.naver_queries_cap = {
-        per_block_cap: Math.max(1, Math.trunc(__naverPerBlockCap)),
-        used_queries: Array.isArray(naverQueries) ? naverQueries.slice(0, 12) : [],
-        used_queries_count: Array.isArray(naverQueries) ? naverQueries.length : 0,
-      };
-
-      // ✅ request-level Naver call budget(블록/요청 전체) 스냅샷
-      const __b = partial_scores.__naver_call_budget;
-      if (__b && typeof __b === "object") {
-        partial_scores.naver_call_budget = {
-          is_snippet: !!__b.is_snippet,
-          max: Number.isFinite(Number(__b.max)) ? Math.floor(Number(__b.max)) : null,
-          used: Number.isFinite(Number(__b.used)) ? Math.floor(Number(__b.used)) : 0,
-          left: Number.isFinite(Number(__b.left)) ? Math.floor(Number(__b.left)) : 0,
-
-          // block-level snapshot
-          used_last_block: Number.isFinite(Number(__b.used_last_block)) ? Math.floor(Number(__b.used_last_block)) : 0,
-          left_before_block: Number.isFinite(Number(__b.left_before_block)) ? Math.floor(Number(__b.left_before_block)) : null,
-          left_after_block: Number.isFinite(Number(__b.left_after_block)) ? Math.floor(Number(__b.left_after_block)) : null,
-
-          applied: __b.applied === true,
+        external.crossref = [];
+        external.openalex = [];
+        external.wikidata = [];
+        external.gdelt = [];
+        external.naver = [];
+
+        const engineQueriesUsed = {
+          crossref: [],
+          openalex: [],
+          wikidata: [],
+          gdelt: [],
+          naver: [],
         };
 
-        // ✅ (호환/표시용) 남은 budget: 미정의 __naverBudget 대신 여기로 확정
-        partial_scores.naver_budget_remaining =
-          Number.isFinite(Number(__b.left)) ? Math.floor(Number(__b.left)) : null;
-      } else {
-        partial_scores.naver_call_budget = null;
-        partial_scores.naver_budget_remaining = null;
-      }
+        // ✅ NOTE: switch-case(블록 스코프) 밖에서도 접근 가능해야 함
+        // - payload.naver_results / E_eff / no_block_evidence 판정에서 blocksForVerify를 참조하는 구간이 있음
+        var blocksForVerify = [];
 
-      // ✅ cap 상태/제한 스냅샷 (요청 전체)
-      partial_scores.naver_calls_used_total = Number(__capState?.calls_naver || 0);
+        // ✅ Naver total call budget (요청 전체: 블록 합산)
+        // - ⚠️ __caps 초기화 전에 접근하면 TDZ 에러가 나므로, 여기서는 선언만 해두고
+        //   실제 초기화/로깅은 const __caps 선언 직후에 수행한다.
+        let __naverBudget = null;
 
-      partial_scores.engine_call_caps = {
-        total: Number.isFinite(Number(__caps?.total)) ? Math.floor(Number(__caps.total)) : null,
-        academic: Number.isFinite(Number(__caps?.academic)) ? Math.floor(Number(__caps.academic)) : null,
-        gdelt: Number.isFinite(Number(__caps?.gdelt)) ? Math.floor(Number(__caps.gdelt)) : null,
-        naver: Number.isFinite(Number(__caps?.naver)) ? Math.floor(Number(__caps.naver)) : null,
-      };
+        // ✅ call caps + early-stop (QV/FV)
+        const __capNum = (v, d) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : d;
+        };
 
-      partial_scores.engine_call_used = {
-        total: Number(__capState?.calls_total || 0),
-        academic: Number(__capState?.calls_academic || 0),
-        gdelt: Number(__capState?.calls_gdelt || 0),
-        naver: Number(__capState?.calls_naver || 0),
-      };
-    }
-  } catch {}
+        const __caps = {
+          total: __capNum(process.env.ENGINE_CALL_CAP_TOTAL, 999),
+          academic: __capNum(process.env.ENGINE_CALL_CAP_ACADEMIC, 999), // crossref+openalex 합
+          gdelt: __capNum(process.env.ENGINE_CALL_CAP_GDELT, 999),
+          naver: __capNum(process.env.ENGINE_CALL_CAP_NAVER, 999), // ✅ 요청 전체 naver query 호출 상한
 
-  // ✅ 확장된 쿼리를 기준으로 evidence 선택
-  let naverItemsForVerify = pickTopNaverEvidenceForVerify({
-    items: naverItemsAll,
-    query,
-    blockText: b?.text || "",
-    naverQueries: naverQueriesExpanded,
-    topK: BLOCK_NAVER_EVIDENCE_TOPK,
-    minRelevance: NAVER_RELEVANCE_MIN,
-  });
+          // ✅ Naver per-block cap (블록당 naver query cap)
+          naver_per_block: __capNum(process.env.NAVER_QUERIES_PER_BLOCK_CAP, 2),
+          naver_per_block_snippet: __capNum(process.env.NAVER_QUERIES_PER_BLOCK_CAP_SNIPPET, 1),
 
-      // ----- fallback: strict 필터로 0개 나오면 그래도 뭔가 채워주기 -----
-  // ✅ 기본은 whitelist-only 유지
-  // ✅ 단, whitelist/tier가 0개일 때만 "공식처럼 보임(inferred official)"을 최소로 채워 0개를 피한다.
-  if (
-    (!Array.isArray(naverItemsForVerify) || naverItemsForVerify.length === 0) &&
-    Array.isArray(naverItemsAll) &&
-    naverItemsAll.length > 0
-  ) {
-    const __poolNoNews = Array.isArray(naverItemsAll)
-      ? naverItemsAll.filter((r) => {
-          const t = String(r?.type || r?.source_type || r?.kind || "").toLowerCase().trim();
-          if (!t) return true;
-          return t !== "news";
-        })
-      : [];
+          // ✅ blocks cap (verify prompt size / runtime cap)
+          blocks: __capNum(process.env.QVFV_BLOCKS_CAP, 4),
+          blocks_snippet: __capNum(process.env.QVFV_BLOCKS_CAP_SNIPPET, 2),
 
-    const __poolBase = __poolNoNews.length ? __poolNoNews : naverItemsAll;
+          early_min_eeff: __capNum(process.env.EARLY_STOP_MIN_EEFF, 2),
+          early_min_evidence: __capNum(process.env.EARLY_STOP_MIN_EVIDENCE, 6),
+          early_require_strong:
+            String(process.env.EARLY_STOP_REQUIRE_STRONG_OFFICIAL ?? "true").toLowerCase() !== "false",
+        };
 
-    const __strict = __poolBase.filter((r) => {
-      if ((r?.display_only === true) || (r?._whitelist_display_only === true)) return false;
-      return !!(r?.tier || r?.whitelisted);
-    });
+        // ✅ Naver total call budget (요청 전체: 블록 합산)
+        // - __caps.naver 는 "naver query 호출 수" 총 상한
+        __naverBudget =
+          (Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : 999999);
 
-    let __poolPrefer = __strict;
-    let __fallbackKind = null;
+        try {
+          if (partial_scores && typeof partial_scores === "object") {
+            partial_scores.naver_budget_total_cap =
+              Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : null;
+            partial_scores.naver_budget_remaining = __naverBudget;
+          }
+        } catch { }
 
-    // ✅ strict가 완전 0일 때만 inferred official 허용 (여전히 non-whitelist 전체 fallback은 금지)
-    if (!__poolPrefer.length) {
-      __poolPrefer = __poolBase.filter((r) => {
-        if ((r?.display_only === true) || (r?._whitelist_display_only === true)) return false;
+        const __capState = {
+          calls_total: 0,
+          calls_academic: 0,
+          calls_gdelt: 0,
+          calls_naver: 0,
+          early_stop: false,
+          early_stop_reason: null,
+        };
 
-        // 1) 이미 tier/whitelisted면 OK
-        if (r?.tier || r?.whitelisted) return true;
+        const __capConsume = (name) => {
+          if (__capState.calls_total >= __caps.total) return false;
 
-        // 2) tier_weight가 inferred-official factor 이상이면 OK
-        const tw = Number(r?.tier_weight ?? r?._tier_weight ?? r?.tierWeight ?? r?._tierWeight);
-        if (Number.isFinite(tw) && Number.isFinite(NAVER_INFERRED_OFFICIAL_FACTOR) && tw >= NAVER_INFERRED_OFFICIAL_FACTOR) {
+          if (name === "crossref" || name === "openalex") {
+            if (__capState.calls_academic >= __caps.academic) return false;
+            __capState.calls_total += 1;
+            __capState.calls_academic += 1;
+            return true;
+          }
+
+          if (name === "gdelt") {
+            if (__capState.calls_gdelt >= __caps.gdelt) return false;
+            __capState.calls_total += 1;
+            __capState.calls_gdelt += 1;
+            return true;
+          }
+
+          if (name === "naver") {
+            if (__capState.calls_naver >= __caps.naver) return false;
+            __capState.calls_total += 1;
+            __capState.calls_naver += 1;
+            return true;
+          }
+
+          __capState.calls_total += 1;
           return true;
+        };
+
+        const __hasStrongOfficialEvidence = (arr) => {
+          try {
+            if (!Array.isArray(arr) || arr.length === 0) return false;
+
+            const isOfficialHost = (host) => {
+              const h = String(host || "").toLowerCase();
+              if (!h) return false;
+              if (h.includes("kosis.kr")) return true;
+              if (h.endsWith(".go.kr")) return true;
+              if (typeof hostLooksOfficial === "function" && hostLooksOfficial(h)) return true;
+              return false;
+            };
+
+            for (const x of arr) {
+              if (typeof __isEvidenceLikeItem === "function" && !__isEvidenceLikeItem(x)) continue;
+
+              const host = String(x?.source_host || x?.host || x?.domain || "").toLowerCase();
+              const tw =
+                (typeof x?.tier_weight === "number" && Number.isFinite(x.tier_weight))
+                  ? x.tier_weight
+                  : null;
+
+              const tier = String(x?.tier || "").toLowerCase();
+              const wl = (x?.whitelisted === true) || !!x?.tier;
+              const inferred = x?.inferred === true;
+
+              if (tw != null && tw >= 0.95) return true;
+              if (tier === "tier1") return true;
+              if (wl && !inferred && isOfficialHost(host)) return true;
+              if (isOfficialHost(host)) return true;
+            }
+            return false;
+          } catch (_) {
+            return false;
+          }
+        };
+
+        // ✅ early-stop helper (mid-block checkpoints)
+        const __sliceN = (a, n = 24) => (Array.isArray(a) ? a.slice(0, Math.max(0, Math.trunc(n))) : []);
+
+        const __tryEarlyStop = (where, packs = {}) => {
+          try {
+            if (__capState.early_stop) return true;
+
+            const chk = __shouldEarlyStopApprox({
+              cr: __sliceN(packs?.cr, 24),
+              oa: __sliceN(packs?.oa, 24),
+              wd: __sliceN(packs?.wd, 24),
+              gd: __sliceN(packs?.gd, 24),
+              nv: __sliceN(packs?.nv, 24),
+            });
+
+            if (chk && chk.ok) {
+              __capState.early_stop = true;
+              __capState.early_stop_reason = { where, ...chk };
+              return true;
+            }
+            return false;
+          } catch (_e) {
+            return false;
+          }
+        };
+
+        // ✅ requested engines hard-filter (runtime guard)
+        const __wantEngines = new Set(
+          (Array.isArray(engines) ? engines : []).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
+        );
+
+        const runOrEmpty = async (name, fn, q) => {
+          const nn = String(name || "").trim().toLowerCase();
+
+          // ✅ 엔진 요청 필터: 요청되지 않은 엔진은 절대 호출하지 않는다
+          if (nn && __wantEngines.size > 0 && !__wantEngines.has(nn)) {
+            return { result: [], ms: 0, skipped: true, skipped_reason: "engine_not_requested" };
+          }
+
+          const qq = String(q || "").trim();
+          if (!qq) return { result: [], ms: 0, skipped: true, skipped_reason: "empty_query" };
+
+          return await safeFetchTimed(nn, fn, qq, engineTimes, engineMetrics);
+        };
+
+        // ✅ 쿼리가 비면 호출하지 않고 result=[]로 처리 + cap 초과도 호출 안 함
+        // ✅ ACADEMIC(Crossref/OpenAlex) + GDELT: block마다 돌리지 말고 "요청당 1회"만(기본 on)
+        // - env: ACADEMIC_SINGLE_QUERY=false 로 끄면 기존처럼 block별 호출
+        // - env: GDELT_SINGLE_QUERY=false 로 끄면 기존처럼 block별 호출
+        const __academicSingle = String(process.env.ACADEMIC_SINGLE_QUERY ?? "true").toLowerCase() !== "false";
+        const __gdeltSingle = String(process.env.GDELT_SINGLE_QUERY ?? "true").toLowerCase() !== "false";
+
+        // "대표 엔진 쿼리"를 블록 0개여도 안정적으로 만든다
+        const __firstEq =
+          (Array.isArray(qvfvPre?.blocks) && qvfvPre.blocks[0] && typeof qvfvPre.blocks[0] === "object")
+            ? (qvfvPre.blocks[0].engine_queries || {})
+            : {};
+
+        const academicBaseEn = String(qvfvPre?.english_core || qvfvBaseText || query || "").trim();
+
+        const crossrefGlobalQ = __academicSingle
+          ? String(__firstEq.crossref || academicBaseEn || "").trim()
+          : "";
+
+        const openalexGlobalQ = __academicSingle
+          ? String(__firstEq.openalex || academicBaseEn || "").trim()
+          : "";
+
+        const gdeltGlobalQ = __gdeltSingle
+          ? String(__firstEq.gdelt || academicBaseEn || "").trim()
+          : "";
+
+        // ✅ snippet request 여부를 먼저 확정 (GDELT 등 비용 큰 엔진 제어에 사용)
+        // - 기존 코드에 __isSnippetVerify가 있으면 그 값을 우선 사용(중복 플래그 방지)
+        const __isSnippetReq =
+          (typeof __isSnippetVerify === "boolean")
+            ? __isSnippetVerify
+            : !!(snippet_meta && typeof snippet_meta === "object" && snippet_meta.is_snippet);
+
+        // ✅ 기본 정책: snippet 검증에서는 GDELT 호출을 끈다 (환경변수로만 허용)
+        const __gdeltDisableSnippet =
+          String(process.env.GDELT_DISABLE_SNIPPET ?? "true").toLowerCase() !== "false";
+
+        let crossrefGlobalPack = { result: [], ms: 0, skipped: true };
+        let openalexGlobalPack = { result: [], ms: 0, skipped: true };
+        let gdeltGlobalPack = { result: [], ms: 0, skipped: true };
+
+        if (__academicSingle) {
+          const qc = limitChars(crossrefGlobalQ, 90);
+          const qo = limitChars(openalexGlobalQ, 90);
+
+          if (String(qc || "").trim()) {
+            try {
+              if (__capConsume("crossref")) {
+                crossrefGlobalPack = await safeFetchTimed("crossref", fetchCrossref, qc, engineTimes, engineMetrics);
+                try { engineQueriesUsed.crossref.push(qc); } catch { }
+              } else {
+                crossrefGlobalPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+              }
+            } catch (e) {
+              crossrefGlobalPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+            }
+          }
+
+          if (String(qo || "").trim()) {
+            try {
+              if (__capConsume("openalex")) {
+                openalexGlobalPack = await safeFetchTimed("openalex", fetchOpenAlex, qo, engineTimes, engineMetrics);
+                try { engineQueriesUsed.openalex.push(qo); } catch { }
+              } else {
+                openalexGlobalPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+              }
+            } catch (e) {
+              openalexGlobalPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+            }
+          }
         }
 
-        // 3) hostLooksOfficial로 다시 판단(아이템에 host가 있으면)
-        const h = String(r?.source_host || r?.host || r?.domain || r?._source_host || "").trim();
-        if (h && typeof hostLooksOfficial === "function" && hostLooksOfficial(h)) return true;
+        let __gdeltGlobalFetched = false;
 
-        return false;
-      });
+        // ✅ strong official 충분하면 GDELT까지 갈 이유가 적음 (기본 ON, env로 OFF 가능)
+        const __gdeltDisableOnStrongOfficial =
+          String(process.env.GDELT_DISABLE_ON_STRONG_OFFICIAL ?? "true").toLowerCase() !== "false";
 
-      if (__poolPrefer.length) __fallbackKind = "inferred_official";
-    }
+        const __ensureGdeltGlobal = async (why = "single", ctx = {}) => {
+          if (!__gdeltSingle) return gdeltGlobalPack;
+          if (__gdeltGlobalFetched) return gdeltGlobalPack;
+          __gdeltGlobalFetched = true;
 
-    try {
-      if (__fallbackKind && partial_scores && typeof partial_scores === "object") {
-        partial_scores.naver_fallback = {
-          kind: __fallbackKind,
-          pool_total: __poolBase.length,
-          strict_count: __strict.length,
-          chosen_pool_count: __poolPrefer.length,
-          topK: BLOCK_NAVER_EVIDENCE_TOPK,
+          // ✅ snippet 기본: GDELT 호출 스킵
+          if (__isSnippetReq && __gdeltDisableSnippet) {
+            gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "snippet_disabled" };
+            return gdeltGlobalPack;
+          }
+
+          // ✅ strong official evidence가 이미 있으면 스킵(선택)
+          if (__gdeltDisableOnStrongOfficial) {
+            try {
+              const _candidates = [
+                external?.naver,
+                external?.wikidata,
+                external?.crossref,
+                external?.openalex,
+
+                // ✅ "현재 블록에서 막 얻은 pack"도 같이 본다 (external에 merge되기 전이라도 감지)
+                ctx?.nv,
+                ctx?.wd,
+                ctx?.cr,
+                ctx?.oa,
+
+                // ✅ academicSingle이면 globalPack.result도 참고(혹시 external merge 전이면)
+                crossrefGlobalPack?.result,
+                openalexGlobalPack?.result,
+              ];
+
+              let hasStrong = false;
+              for (const arr of _candidates) {
+                if (__hasStrongOfficialEvidence(arr)) { hasStrong = true; break; }
+              }
+
+              if (hasStrong) {
+                gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "strong_official_skip", why };
+                return gdeltGlobalPack;
+              }
+            } catch { }
+          }
+
+          const qq = limitChars(gdeltGlobalQ, 120);
+          if (!String(qq || "").trim()) {
+            gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "empty" };
+            return gdeltGlobalPack;
+          }
+
+          try {
+            if (__capConsume("gdelt")) {
+              gdeltGlobalPack = await safeFetchTimed("gdelt", fetchGDELT, qq, engineTimes, engineMetrics);
+              try { engineQueriesUsed.gdelt.push(qq); } catch { }
+            } else {
+              gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+            }
+          } catch (e) {
+            gdeltGlobalPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+          }
+
+          return gdeltGlobalPack;
         };
+
+        // ✅ single 모드여도 여기서 선호출하지 않음 (블록 진행 + early-stop 이후 필요할 때만 1회 호출)
+        if (__gdeltSingle) {
+          // (옵션) 강제로 선호출하고 싶으면 env로만 켜기
+          const __prefetch = String(process.env.GDELT_PREFETCH_SINGLE ?? "false").toLowerCase() === "true";
+          if (__prefetch) {
+            try { await __ensureGdeltGlobal("prefetch"); } catch { }
+          }
+        }
+
+        const __maxBlocksInput = __isSnippetReq ? __caps.blocks_snippet : __caps.blocks;
+
+        const __blocksInput = Array.isArray(qvfvPre.blocks)
+          ? qvfvPre.blocks.slice(0, Math.max(1, Math.trunc(__maxBlocksInput)))
+          : [];
+
+        try {
+          partial_scores.qvfv_block_cap = {
+            is_snippet: __isSnippetReq,
+            cap: Math.max(1, Math.trunc(__maxBlocksInput)),
+            original: Array.isArray(qvfvPre.blocks) ? qvfvPre.blocks.length : 0,
+            used: __blocksInput.length,
+            truncated: Array.isArray(qvfvPre.blocks) ? (qvfvPre.blocks.length > __blocksInput.length) : false,
+          };
+        } catch { }
+
+        for (const b of __blocksInput) {
+          if (__capState.early_stop) break;
+
+          const eq = b.engine_queries || {};
+
+          const qCrossref = __academicSingle ? String(crossrefGlobalQ || "").trim() : String(eq.crossref || "").trim();
+          const qOpenalex = __academicSingle ? String(openalexGlobalQ || "").trim() : String(eq.openalex || "").trim();
+          const qWikidata = String(eq.wikidata || "").trim();
+          const qGdelt = __gdeltSingle ? String(gdeltGlobalQ || "").trim() : String(eq.gdelt || "").trim();
+
+          // ✅ 엔진별 쿼리 기록은 "실제 호출(cap 통과)" 시점에만 push 한다.
+          // (여기서는 push 하지 않음)
+
+          // ✅ 핵심: crPack/oaPack/wdPack/gdPack "항상 정의" (ReferenceError 방지)
+          // - academicSingle / gdeltSingle 이면 globalPack을 재사용
+          // - 아니면 per-block로 호출하되, cap/empty/snip-disable 모두 안전 처리
+          let crPack = { result: [], ms: 0, skipped: true };
+          let oaPack = { result: [], ms: 0, skipped: true };
+          let wdPack = { result: [], ms: 0, skipped: true };
+          let gdPack = { result: [], ms: 0, skipped: true };
+
+          // crossref/openalex
+          if (__academicSingle) {
+            crPack = crossrefGlobalPack || crPack;
+            oaPack = openalexGlobalPack || oaPack;
+          } else {
+            if (String(qCrossref || "").trim()) {
+              try {
+                if (__capConsume("crossref")) {
+                  crPack = await safeFetchTimed("crossref", fetchCrossref, qCrossref, engineTimes, engineMetrics);
+                  try { engineQueriesUsed.crossref.push(qCrossref); } catch { }
+                } else {
+                  crPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+                }
+              } catch (e) {
+                crPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+              }
+            }
+
+            if (String(qOpenalex || "").trim()) {
+              try {
+                if (__capConsume("openalex")) {
+                  oaPack = await safeFetchTimed("openalex", fetchOpenAlex, qOpenalex, engineTimes, engineMetrics);
+                  try { engineQueriesUsed.openalex.push(qOpenalex); } catch { }
+                } else {
+                  oaPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+                }
+              } catch (e) {
+                oaPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+              }
+            }
+          }
+
+          // wikidata (per-block) - ✅ early-stop checkpoint(academic 이후)
+          try {
+            __tryEarlyStop("mid_block_after_academic", {
+              cr: [
+                ...__sliceN((external && Array.isArray(external.crossref)) ? external.crossref : [], 12),
+                ...__sliceN((crPack && Array.isArray(crPack.result)) ? crPack.result : [], 12),
+              ],
+              oa: [
+                ...__sliceN((external && Array.isArray(external.openalex)) ? external.openalex : [], 12),
+                ...__sliceN((oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [], 12),
+              ],
+              wd: __sliceN((external && Array.isArray(external.wikidata)) ? external.wikidata : [], 24),
+              gd: __sliceN((external && Array.isArray(external.gdelt)) ? external.gdelt : [], 24),
+              nv: __sliceN((external && Array.isArray(external.naver)) ? external.naver : [], 24),
+            });
+          } catch { }
+
+          if (__capState.early_stop) {
+            wdPack = { result: [], ms: 0, skipped: true, reason: "early_stop" };
+          } else if (String(qWikidata || "").trim()) {
+            try {
+              if (__capConsume("wikidata")) {
+                wdPack = await safeFetchTimed("wikidata", fetchWikidata, qWikidata, engineTimes, engineMetrics);
+                try { engineQueriesUsed.wikidata.push(qWikidata); } catch { }
+              } else {
+                wdPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+              }
+            } catch (e) {
+              wdPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+            }
+          }
+
+          // ✅ checkpoint: wikidata 이후(= gdelt/naver 스킵 판단)
+          try {
+            __tryEarlyStop("mid_block_after_wikidata", {
+              cr: [
+                ...__sliceN((external && Array.isArray(external.crossref)) ? external.crossref : [], 12),
+                ...__sliceN((crPack && Array.isArray(crPack.result)) ? crPack.result : [], 12),
+              ],
+              oa: [
+                ...__sliceN((external && Array.isArray(external.openalex)) ? external.openalex : [], 12),
+                ...__sliceN((oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [], 12),
+              ],
+              wd: [
+                ...__sliceN((external && Array.isArray(external.wikidata)) ? external.wikidata : [], 12),
+                ...__sliceN((wdPack && Array.isArray(wdPack.result)) ? wdPack.result : [], 12),
+              ],
+              gd: __sliceN((external && Array.isArray(external.gdelt)) ? external.gdelt : [], 24),
+              nv: __sliceN((external && Array.isArray(external.naver)) ? external.naver : [], 24),
+            });
+          } catch { }
+
+          // gdelt - ✅ early-stop이면 스킵
+          if (__capState.early_stop) {
+            gdPack = { result: [], ms: 0, skipped: true, reason: "early_stop" };
+          } else if (__gdeltSingle) {
+            gdPack = (await __ensureGdeltGlobal("single", {
+              cr: (crPack && Array.isArray(crPack.result)) ? crPack.result : [],
+              oa: (oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [],
+              wd: (wdPack && Array.isArray(wdPack.result)) ? wdPack.result : [],
+              nv: (external && Array.isArray(external.naver)) ? external.naver : [],
+            })) || gdPack;
+          } else {
+            // ✅ snippet 기본: GDELT 호출 스킵 (global과 동일 정책)
+            if (__isSnippetReq && __gdeltDisableSnippet) {
+              gdPack = { result: [], ms: 0, skipped: true, reason: "snippet_disabled" };
+            } else if (String(qGdelt || "").trim()) {
+              try {
+                if (__capConsume("gdelt")) {
+                  gdPack = await safeFetchTimed("gdelt", fetchGDELT, qGdelt, engineTimes, engineMetrics);
+                  try { engineQueriesUsed.gdelt.push(qGdelt); } catch { }
+                } else {
+                  gdPack = { result: [], ms: 0, skipped: true, reason: "cap" };
+                }
+              } catch (e) {
+                gdPack = { result: [], ms: 0, skipped: true, reason: "error", error: String(e?.message || e) };
+              }
+            }
+          }
+
+          // ✅ checkpoint: gdelt 이후(= naver 스킵 판단)
+          try {
+            __tryEarlyStop("mid_block_after_gdelt", {
+              cr: [
+                ...__sliceN((external && Array.isArray(external.crossref)) ? external.crossref : [], 12),
+                ...__sliceN((crPack && Array.isArray(crPack.result)) ? crPack.result : [], 12),
+              ],
+              oa: [
+                ...__sliceN((external && Array.isArray(external.openalex)) ? external.openalex : [], 12),
+                ...__sliceN((oaPack && Array.isArray(oaPack.result)) ? oaPack.result : [], 12),
+              ],
+              wd: [
+                ...__sliceN((external && Array.isArray(external.wikidata)) ? external.wikidata : [], 12),
+                ...__sliceN((wdPack && Array.isArray(wdPack.result)) ? wdPack.result : [], 12),
+              ],
+              gd: [
+                ...__sliceN((external && Array.isArray(external.gdelt)) ? external.gdelt : [], 12),
+                ...__sliceN((gdPack && Array.isArray(gdPack.result)) ? gdPack.result : [], 12),
+              ],
+              nv: __sliceN((external && Array.isArray(external.naver)) ? external.naver : [], 24),
+            });
+          } catch { }
+
+          // UV에서는 naver "쿼리 생성/예산 카운터/호출/metrics/times/external" 전부 차단
+          const __naverEnabled = (safeMode !== "uv");
+
+          let naverQueriesBase = [];
+          let naverQueriesExpandedAll = [];
+          let naverQueriesExpanded = [];
+          let naverQueries = [];
+
+          const __naverPerBlockCap =
+            (__isSnippetReq ? __caps.naver_per_block_snippet : __caps.naver_per_block);
+
+          // ─────────────────────────────
+          // ✅ Naver 결과: 표시용(all)과 verify용(topK + whitelist + relevance) 분리
+          // - 블록당 쿼리 cap + 요청 전체 budget(__naverBudget) 적용
+          // ─────────────────────────────
+          let naverItemsAll = [];
+
+          // ✅ (FIX) request-level Naver call budget (logging) + __capConsume("naver") enforcement
+          // - source of truth: __capState.calls_naver / __caps.naver
+          let __naverBudgetLog = null;
+
+          if (!__naverEnabled) {
+            try {
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.naver_skipped = { mode: "uv", reason: "uv_default_off" };
+                partial_scores.naver_call_budget = null;
+                partial_scores.naver_budget_remaining = null;
+                partial_scores.naver_calls_used_total = Number(__capState?.calls_naver || 0);
+              }
+            } catch { }
+          } else {
+            naverQueriesBase = Array.isArray(eq.naver) ? eq.naver : [];
+            naverQueriesBase = naverQueriesBase
+              .map((q) => limitChars(buildNaverAndQuery(q), 30))
+              .filter(Boolean)
+              .slice(0, BLOCK_NAVER_MAX_QUERIES);
+
+            // ✅ 혹시 여기까지 왔는데도 비면, 최소 1개는 생성해서 Naver 호출이 끊기지 않게
+            if (!naverQueriesBase.length) {
+              const seed = String(b?.text || "").trim() || qvfvPre?.korean_core || qvfvBaseText || query;
+              naverQueriesBase = fallbackNaverQueryFromText(seed).slice(0, BLOCK_NAVER_MAX_QUERIES);
+            }
+
+            // ✅ qvfvPre에서 korean_core / english_core를 안전하게 꺼냄
+            const qvfvKoreanCore = String(qvfvPre?.korean_core ?? "").trim();
+            const qvfvEnglishCore = String(qvfvPre?.english_core ?? "").trim();
+
+            // ✅ Naver용 확장 쿼리: 여기서 한 번만 계산 → "블록당 cap" 적용
+            naverQueriesExpandedAll = __expandNaverQueries(naverQueriesBase, {
+              korean_core: qvfvKoreanCore,
+              english_core: qvfvEnglishCore,
+            });
+
+            naverQueriesExpanded = Array.isArray(naverQueriesExpandedAll)
+              ? naverQueriesExpandedAll.map((q) => String(q || "").trim()).filter(Boolean)
+              : [];
+
+            naverQueriesExpanded = naverQueriesExpanded.slice(0, Math.max(1, Math.trunc(__naverPerBlockCap)));
+
+            // ✅ 아래 Naver 루프에서 naverQueries 변수를 쓰고 있으니, 여기서 확정해준다(ReferenceError 방지)
+            naverQueries = naverQueriesExpanded;
+
+            // ✅ (FIX) request-level Naver call budget (logging) + __capConsume("naver") enforcement
+            // - source of truth: __capState.calls_naver / __caps.naver
+            try {
+              if (partial_scores && typeof partial_scores === "object") {
+                if (!partial_scores.__naver_call_budget || typeof partial_scores.__naver_call_budget !== "object") {
+                  partial_scores.__naver_call_budget = {};
+                }
+
+                const b = partial_scores.__naver_call_budget;
+
+                // per-request static fields
+                b.is_snippet = __isSnippetReq;
+                b.max = (Number.isFinite(__caps?.naver) ? Math.max(0, Math.trunc(__caps.naver)) : 999999);
+
+                const usedNow = Number(__capState?.calls_naver || 0);
+                const maxNow = Number(b.max || 0);
+
+                // per-block snapshots (reset each block)
+                b.used_before_block = usedNow;
+                b.left_before_block = Math.max(0, maxNow - usedNow);
+                b.used_last_block = 0;
+
+                // ✅ 항상 "현재 used/left"를 채워둔다 (이 블록에서 0회 호출/early-stop이어도 undefined 방지)
+                b.used = usedNow;
+                b.left = Math.max(0, maxNow - usedNow);
+                b.applied = true;
+
+                __naverBudgetLog = b;
+              }
+            } catch { }
+
+            // ✅ 실제 Naver 호출에 사용할 쿼리 리스트: naverQueries(블록당 cap 적용된 상태)
+            if (__capState.early_stop) {
+              try {
+                if (partial_scores && typeof partial_scores === "object") {
+                  partial_scores.naver_skipped_by_early_stop = true;
+                }
+              } catch { }
+            } else {
+              for (const nq0 of naverQueries) {
+                const nq = String(nq0 || "").trim();
+                if (!nq) continue;
+
+                // ✅ 요청 전체 cap / naver cap 모두 여기서 같이 enforcement
+                if (!__capConsume("naver")) break;
+
+                // ✅ 엔진별 쿼리 기록(호출한 것만)
+                try { engineQueriesUsed.naver.push(nq); } catch { }
+
+                // ✅ budget log update
+                try {
+                  if (__naverBudgetLog && typeof __naverBudgetLog === "object") {
+                    __naverBudgetLog.used_last_block = Number(__naverBudgetLog.used_last_block || 0) + 1;
+
+                    const usedNow = Number(__capState?.calls_naver || 0);
+                    __naverBudgetLog.used = usedNow;
+                    __naverBudgetLog.left = Math.max(0, Number(__naverBudgetLog.max || 0) - usedNow);
+                  }
+                } catch { }
+
+                const { result } = await safeFetchTimed(
+                  "naver",
+                  (qq, ctx) => callNaver(qq, naverIdFinal, naverSecretFinal, ctx),
+                  nq,
+                  engineTimes,
+                  engineMetrics
+                );
+                if (Array.isArray(result) && result.length) naverItemsAll.push(...result);
+              }
+            }
+
+            // ✅ budget snapshot after this block
+            try {
+              if (__naverBudgetLog && typeof __naverBudgetLog === "object") {
+                const usedNow = Number(__capState?.calls_naver || 0);
+                const maxNow = Number(__naverBudgetLog.max || 0);
+
+                __naverBudgetLog.used_after_block = usedNow;
+                __naverBudgetLog.left_after_block = Math.max(0, maxNow - usedNow);
+
+                // ✅ current 값도 after snapshot으로 동기화 (최종 표시/호환 필드 안정화)
+                __naverBudgetLog.used = usedNow;
+                __naverBudgetLog.left = Math.max(0, maxNow - usedNow);
+              }
+            } catch { }
+
+            naverItemsAll = dedupeByLink(naverItemsAll).slice(0, BLOCK_NAVER_MAX_ITEMS);
+
+            try {
+              if (partial_scores && typeof partial_scores === "object") {
+                // ✅ 블록당 Naver 쿼리 cap + 실제 사용 쿼리 기록
+                partial_scores.naver_queries_cap = {
+                  per_block_cap: Math.max(1, Math.trunc(__naverPerBlockCap)),
+                  used_queries: Array.isArray(naverQueries) ? naverQueries.slice(0, 12) : [],
+                  used_queries_count: Array.isArray(naverQueries) ? naverQueries.length : 0,
+                };
+
+                // ✅ request-level Naver call budget(블록/요청 전체) 스냅샷
+                const __b = partial_scores.__naver_call_budget;
+                if (__b && typeof __b === "object") {
+                  partial_scores.naver_call_budget = {
+                    is_snippet: !!__b.is_snippet,
+                    max: Number.isFinite(Number(__b.max)) ? Math.floor(Number(__b.max)) : null,
+                    used: Number.isFinite(Number(__b.used)) ? Math.floor(Number(__b.used)) : 0,
+                    left: Number.isFinite(Number(__b.left)) ? Math.floor(Number(__b.left)) : 0,
+
+                    // block-level snapshot
+                    used_last_block: Number.isFinite(Number(__b.used_last_block)) ? Math.floor(Number(__b.used_last_block)) : 0,
+                    left_before_block: Number.isFinite(Number(__b.left_before_block)) ? Math.floor(Number(__b.left_before_block)) : null,
+                    left_after_block: Number.isFinite(Number(__b.left_after_block)) ? Math.floor(Number(__b.left_after_block)) : null,
+
+                    applied: __b.applied === true,
+                  };
+
+                  // ✅ (호환/표시용) 남은 budget: 미정의 __naverBudget 대신 여기로 확정
+                  partial_scores.naver_budget_remaining =
+                    Number.isFinite(Number(__b.left)) ? Math.floor(Number(__b.left)) : null;
+                } else {
+                  partial_scores.naver_call_budget = null;
+                  partial_scores.naver_budget_remaining = null;
+                }
+
+                // ✅ cap 상태/제한 스냅샷 (요청 전체)
+                partial_scores.naver_calls_used_total = Number(__capState?.calls_naver || 0);
+
+                partial_scores.engine_call_caps = {
+                  total: Number.isFinite(Number(__caps?.total)) ? Math.floor(Number(__caps.total)) : null,
+                  academic: Number.isFinite(Number(__caps?.academic)) ? Math.floor(Number(__caps.academic)) : null,
+                  gdelt: Number.isFinite(Number(__caps?.gdelt)) ? Math.floor(Number(__caps.gdelt)) : null,
+                  naver: Number.isFinite(Number(__caps?.naver)) ? Math.floor(Number(__caps.naver)) : null,
+                };
+
+                partial_scores.engine_call_used = {
+                  total: Number(__capState?.calls_total || 0),
+                  academic: Number(__capState?.calls_academic || 0),
+                  gdelt: Number(__capState?.calls_gdelt || 0),
+                  naver: Number(__capState?.calls_naver || 0),
+                };
+              }
+            } catch { }
+          }
+
+          // ✅ 확장된 쿼리를 기준으로 evidence 선택
+          let naverItemsForVerify = [];
+
+          if (__naverEnabled) {
+            naverItemsForVerify = pickTopNaverEvidenceForVerify({
+              items: naverItemsAll,
+              query,
+              blockText: b?.text || "",
+              naverQueries: naverQueriesExpanded,
+              topK: BLOCK_NAVER_EVIDENCE_TOPK,
+              minRelevance: NAVER_RELEVANCE_MIN,
+            });
+
+            // ----- fallback: strict 필터로 0개 나오면 그래도 뭔가 채워주기 -----
+            // ✅ 기본은 whitelist-only 유지
+            // ✅ 단, whitelist/tier가 0개일 때만 "공식처럼 보임(inferred official)"을 최소로 채워 0개를 피한다.
+            if (
+              (!Array.isArray(naverItemsForVerify) || naverItemsForVerify.length === 0) &&
+              Array.isArray(naverItemsAll) &&
+              naverItemsAll.length > 0
+            ) {
+              const __poolNoNews = Array.isArray(naverItemsAll)
+                ? naverItemsAll.filter((r) => {
+                  const t = String(r?.type || r?.source_type || r?.kind || "").toLowerCase().trim();
+                  if (!t) return true;
+                  return t !== "news";
+                })
+                : [];
+
+              const __poolBase = __poolNoNews.length ? __poolNoNews : naverItemsAll;
+
+              const __strict = __poolBase.filter((r) => {
+                if ((r?.display_only === true) || (r?._whitelist_display_only === true)) return false;
+                return !!(r?.tier || r?.whitelisted);
+              });
+
+              let __poolPrefer = __strict;
+              let __fallbackKind = null;
+
+              // ✅ strict가 완전 0일 때만 inferred official 허용 (여전히 non-whitelist 전체 fallback은 금지)
+              if (!__poolPrefer.length) {
+                __poolPrefer = __poolBase.filter((r) => {
+                  if ((r?.display_only === true) || (r?._whitelist_display_only === true)) return false;
+
+                  // 1) 이미 tier/whitelisted면 OK
+                  if (r?.tier || r?.whitelisted) return true;
+
+                  // 2) tier_weight가 inferred-official factor 이상이면 OK
+                  const tw = Number(r?.tier_weight ?? r?._tier_weight ?? r?.tierWeight ?? r?._tierWeight);
+                  if (Number.isFinite(tw) && Number.isFinite(NAVER_INFERRED_OFFICIAL_FACTOR) && tw >= NAVER_INFERRED_OFFICIAL_FACTOR) {
+                    return true;
+                  }
+
+                  // 3) hostLooksOfficial로 다시 판단(아이템에 host가 있으면)
+                  const h = String(r?.source_host || r?.host || r?.domain || r?._source_host || "").trim();
+                  if (h && typeof hostLooksOfficial === "function" && hostLooksOfficial(h)) return true;
+
+                  return false;
+                });
+
+                if (__poolPrefer.length) __fallbackKind = "inferred_official";
+              }
+
+              try {
+                if (__fallbackKind && partial_scores && typeof partial_scores === "object") {
+                  partial_scores.naver_fallback = {
+                    kind: __fallbackKind,
+                    pool_total: __poolBase.length,
+                    strict_count: __strict.length,
+                    chosen_pool_count: __poolPrefer.length,
+                    topK: BLOCK_NAVER_EVIDENCE_TOPK,
+                  };
+                }
+              } catch { }
+
+              // ✅ 여기서도 비면 그냥 빈 배열 유지
+              naverItemsForVerify = topArr(__poolPrefer, BLOCK_NAVER_EVIDENCE_TOPK);
+            }
+          }
+
+          // ----- gdelt / external / blocksForVerify -----
+          const gdeltForVerify = topArr(gdPack.result, BLOCK_EVIDENCE_TOPK);
+
+          // ✅ external 누적(early-stop/recency 계산용)
+          // - __academicSingle / __gdeltSingle 은 globalPack 재사용이므로 "한 번만" 주입해서 중복을 막는다.
+          if (__academicSingle) {
+            if (
+              Array.isArray(external.crossref) && external.crossref.length === 0 &&
+              Array.isArray(crPack?.result) && crPack.result.length
+            ) {
+              external.crossref.push(...crPack.result);
+            }
+            if (
+              Array.isArray(external.openalex) && external.openalex.length === 0 &&
+              Array.isArray(oaPack?.result) && oaPack.result.length
+            ) {
+              external.openalex.push(...oaPack.result);
+            }
+          } else {
+            external.crossref.push(...(crPack.result || []));
+            external.openalex.push(...(oaPack.result || []));
+          }
+
+          external.wikidata.push(...(wdPack.result || []));
+
+          if (__gdeltSingle) {
+            if (
+              Array.isArray(external.gdelt) && external.gdelt.length === 0 &&
+              Array.isArray(gdPack?.result) && gdPack.result.length
+            ) {
+              external.gdelt.push(...gdPack.result);
+            }
+          } else {
+            external.gdelt.push(...(gdPack.result || []));
+          }
+
+          external.naver.push(...(naverItemsAll || []));
+
+          blocksForVerify.push({
+            id: b.id,
+            text: b.text,
+            queries: {
+              crossref: qCrossref,
+              openalex: qOpenalex,
+              wikidata: qWikidata,
+              gdelt: qGdelt,
+              naver: naverQueriesExpanded,
+            },
+            evidence: {
+              crossref: topArr(crPack.result, BLOCK_EVIDENCE_TOPK),
+              openalex: topArr(oaPack.result, BLOCK_EVIDENCE_TOPK),
+              wikidata: topArr(wdPack.result, 5),
+              gdelt: gdeltForVerify,
+              naver: topArr(naverItemsForVerify, BLOCK_NAVER_EVIDENCE_TOPK),
+            },
+          });
+
+          // ✅ 블록 1개 끝난 시점에서도 early-stop 판단 (다음 블록 스킵용)
+          try {
+            const chk2 = __shouldEarlyStopApprox({
+              cr: (external && Array.isArray(external.crossref)) ? external.crossref : [],
+              oa: (external && Array.isArray(external.openalex)) ? external.openalex : [],
+              wd: (external && Array.isArray(external.wikidata)) ? external.wikidata : [],
+              gd: (external && Array.isArray(external.gdelt)) ? external.gdelt : [],
+              nv: (external && Array.isArray(external.naver)) ? external.naver : [],
+            });
+
+            if (chk2 && chk2.ok) {
+              __capState.early_stop = true;
+              __capState.early_stop_reason = { where: "after_block", ...chk2 };
+              break;
+            }
+          } catch { }
+        }
+
+        // ✅ cap/early-stop 로그
+        try {
+          partial_scores.call_caps = {
+            limits: __caps,
+            used: {
+              total: __capState.calls_total,
+              academic: __capState.calls_academic,
+              gdelt: __capState.calls_gdelt,
+              naver: __capState.calls_naver,
+            },
+            early_stop: __capState.early_stop,
+            early_stop_reason: __capState.early_stop_reason,
+          };
+        } catch { }
+
+        if (__academicSingle) {
+          external.crossref = Array.isArray(crossrefGlobalPack?.result) ? crossrefGlobalPack.result.slice() : [];
+          external.openalex = Array.isArray(openalexGlobalPack?.result) ? openalexGlobalPack.result.slice() : [];
+        }
+        if (__gdeltSingle) {
+          external.gdelt = Array.isArray(gdeltGlobalPack?.result) ? gdeltGlobalPack.result.slice() : [];
+        }
+
+        external.naver = dedupeByLink(external.naver).slice(0, NAVER_MULTI_MAX_ITEMS);
+
+        // ✅ finalize request-level budget log
+        try {
+          if (partial_scores && typeof partial_scores === "object") {
+            const b = partial_scores.__naver_call_budget;
+            if (b && typeof b === "object") {
+              b.used_final = Number(b.used || 0);
+              b.left_final = Number(b.left || 0);
+              b.applied = true;
+            }
+          }
+        } catch { }
+
+        qvfvBlocksForVerifyFull = blocksForVerify;
+
+        // ✅ 엔진별 쿼리를 partial_scores.engine_queries에 “전부” 저장
+        partial_scores.engine_queries = {
+          crossref: uniqStrings(engineQueriesUsed.crossref, 12),
+          openalex: uniqStrings(engineQueriesUsed.openalex, 12),
+          wikidata: uniqStrings(engineQueriesUsed.wikidata, 12),
+          gdelt: uniqStrings(engineQueriesUsed.gdelt, 12),
+          naver: uniqStrings(engineQueriesUsed.naver, 12),
+          // ✅ klaw는 “추가 엔진”이므로 query 1개만 넣어 엔진_used 산정/표시에 힌트 제공
+          klaw: uniqStrings(
+            (engineQueriesUsed && Array.isArray(engineQueriesUsed.klaw) && engineQueriesUsed.klaw.length > 0)
+              ? engineQueriesUsed.klaw
+              : [String(query || "").trim()].filter(Boolean),
+            12
+          ),
+        };
+
+        // ✅ (이 위치로 이동!) 엔진별 "결과 개수" 기록 + engines_used/excluded 계산
+        partial_scores.engine_results = {
+          crossref: Array.isArray(external.crossref) ? external.crossref.length : 0,
+          openalex: Array.isArray(external.openalex) ? external.openalex.length : 0,
+          wikidata: Array.isArray(external.wikidata) ? external.wikidata.length : 0,
+          gdelt: Array.isArray(external.gdelt) ? external.gdelt.length : 0,
+          naver: Array.isArray(external.naver) ? external.naver.length : 0,
+          // ✅ klaw는 배열이 아닐 수 있으니 “존재 여부” 기반
+          klaw: external.klaw ? 1 : 0,
+        };
+
+        // ✅ 메트릭/타임 누적도 여기서 확정 저장(호출 끝난 뒤 값이 들어있음)
+        partial_scores.engine_times = engineTimes;
+        partial_scores.engine_metrics = engineMetrics;
+
+        // ✅ evidence digest (UI/log-friendly, small)
+        try {
+          const _trim = (s, n) => {
+            s = String(s ?? "").trim();
+            if (!s) return "";
+            return s.length > n ? (s.slice(0, n - 1) + "…") : s;
+          };
+
+          const _pickTitle = (it) =>
+            _trim(
+              it?.title ??
+              it?.name ??
+              it?.headline ??
+              it?.paper_title ??
+              it?.display_name ??
+              it?.label ??
+              "",
+              160
+            );
+
+          const _pickLink = (it) =>
+            _trim(
+              it?.url ??
+              it?.link ??
+              it?.doi_url ??
+              it?.doiUrl ??
+              it?.doi ??
+              it?.id ??
+              "",
+              260
+            );
+
+          const _pickDate = (it) =>
+            _trim(
+              it?.published ??
+              it?.publishedAt ??
+              it?.publication_date ??
+              it?.date ??
+              it?.datetime ??
+              it?.created_at ??
+              it?.year ??
+              "",
+              40
+            );
+
+          const _topK = (arr, k) => {
+            const a = Array.isArray(arr) ? arr : [];
+            return a.slice(0, Math.max(0, k | 0));
+          };
+
+          const _digestItems = (arr, k) =>
+            _topK(arr, k).map((it) => ({
+              title: _pickTitle(it),
+              link: _pickLink(it),
+              date: _pickDate(it),
+              whitelisted: (it?.whitelisted === true) ? true : undefined,
+              tier: (typeof it?.tier === "number" && Number.isFinite(it.tier)) ? it.tier : undefined,
+            })).filter((x) => x.title || x.link);
+
+          const _safeCount = (x) => Array.isArray(x) ? x.length : 0;
+
+          const blockCounts = (() => {
+            const b = (Array.isArray(blocksForVerify) ? blocksForVerify : []);
+            // 너무 커지면 UI/DB 부담 → id + counts만
+            return b.slice(0, 24).map((bb) => ({
+              id: String(bb?.id ?? ""),
+              counts: {
+                crossref: _safeCount(bb?.evidence?.crossref),
+                openalex: _safeCount(bb?.evidence?.openalex),
+                wikidata: _safeCount(bb?.evidence?.wikidata),
+                gdelt: _safeCount(bb?.evidence?.gdelt),
+                naver: _safeCount(bb?.evidence?.naver),
+              },
+            })).filter((x) => x.id);
+          })();
+
+          try {
+            // ✅ evidence_digest: 엔진별 결과를 UI-friendly하게 요약(링크/호스트/날짜/네이버 메타 포함)
+            const __pickTitleAny = (x) => {
+              try {
+                if (typeof _pickTitle === "function") return _pickTitle(x);
+              } catch { }
+              if (x == null) return null;
+              if (typeof x === "string") return x;
+              if (typeof x !== "object") return null;
+              return x.title || x.name || x.headline || x.display_name || x.label || null;
+            };
+
+            const __pickLinkAny = (x) => {
+              // 1) 기존 _pickLink가 있으면 쓰되, "문자열 URL"만 허용
+              try {
+                if (typeof _pickLink === "function") {
+                  const v = _pickLink(x);
+                  if (typeof v === "string" && v.trim()) return v.trim();
+                }
+              } catch { }
+
+              if (x == null) return null;
+
+              // string이면 링크로 취급하지 않음(대부분 title/doi/키워드일 가능성)
+              if (typeof x === "string") return null;
+
+              // 함수/기타 타입 방어
+              if (typeof x !== "object") return null;
+
+              // 2) 흔한 후보들 (문자열만)
+              const cand =
+                x.link ||
+                x.url ||
+                x.URL ||          // ✅ crossref
+                x.html_url ||
+                x.source_url ||
+                x.originallink ||
+                x.doi_url ||
+                x.doi ||
+                x.id ||
+                null;
+
+              if (typeof cand === "string" && cand.trim()) return cand.trim();
+
+              // 3) 배열 형태 방어 (예: link: [{URL:...}] 같은 케이스)
+              if (Array.isArray(cand) && cand.length > 0) {
+                const first = cand[0];
+                if (typeof first === "string" && first.trim()) return first.trim();
+                if (first && typeof first === "object") {
+                  const u = first.URL || first.url || first.link || first.href || null;
+                  if (typeof u === "string" && u.trim()) return u.trim();
+                }
+              }
+
+              // 4) link 자체가 함수/객체일 때(지금 네 로그 케이스) → null 처리
+              return null;
+            };
+
+            const __pickDateAny = (x) => {
+              try {
+                if (typeof _pickDate === "function") return _pickDate(x);
+              } catch { }
+              if (!x || typeof x !== "object") return null;
+              return (
+                x.date ||
+                x.published ||
+                x.pubDate ||
+                x.published_at ||
+                x.updated ||
+                x.updated_at ||
+                x.year ||
+                null
+              );
+            };
+
+            const __hostFrom = (u) => {
+              try {
+                if (typeof hostFromUrl === "function") return hostFromUrl(u);
+              } catch { }
+              try {
+                if (!u) return null;
+                return new URL(String(u)).hostname || null;
+              } catch {
+                return null;
+              }
+            };
+
+            const __digestTop = (arr, K, engine) => {
+              if (!Array.isArray(arr) || !arr.length) return [];
+
+              const __sanitizeUrl = (v) => {
+                if (typeof v !== "string") return null;
+                let s = v.trim();
+                if (!s) return null;
+
+                // ✅ String.prototype.link 누수(= native code 함수 문자열) 방지
+                if (/^\s*function\s+link\s*\(/i.test(s) || /\[native code\]/i.test(s)) return null;
+
+                // ✅ 따옴표/뒤쪽 구두점 약간 정리
+                s = s.replace(/^["'`]+|["'`]+$/g, "").trim();
+                s = s.replace(/[)\].,;]+$/g, "").trim();
+                if (!s) return null;
+
+                // ✅ URL만 허용(doi는 url로 변환)
+                if (/^https?:\/\//i.test(s)) return s;
+                if (/^doi:\s*/i.test(s)) {
+                  const doi = s.replace(/^doi:\s*/i, "").trim();
+                  return doi ? `https://doi.org/${doi}` : null;
+                }
+                if (/^10\.\d{4,9}\/\S+/i.test(s)) return `https://doi.org/${s}`;
+
+                return null;
+              };
+
+              const out = [];
+              for (const it of arr) {
+                // ✅ string 아이템은 object처럼 다루지 않는다 (여기서 .link 접근 방지)
+                if (typeof it === "string") {
+                  const u = __sanitizeUrl(it);
+                  const host0 = __hostFrom(u);
+                  const row = {};
+                  if (u) row.link = u;
+                  else row.title = it.length > 180 ? it.slice(0, 180) : it;
+                  if (host0) row.host = host0;
+                  if (row.title || row.link) out.push(row);
+                  if (out.length >= K) break;
+                  continue;
+                }
+
+                const title0 = __pickTitleAny(it);
+
+                const link0raw = __pickLinkAny(it);
+                const link0 = __sanitizeUrl(link0raw);
+
+                // url은 최대한 pickUrl까지 동원해서 채움 (단, object에만)
+                let url0 = link0 || null;
+                try {
+                  if (!url0 && it && typeof it === "object" && typeof pickUrl === "function") {
+                    url0 = __sanitizeUrl(pickUrl(it) || null);
+                  }
+                } catch { }
+
+                const host0 =
+                  (it && typeof it === "object" && (it.host || it.hostname)) ||
+                  __hostFrom(url0);
+
+                const date0 = __pickDateAny(it);
+
+                const row = {
+                  title: title0 || null,
+                  // ✅ UI 호환: link 우선(없으면 url)
+                  link: link0 || url0 || null,
+                  date: date0 || null,
+                };
+
+                // ✅ 추가 호환/정보: url/host
+                if (url0 && row.link !== url0) row.url = url0;
+                if (host0) row.host = host0;
+
+                // ✅ naver 메타(있으면 포함)
+                if (engine === "naver" && it && typeof it === "object") {
+                  if (it.tier != null) row.tier = it.tier;
+                  if (it.naver_type) row.naver_type = it.naver_type;
+                }
+
+                // null/빈값 제거
+                for (const k of Object.keys(row)) {
+                  if (row[k] == null || row[k] === "") delete row[k];
+                }
+
+                if (row.title || row.link || row.url) out.push(row);
+                if (out.length >= K) break;
+              }
+
+              return out;
+            };
+
+            partial_scores.evidence_digest = {
+              totals: {
+                crossref: _safeCount(external?.crossref),
+                openalex: _safeCount(external?.openalex),
+                wikidata: _safeCount(external?.wikidata),
+                gdelt: _safeCount(external?.gdelt),
+                naver: _safeCount(external?.naver),
+                klaw: external?.klaw ? 1 : 0,
+              },
+              top: {
+                crossref: __digestTop(external?.crossref, __TOPK, "crossref"),
+                openalex: __digestTop(external?.openalex, __TOPK, "openalex"),
+                wikidata: __digestTop(external?.wikidata, __TOPK, "wikidata"),
+                gdelt: __digestTop(external?.gdelt, __TOPK, "gdelt"),
+                naver: __digestTop(external?.naver, __NAVER_TOPK, "naver"),
+              },
+              blocks: blockCounts,
+              early_stop: partial_scores?.call_caps?.early_stop ? true : false,
+              early_stop_reason: partial_scores?.call_caps?.early_stop_reason ?? null,
+            };
+          } catch { }
+
+          // ✅ “쿼리 없으면 제외” + “calls 없으면 제외” + “results 0이면 제외”
+          // ✅ 요청 body.engines(또는 engines_requested/enginesRequested)가 있으면 그걸 우선 반영
+          const enginesRequested = __resolveEnginesRequestedFromReq({ req, partial_scores, engines, safeMode });
+
+          // ✅ PRE-FINALIZE(호출단계) used/excluded 계산: 쿼리/calls/results 기준
+          const { used: enginesUsedPre, excluded: enginesExcludedPre } = computeEnginesUsed({
+            enginesRequested,
+            partial_scores,
+            engineMetrics,
+          });
+
+          partial_scores.engines_requested = enginesRequested;
+
+          // ⚠️ engines_used / engines_excluded 는 FINALIZE(프루닝 이후)에서만 확정한다.
+          // 여기서는 디버그용 pre 정보를 별도 필드로만 저장.
+          partial_scores.engines_used_pre = enginesUsedPre;
+          partial_scores.engines_excluded_pre = enginesExcludedPre;
+          partial_scores.engine_exclusion_reasons_pre = Object.fromEntries(
+            Object.entries(enginesExcludedPre || {}).map(([k, v]) => [k, v?.reason || "excluded"])
+          );
+
+          try {
+            const __bfv =
+              (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
+                ? blocksForVerify
+                : [];
+
+            const __max = Math.max(
+              0,
+              Math.floor(Number(process.env.BLOCKS_FOR_VERIFY_MAX || 12))
+            );
+
+            const __use = (__max > 0) ? __bfv.slice(0, __max) : __bfv;
+
+            partial_scores.blocks_for_verify = __use.map((x) => ({
+              id: x.id,
+              text: String(x.text || "").slice(0, 400),
+              queries: x.queries,
+              evidence_counts: {
+                crossref: Array.isArray(x?.evidence?.crossref) ? x.evidence.crossref.length : 0,
+                openalex: Array.isArray(x?.evidence?.openalex) ? x.evidence.openalex.length : 0,
+                wikidata: Array.isArray(x?.evidence?.wikidata) ? x.evidence.wikidata.length : 0,
+                gdelt: Array.isArray(x?.evidence?.gdelt) ? x.evidence.gdelt.length : 0,
+                naver: Array.isArray(x?.evidence?.naver) ? x.evidence.naver.length : 0,
+              },
+            }));
+
+            partial_scores.blocks_for_verify_meta = {
+              original: __bfv.length,
+              used: __use.length,
+              truncated: (__max > 0) ? (__bfv.length > __use.length) : false,
+              cap: __max,
+            };
+          } catch (_) { }
+
+          const rec = calcCompositeRecency({
+            mode: safeMode,
+            gdelt: external.gdelt,
+            naver: external.naver,
+            crossref: external.crossref,
+            openalex: external.openalex,
+            github: external.github,
+          });
+          partial_scores.recency = rec.overall;
+          partial_scores.recency_detail = rec.detail;
+
+          // naver tier × type factor (✅ 실제 blocks evidence에 붙은 naver 우선)
+          // blocksForVerify가 스코프에 없을 수도 있으니 안전하게 처리
+          const naverUsed = (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
+            ? blocksForVerify.flatMap((b) => (Array.isArray(b?.evidence?.naver) ? b.evidence.naver : []))
+            : [];
+
+          const naverPool = (naverUsed.length > 0)
+            ? naverUsed
+            : (Array.isArray(external.naver) ? external.naver : []);
+
+          if (naverPool.length > 0) {
+            const weights = naverPool
+              .map((item) => {
+                const tw =
+                  (typeof item?.tier_weight === "number" && Number.isFinite(item.tier_weight))
+                    ? item.tier_weight
+                    : (item?.whitelisted === true ? 1 : NAVER_NON_WHITELIST_FACTOR);
+
+                const vw =
+                  (typeof item?.type_weight === "number" && Number.isFinite(item.type_weight))
+                    ? item.type_weight
+                    : 1;
+
+                return tw * vw;
+              })
+              .filter((w) => Number.isFinite(w) && w > 0);
+
+            partial_scores.naver_used_count = naverUsed.length;
+            partial_scores.naver_pool_count = naverPool.length;
+
+            if (weights.length > 0) {
+              const avg = weights.reduce((s, v) => s + v, 0) / weights.length;
+              partial_scores.naver_tier_factor = Math.max(0.9, Math.min(1.05, avg));
+            }
+          }
+          break;
+        } catch (_) { }
       }
-    } catch {}
 
-    // ✅ 여기서도 비면 그냥 빈 배열 유지
-    naverItemsForVerify = topArr(__poolPrefer, BLOCK_NAVER_EVIDENCE_TOPK);
-  }
-
-    // ----- gdelt / external / blocksForVerify -----
-  const gdeltForVerify = topArr(gdPack.result, BLOCK_EVIDENCE_TOPK);
-
-  // ✅ external 누적(early-stop/recency 계산용)
-  // - __academicSingle / __gdeltSingle 은 globalPack 재사용이므로 "한 번만" 주입해서 중복을 막는다.
-  if (__academicSingle) {
-    if (
-      Array.isArray(external.crossref) && external.crossref.length === 0 &&
-      Array.isArray(crPack?.result) && crPack.result.length
-    ) {
-      external.crossref.push(...crPack.result);
-    }
-    if (
-      Array.isArray(external.openalex) && external.openalex.length === 0 &&
-      Array.isArray(oaPack?.result) && oaPack.result.length
-    ) {
-      external.openalex.push(...oaPack.result);
-    }
-  } else {
-    external.crossref.push(...(crPack.result || []));
-    external.openalex.push(...(oaPack.result || []));
-  }
-
-  external.wikidata.push(...(wdPack.result || []));
-
-  if (__gdeltSingle) {
-    if (
-      Array.isArray(external.gdelt) && external.gdelt.length === 0 &&
-      Array.isArray(gdPack?.result) && gdPack.result.length
-    ) {
-      external.gdelt.push(...gdPack.result);
-    }
-  } else {
-    external.gdelt.push(...(gdPack.result || []));
-  }
-
-  external.naver.push(...(naverItemsAll || []));
-
-  blocksForVerify.push({
-    id: b.id,
-    text: b.text,
-    queries: {
-      crossref: qCrossref,
-      openalex: qOpenalex,
-      wikidata: qWikidata,
-      gdelt: qGdelt,
-      naver: naverQueriesExpanded,
-    },
-    evidence: {
-      crossref: topArr(crPack.result, BLOCK_EVIDENCE_TOPK),
-      openalex: topArr(oaPack.result, BLOCK_EVIDENCE_TOPK),
-      wikidata: topArr(wdPack.result, 5),
-      gdelt: gdeltForVerify,
-      naver: topArr(naverItemsForVerify, BLOCK_NAVER_EVIDENCE_TOPK),
-    },
-  });
-
-  // ✅ 블록 1개 끝난 시점에서도 early-stop 판단 (다음 블록 스킵용)
-  try {
-    const chk2 = __shouldEarlyStopApprox({
-      cr: (external && Array.isArray(external.crossref)) ? external.crossref : [],
-      oa: (external && Array.isArray(external.openalex)) ? external.openalex : [],
-      wd: (external && Array.isArray(external.wikidata)) ? external.wikidata : [],
-      gd: (external && Array.isArray(external.gdelt)) ? external.gdelt : [],
-      nv: (external && Array.isArray(external.naver)) ? external.naver : [],
-    });
-
-    if (chk2 && chk2.ok) {
-      __capState.early_stop = true;
-      __capState.early_stop_reason = { where: "after_block", ...chk2 };
-      break;
-    }
-  } catch {}
-}
-
-// ✅ cap/early-stop 로그
-try {
-  partial_scores.call_caps = {
-    limits: __caps,
-    used: {
-      total: __capState.calls_total,
-      academic: __capState.calls_academic,
-      gdelt: __capState.calls_gdelt,
-      naver: __capState.calls_naver,
-    },
-    early_stop: __capState.early_stop,
-    early_stop_reason: __capState.early_stop_reason,
-  };
-} catch {}
-
-if (__academicSingle) {
-  external.crossref = Array.isArray(crossrefGlobalPack?.result) ? crossrefGlobalPack.result.slice() : [];
-  external.openalex = Array.isArray(openalexGlobalPack?.result) ? openalexGlobalPack.result.slice() : [];
-}
-if (__gdeltSingle) {
-  external.gdelt = Array.isArray(gdeltGlobalPack?.result) ? gdeltGlobalPack.result.slice() : [];
-}
-
-external.naver = dedupeByLink(external.naver).slice(0, NAVER_MULTI_MAX_ITEMS);
-
-// ✅ finalize request-level budget log
-try {
-  if (partial_scores && typeof partial_scores === "object") {
-    const b = partial_scores.__naver_call_budget;
-    if (b && typeof b === "object") {
-      b.used_final = Number(b.used || 0);
-      b.left_final = Number(b.left || 0);
-      b.applied = true;
-    }
-  }
-} catch {}
-
-qvfvBlocksForVerifyFull = blocksForVerify;
-
-// ✅ 엔진별 쿼리를 partial_scores.engine_queries에 “전부” 저장
-partial_scores.engine_queries = {
-  crossref: uniqStrings(engineQueriesUsed.crossref, 12),
-  openalex: uniqStrings(engineQueriesUsed.openalex, 12),
-  wikidata: uniqStrings(engineQueriesUsed.wikidata, 12),
-  gdelt: uniqStrings(engineQueriesUsed.gdelt, 12),
-  naver: uniqStrings(engineQueriesUsed.naver, 12),
-  // ✅ klaw는 “추가 엔진”이므로 query 1개만 넣어 엔진_used 산정/표시에 힌트 제공
-  klaw: uniqStrings(
-    (engineQueriesUsed && Array.isArray(engineQueriesUsed.klaw) && engineQueriesUsed.klaw.length > 0)
-      ? engineQueriesUsed.klaw
-      : [String(query || "").trim()].filter(Boolean),
-    12
-  ),
-};
-
-// ✅ (이 위치로 이동!) 엔진별 "결과 개수" 기록 + engines_used/excluded 계산
-partial_scores.engine_results = {
-  crossref: Array.isArray(external.crossref) ? external.crossref.length : 0,
-  openalex: Array.isArray(external.openalex) ? external.openalex.length : 0,
-  wikidata: Array.isArray(external.wikidata) ? external.wikidata.length : 0,
-  gdelt: Array.isArray(external.gdelt) ? external.gdelt.length : 0,
-  naver: Array.isArray(external.naver) ? external.naver.length : 0,
-  // ✅ klaw는 배열이 아닐 수 있으니 “존재 여부” 기반
-  klaw: external.klaw ? 1 : 0,
-};
-
-// ✅ 메트릭/타임 누적도 여기서 확정 저장(호출 끝난 뒤 값이 들어있음)
-partial_scores.engine_times = engineTimes;
-partial_scores.engine_metrics = engineMetrics;
-
-// ✅ evidence digest (UI/log-friendly, small)
-try {
-  const _trim = (s, n) => {
-    s = String(s ?? "").trim();
-    if (!s) return "";
-    return s.length > n ? (s.slice(0, n - 1) + "…") : s;
-  };
-
-  const _pickTitle = (it) =>
-    _trim(
-      it?.title ??
-      it?.name ??
-      it?.headline ??
-      it?.paper_title ??
-      it?.display_name ??
-      it?.label ??
-      "",
-      160
-    );
-
-  const _pickLink = (it) =>
-    _trim(
-      it?.url ??
-      it?.link ??
-      it?.doi_url ??
-      it?.doiUrl ??
-      it?.doi ??
-      it?.id ??
-      "",
-      260
-    );
-
-  const _pickDate = (it) =>
-    _trim(
-      it?.published ??
-      it?.publishedAt ??
-      it?.publication_date ??
-      it?.date ??
-      it?.datetime ??
-      it?.created_at ??
-      it?.year ??
-      "",
-      40
-    );
-
-  const _topK = (arr, k) => {
-    const a = Array.isArray(arr) ? arr : [];
-    return a.slice(0, Math.max(0, k | 0));
-  };
-
-  const _digestItems = (arr, k) =>
-    _topK(arr, k).map((it) => ({
-      title: _pickTitle(it),
-      link: _pickLink(it),
-      date: _pickDate(it),
-      whitelisted: (it?.whitelisted === true) ? true : undefined,
-      tier: (typeof it?.tier === "number" && Number.isFinite(it.tier)) ? it.tier : undefined,
-    })).filter((x) => x.title || x.link);
-
-  const _safeCount = (x) => Array.isArray(x) ? x.length : 0;
-
-  const blockCounts = (() => {
-    const b = (Array.isArray(blocksForVerify) ? blocksForVerify : []);
-    // 너무 커지면 UI/DB 부담 → id + counts만
-    return b.slice(0, 24).map((bb) => ({
-      id: String(bb?.id ?? ""),
-      counts: {
-        crossref: _safeCount(bb?.evidence?.crossref),
-        openalex: _safeCount(bb?.evidence?.openalex),
-        wikidata: _safeCount(bb?.evidence?.wikidata),
-        gdelt: _safeCount(bb?.evidence?.gdelt),
-        naver: _safeCount(bb?.evidence?.naver),
-      },
-    })).filter((x) => x.id);
-  })();
-
-  try {
-  // ✅ evidence_digest: 엔진별 결과를 UI-friendly하게 요약(링크/호스트/날짜/네이버 메타 포함)
-  const __pickTitleAny = (x) => {
-    try {
-      if (typeof _pickTitle === "function") return _pickTitle(x);
-    } catch {}
-    if (x == null) return null;
-    if (typeof x === "string") return x;
-    if (typeof x !== "object") return null;
-    return x.title || x.name || x.headline || x.display_name || x.label || null;
-  };
-
-  const __pickLinkAny = (x) => {
-  // 1) 기존 _pickLink가 있으면 쓰되, "문자열 URL"만 허용
-  try {
-    if (typeof _pickLink === "function") {
-      const v = _pickLink(x);
-      if (typeof v === "string" && v.trim()) return v.trim();
-    }
-  } catch {}
-
-  if (x == null) return null;
-
-  // string이면 링크로 취급하지 않음(대부분 title/doi/키워드일 가능성)
-  if (typeof x === "string") return null;
-
-  // 함수/기타 타입 방어
-  if (typeof x !== "object") return null;
-
-  // 2) 흔한 후보들 (문자열만)
-  const cand =
-    x.link ||
-    x.url ||
-    x.URL ||          // ✅ crossref
-    x.html_url ||
-    x.source_url ||
-    x.originallink ||
-    x.doi_url ||
-    x.doi ||
-    x.id ||
-    null;
-
-  if (typeof cand === "string" && cand.trim()) return cand.trim();
-
-  // 3) 배열 형태 방어 (예: link: [{URL:...}] 같은 케이스)
-  if (Array.isArray(cand) && cand.length > 0) {
-    const first = cand[0];
-    if (typeof first === "string" && first.trim()) return first.trim();
-    if (first && typeof first === "object") {
-      const u = first.URL || first.url || first.link || first.href || null;
-      if (typeof u === "string" && u.trim()) return u.trim();
-    }
-  }
-
-  // 4) link 자체가 함수/객체일 때(지금 네 로그 케이스) → null 처리
-  return null;
-};
-
-  const __pickDateAny = (x) => {
-    try {
-      if (typeof _pickDate === "function") return _pickDate(x);
-    } catch {}
-    if (!x || typeof x !== "object") return null;
-    return (
-      x.date ||
-      x.published ||
-      x.pubDate ||
-      x.published_at ||
-      x.updated ||
-      x.updated_at ||
-      x.year ||
-      null
-    );
-  };
-
-  const __hostFrom = (u) => {
-    try {
-      if (typeof hostFromUrl === "function") return hostFromUrl(u);
-    } catch {}
-    try {
-      if (!u) return null;
-      return new URL(String(u)).hostname || null;
-    } catch {
-      return null;
-    }
-  };
-
-  const __digestTop = (arr, K, engine) => {
-  if (!Array.isArray(arr) || !arr.length) return [];
-
-  const __sanitizeUrl = (v) => {
-    if (typeof v !== "string") return null;
-    let s = v.trim();
-    if (!s) return null;
-
-    // ✅ String.prototype.link 누수(= native code 함수 문자열) 방지
-    if (/^\s*function\s+link\s*\(/i.test(s) || /\[native code\]/i.test(s)) return null;
-
-    // ✅ 따옴표/뒤쪽 구두점 약간 정리
-    s = s.replace(/^["'`]+|["'`]+$/g, "").trim();
-    s = s.replace(/[)\].,;]+$/g, "").trim();
-    if (!s) return null;
-
-    // ✅ URL만 허용(doi는 url로 변환)
-    if (/^https?:\/\//i.test(s)) return s;
-    if (/^doi:\s*/i.test(s)) {
-      const doi = s.replace(/^doi:\s*/i, "").trim();
-      return doi ? `https://doi.org/${doi}` : null;
-    }
-    if (/^10\.\d{4,9}\/\S+/i.test(s)) return `https://doi.org/${s}`;
-
-    return null;
-  };
-
-  const out = [];
-  for (const it of arr) {
-    // ✅ string 아이템은 object처럼 다루지 않는다 (여기서 .link 접근 방지)
-    if (typeof it === "string") {
-      const u = __sanitizeUrl(it);
-      const host0 = __hostFrom(u);
-      const row = {};
-      if (u) row.link = u;
-      else row.title = it.length > 180 ? it.slice(0, 180) : it;
-      if (host0) row.host = host0;
-      if (row.title || row.link) out.push(row);
-      if (out.length >= K) break;
-      continue;
-    }
-
-    const title0 = __pickTitleAny(it);
-
-    const link0raw = __pickLinkAny(it);
-    const link0 = __sanitizeUrl(link0raw);
-
-    // url은 최대한 pickUrl까지 동원해서 채움 (단, object에만)
-    let url0 = link0 || null;
-    try {
-      if (!url0 && it && typeof it === "object" && typeof pickUrl === "function") {
-        url0 = __sanitizeUrl(pickUrl(it) || null);
-      }
-    } catch {}
-
-    const host0 =
-      (it && typeof it === "object" && (it.host || it.hostname)) ||
-      __hostFrom(url0);
-
-    const date0 = __pickDateAny(it);
-
-    const row = {
-      title: title0 || null,
-      // ✅ UI 호환: link 우선(없으면 url)
-      link: link0 || url0 || null,
-      date: date0 || null,
-    };
-
-    // ✅ 추가 호환/정보: url/host
-    if (url0 && row.link !== url0) row.url = url0;
-    if (host0) row.host = host0;
-
-    // ✅ naver 메타(있으면 포함)
-    if (engine === "naver" && it && typeof it === "object") {
-      if (it.tier != null) row.tier = it.tier;
-      if (it.naver_type) row.naver_type = it.naver_type;
-    }
-
-    // null/빈값 제거
-    for (const k of Object.keys(row)) {
-      if (row[k] == null || row[k] === "") delete row[k];
-    }
-
-    if (row.title || row.link || row.url) out.push(row);
-    if (out.length >= K) break;
-  }
-
-  return out;
-};
-
-  partial_scores.evidence_digest = {
-    totals: {
-      crossref: _safeCount(external?.crossref),
-      openalex: _safeCount(external?.openalex),
-      wikidata: _safeCount(external?.wikidata),
-      gdelt: _safeCount(external?.gdelt),
-      naver: _safeCount(external?.naver),
-      klaw: external?.klaw ? 1 : 0,
-    },
-    top: {
-      crossref: __digestTop(external?.crossref, __TOPK, "crossref"),
-      openalex: __digestTop(external?.openalex, __TOPK, "openalex"),
-      wikidata: __digestTop(external?.wikidata, __TOPK, "wikidata"),
-      gdelt: __digestTop(external?.gdelt, __TOPK, "gdelt"),
-      naver: __digestTop(external?.naver, __NAVER_TOPK, "naver"),
-    },
-    blocks: blockCounts,
-    early_stop: partial_scores?.call_caps?.early_stop ? true : false,
-    early_stop_reason: partial_scores?.call_caps?.early_stop_reason ?? null,
-  };
-} catch {}
-
-// ✅ “쿼리 없으면 제외” + “calls 없으면 제외” + “results 0이면 제외”
-// ✅ 요청 body.engines(또는 engines_requested/enginesRequested)가 있으면 그걸 우선 반영
-const enginesRequested = __resolveEnginesRequestedFromReq({ req, partial_scores, engines, safeMode });
-
-// ✅ PRE-FINALIZE(호출단계) used/excluded 계산: 쿼리/calls/results 기준
-const { used: enginesUsedPre, excluded: enginesExcludedPre } = computeEnginesUsed({
-  enginesRequested,
-  partial_scores,
-  engineMetrics,
-});
-
-partial_scores.engines_requested = enginesRequested;
-
-// ⚠️ engines_used / engines_excluded 는 FINALIZE(프루닝 이후)에서만 확정한다.
-// 여기서는 디버그용 pre 정보를 별도 필드로만 저장.
-partial_scores.engines_used_pre = enginesUsedPre;
-partial_scores.engines_excluded_pre = enginesExcludedPre;
-partial_scores.engine_exclusion_reasons_pre = Object.fromEntries(
-  Object.entries(enginesExcludedPre || {}).map(([k, v]) => [k, v?.reason || "excluded"])
-);
-
-    try {
-  const __bfv =
-    (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
-      ? blocksForVerify
-      : [];
-
-  const __max = Math.max(
-    0,
-    Math.floor(Number(process.env.BLOCKS_FOR_VERIFY_MAX || 12))
-  );
-
-  const __use = (__max > 0) ? __bfv.slice(0, __max) : __bfv;
-
-  partial_scores.blocks_for_verify = __use.map((x) => ({
-    id: x.id,
-    text: String(x.text || "").slice(0, 400),
-    queries: x.queries,
-    evidence_counts: {
-      crossref: Array.isArray(x?.evidence?.crossref) ? x.evidence.crossref.length : 0,
-      openalex: Array.isArray(x?.evidence?.openalex) ? x.evidence.openalex.length : 0,
-      wikidata: Array.isArray(x?.evidence?.wikidata) ? x.evidence.wikidata.length : 0,
-      gdelt: Array.isArray(x?.evidence?.gdelt) ? x.evidence.gdelt.length : 0,
-      naver: Array.isArray(x?.evidence?.naver) ? x.evidence.naver.length : 0,
-    },
-  }));
-
-  partial_scores.blocks_for_verify_meta = {
-    original: __bfv.length,
-    used: __use.length,
-    truncated: (__max > 0) ? (__bfv.length > __use.length) : false,
-    cap: __max,
-  };
-} catch (_) {}
-
-    const rec = calcCompositeRecency({
-  mode: safeMode,
-  gdelt: external.gdelt,
-  naver: external.naver,
-  crossref: external.crossref,
-  openalex: external.openalex,
-  github: external.github,
-});
-partial_scores.recency = rec.overall;
-partial_scores.recency_detail = rec.detail;
-
-    // naver tier × type factor (✅ 실제 blocks evidence에 붙은 naver 우선)
-// blocksForVerify가 스코프에 없을 수도 있으니 안전하게 처리
-const naverUsed = (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
-  ? blocksForVerify.flatMap((b) => (Array.isArray(b?.evidence?.naver) ? b.evidence.naver : []))
-  : [];
-
-const naverPool = (naverUsed.length > 0)
-  ? naverUsed
-  : (Array.isArray(external.naver) ? external.naver : []);
-
-if (naverPool.length > 0) {
-  const weights = naverPool
-    .map((item) => {
-      const tw =
-        (typeof item?.tier_weight === "number" && Number.isFinite(item.tier_weight))
-          ? item.tier_weight
-          : (item?.whitelisted === true ? 1 : NAVER_NON_WHITELIST_FACTOR);
-
-      const vw =
-        (typeof item?.type_weight === "number" && Number.isFinite(item.type_weight))
-          ? item.type_weight
-          : 1;
-
-      return tw * vw;
-    })
-    .filter((w) => Number.isFinite(w) && w > 0);
-
-  partial_scores.naver_used_count = naverUsed.length;
-  partial_scores.naver_pool_count = naverPool.length;
-
-  if (weights.length > 0) {
-    const avg = weights.reduce((s, v) => s + v, 0) / weights.length;
-    partial_scores.naver_tier_factor = Math.max(0.9, Math.min(1.05, avg));
-  }
-}
-        break;
-  } catch (_) {}
-  }
-
-    case "dv": {
-    engines.push("github");
-    external.github = [];
-
-    // ✅ GitHub 결과 누적: 중복 방지 + 상한(cap)
-    const GH_CAP = Math.max(1, Number(process.env.GITHUB_MAX_REPOS || 30));
-    const ghSeen = new Set(
-      (Array.isArray(external.github) ? external.github : [])
-        .map(r => String(r?.full_name || r?.html_url || r?.url || r?.name || "").toLowerCase().trim())
-        .filter(Boolean)
-    );
-
-    function pushGithubRepos(repos) {
-      if (!Array.isArray(repos) || repos.length === 0) return;
-      if (!Array.isArray(external.github)) external.github = [];
-
-      for (const r of repos) {
-        if (!r) continue;
-        if (external.github.length >= GH_CAP) break;
-
-        const k = String(r?.full_name || r?.html_url || r?.url || r?.name || "").toLowerCase().trim();
-        if (!k) continue;
-        if (ghSeen.has(k)) continue;
-
-        ghSeen.add(k);
-        external.github.push(r);
-      }
-    }
+      case "dv": {
+        engines.push("github");
+        external.github = [];
+
+        // ✅ GitHub 결과 누적: 중복 방지 + 상한(cap)
+        const GH_CAP = Math.max(1, Number(process.env.GITHUB_MAX_REPOS || 30));
+        const ghSeen = new Set(
+          (Array.isArray(external.github) ? external.github : [])
+            .map(r => String(r?.full_name || r?.html_url || r?.url || r?.name || "").toLowerCase().trim())
+            .filter(Boolean)
+        );
+
+        function pushGithubRepos(repos) {
+          if (!Array.isArray(repos) || repos.length === 0) return;
+          if (!Array.isArray(external.github)) external.github = [];
+
+          for (const r of repos) {
+            if (!r) continue;
+            if (external.github.length >= GH_CAP) break;
+
+            const k = String(r?.full_name || r?.html_url || r?.url || r?.name || "").toLowerCase().trim();
+            if (!k) continue;
+            if (ghSeen.has(k)) continue;
+
+            ghSeen.add(k);
+            external.github.push(r);
+          }
+        }
 
         const answerText = query;
 
-    // ✅ GitHub 관련 로직에서 항상 쓰는 텍스트(= TDZ/스코프 방지)
-    let ghUserText = String(query || "").trim();
-
-// ✅ S-17 cache key (only QV/FV) — must be defined before cache get/set
-// - __cacheKey is declared once near rawMode (var). Here we only assign.
-__cacheKey = null;
-
-if (safeMode === "qv" || safeMode === "fv") {
-  __cacheKey =
-    `v1|${safeMode}` +
-    `|u:${hash16(String(authUser?.id || logUserId || ""))}` +
-    `|q:${hash16(String(query || ""))}` +
-    `|core:${hash16(String(userCoreText || core_text || req.body?.snippet_meta?.snippet_core || ""))}` +
-    `|ua:${hash16(String(user_answer || ""))}`;
-}
-
-const __cachedPayload = __cacheKey ? verifyCacheGet(__cacheKey) : null;
-if (__cachedPayload) {
-  const elapsedMs = Date.now() - start;
-
-  const out = {
-    ...__cachedPayload,
-    elapsed: elapsedMs,
-    cached: true,
-  };
-
-  if (out.partial_scores && typeof out.partial_scores === "object") {
-    out.partial_scores = { ...out.partial_scores, cache_hit: true };
-  } else {
-    out.partial_scores = { cache_hit: true };
-  }
-// ✅ S-17b: 응답 직전 router_plan 재부착 (cache-hit path)
-// - 최종 safeMode 반영 (stale 방지)
-try {
-  const __rp = __buildRouterPlanPublicFinal({
-    safeMode,
-    rawMode,
-    routerPlan: __routerPlan,
-    runLvExtra: __runLvExtra,
-  });
-
-  if (out.partial_scores && typeof out.partial_scores === "object") {
-    out.partial_scores.router_plan = __rp;
-  } else {
-    out.partial_scores = { cache_hit: true, router_plan: __rp };
-  }
-} catch (_) {}
-  return res.json(buildSuccess(out));
-}
-
-// ✅ (B안 보강) Gemini가 sentinel을 놓쳐도, "명백한 비코드"는 DV/CV를 강제 종료
-// DV/CV: obvious non-code fast-exit (GitHub 전용 모드 오용 방지)
-const looksObviouslyNonCode = (q) => {
-  const s0 = String(q ?? "").trim();
-  if (!s0) return true;
-
-  const low = s0.toLowerCase();
-
-  // ✅ 1) 하이픈 패키지명(예: express-rate-limit, rate-limit-redis)이면 개발 질문으로 본다
-  if (/[a-z0-9]+-[a-z0-9-]+/.test(low)) return false;
-
-  // ✅ 2) 개발/코드 힌트가 있으면 non-code로 보지 않는다
-  const codeHints = [
-    "github.com",
-    "http://",
-    "https://",
-    "`".repeat(3),
-    "stack",
-    "trace",
-    "exception",
-    "error",
-    "typeerror",
-    "referenceerror",
-    "syntaxerror",
-    "unhandled",
-
-    // package/tool/runtime
-    "npm",
-    "node",
-    "yarn",
-    "pnpm",
-    "pip",
-    "gradle",
-    "mvn",
-
-    // infra/dev keywords (중요)
-    "redis",
-    "rate-limit",
-    "ratelimit",
-    "express",
-    "middleware",
-    "store",
-
-    "docker",
-    "kubernetes",
-    "k8s",
-
-    // file ext
-    ".js",
-    ".ts",
-    ".py",
-    ".java",
-    ".go",
-    ".cs",
-    ".rb",
-    ".php",
-    ".rs",
-    ".cpp",
-    ".c",
-    ".h",
-
-    "/api/",
-    "curl ",
-
-    // SQL-ish
-    "select ",
-    "insert ",
-    "update ",
-    "delete ",
-    "from ",
-    "where ",
-
-    // code symbols
-    "{",
-    "}",
-    ";",
-    "=>",
-    "::",
-  ];
-
-  for (const h of codeHints) {
-    if (low.includes(String(h).toLowerCase())) return false;
-  }
-
-  // ✅ 심볼이 많으면 코드/로그 가능성이 높으니 non-code로 보지 않음
-  const symbolCount = (s0.match(/[{}[\]();<>:=`$\\\/]/g) || []).length;
-  if (symbolCount >= 4) return false;
-
-  // ✅ 질문형/일반질문 키워드가 “명확히” 있으면 non-code 가능성↑
-  const nlHints = [
-    "what", "why", "how", "meaning",
-    "설명", "뜻", "뭐야", "무엇", "어떻게", "왜", "정의", "비교", "차이", "요약", "알려줘",
-  ];
-  const hasNlHint = nlHints.some((k) => low.includes(k));
-
-  // 너무 길면(문서/로그/스니펫) 단정하지 않음
-  if (s0.length >= 220) return false;
-
-  // 마지막: “일반 질문 힌트가 명확히 있고” 자연어 비율이 높을 때만 true
-  const len = s0.length;
-  const space = (s0.match(/\s/g) || []).length;
-  const hangul = (s0.match(/[가-힣]/g) || []).length;
-  const alpha = (s0.match(/[A-Za-z]/g) || []).length;
-
-  const letter = hangul + alpha;
-  const letterRatio = len > 0 ? letter / len : 0;
-  const spaceRatio = len > 0 ? space / len : 0;
-
-  if (letterRatio >= 0.65 && spaceRatio >= 0.08 && hasNlHint) return true;
-
-  return false;
-};
-
-if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(query)) {
-  const elapsedMs = Date.now() - start;
-
-  const suggestedMode =
-    userCoreText && userCoreText.trim().length > 0 ? "fv" : "qv";
-
-  const classifier = {
-    type: "obvious_non_code",
-    method: "server/looksObviouslyNonCode",
-    confidence: 0.99,
-    reason: "obvious non-code stats/policy/general query",
-  };
-
-  const msg =
-    `DV/CV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
-    `현재 질의는 통계/정책/일반 사실 질문으로 보여 DV/CV를 종료합니다.\n\n` +
-    `- 권장: 동일 질의를 ${suggestedMode.toUpperCase()}로 보내 주세요.\n` +
-    `- DV/CV를 유지하려면: 코드/로그/레포 링크/에러 메시지 등 개발 근거를 포함해 주세요.\n`;
-
-  return res.status(200).json({
-    success: true,
-    data: {
-      code: "MODE_MISMATCH",
-      suggested_mode: suggestedMode,
-      classifier,
-
-      mode: safeMode,
-      truthscore: "0.00%",
-      truthscore_pct: 0,
-      truthscore_01: 0,
-      elapsed: elapsedMs,
-
-      engines: [],
-      engines_requested: ["github"],
-
-      partial_scores: {
-  ...__ghDebug,
-  mode_mismatch: true,
-  expected: "code/dev query grounded on GitHub",
-  received: "obvious non-code stats/policy/general query",
-  suggested_mode: suggestedMode,
-  classifier,
-},
-
-      flash_summary: msg,
-            verify_raw: JSON.stringify({
-        code: "MODE_MISMATCH",
-        mode_mismatch: true,
-        mode: safeMode,
-        suggested_mode: suggestedMode,
-        classifier,
-        reason: "obvious non-code query blocked before GitHub search",
-      }),
-
-      // 프론트/로그가 기대하면 유지(안 써도 되지만 안전)
-      engine_times: {},
-      engine_metrics: {},
-      gemini_times: {},
-      gemini_metrics: {},
-      github_repos: [],
-    },
-    timestamp: new Date().toISOString(),
-  });
-}
-
-    // ✅ GitHub 쿼리 생성 (Gemini) + (B안) 1-call 분류: 비코드면 sentinel로 종료
-const t_q_github = Date.now();
-
-const __ghQB = {};
-const ghQueriesRaw = await buildGithubQueriesFromGemini(
-  safeMode,
-  query,
-  answerText,
-  gemini_key,
-  logUserId,
-  __ghQB
-);
-
-try {
-  if (typeof __ghDebug === "object" && __ghDebug) {
-    __ghDebug.github_query_builder = __ghQB;
-  }
-} catch {}
-
-ghUserText = String(query || "").trim();
-const ms_q = Date.now() - t_q_github;
-recordTime(geminiTimes, "github_query_builder_ms", ms_q);
-recordMetric(geminiMetrics, "github_query_builder", ms_q);
-
-// NOTE: buildGithubQueriesFromGemini는 항상 "배열"을 리턴한다고 가정
-let ghQueries = Array.isArray(ghQueriesRaw)
-  ? ghQueriesRaw
-      .map((x) =>
-        String(x || "")
-          .replace(/["']/g, "") // ✅ 따옴표 제거(검색 0건 방지)
-          .replace(/[?!"“”‘’(){}\[\];]/g, " ") // ✅ 질문/문장부호 제거(검색 0건 방지)
-          .replace(/\s+/g, " ")
-          .trim()
-      )
-      .filter(Boolean)
-  : [];
-
-// ✅ DV/CV: 질문형 문장을 GitHub repo search 친화 키워드로 압축 + query 확장
-const __cleanGithubSearchQuery = (s) => {
-  const raw = String(s || "")
-    .replace(/[?!"“”‘’(){}\[\];]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (!raw) return "";
-
-  // keep qualifiers if already present (in:, user:, org:, repo:, stars:, etc.)
-  const hasQualifier = /(?:\b(in|user|org|repo|language|stars|forks|topic)\s*:)/i.test(raw);
-  if (hasQualifier) return raw;
-
-  const stop = new Set([
-    "how","what","why","when","where","which","who",
-    "can","could","should","would","do","does","did",
-    "is","are","was","were","be","been","being",
-    "the","a","an","of","to","in","on","at","and","or","for","with","as","by","from",
-    "please","help","example","examples","use","using","usage","guide","tutorial","getting","start","started",
-  ]);
-
-    const toks0 = raw
-    .split(" ")
-    .map((w) => w.trim())
-    .filter(Boolean)
-    .map((w) => w.replace(/^[^A-Za-z0-9_.-]+|[^A-Za-z0-9_.-]+$/g, "")) // trim edge punct
-    .filter(Boolean)
-    .filter((w) => !stop.has(w.toLowerCase()))
-    .filter((w) => w.length >= 2);
-
-  if (!toks0.length) return raw;
-
-  // ✅ 같은 토큰 중복 제거(“awesome … list awesome … list” 같은 케이스 방지)
-  const toks = [];
-  const seenTok = new Set();
-  for (const w of toks0) {
-    const k = w.toLowerCase();
-    if (seenTok.has(k)) continue;
-    seenTok.add(k);
-    toks.push(w);
-  }
-
-  // keep only first N tokens to avoid over-specific “sentence” queries
-  const out = toks.slice(0, 8).join(" ").trim();
-  return out.length >= 3 ? out : raw;
-};
-
-const __uniqCI = (arr, cap = 10) => {
-  const out = [];
-  const seen = new Set();
-  for (const x of arr || []) {
-    const s = String(x || "").trim();
-    if (!s) continue;
-    const k = s.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(s);
-    if (out.length >= cap) break;
-  }
-  return out;
-};
-
-const __expandGithubQueries = (arr0) => {
-  // ✅ baseText 중복 제거(같은 문장이 query/rawQuery/answerText/ghUserText에 반복으로 들어오는 케이스)
-  const __mergeTextUniq = (parts) => {
-    const out = [];
-    const seen = new Set();
-    for (const p of (parts || [])) {
-      const s = String(p || "").replace(/\s+/g, " ").trim();
-      if (!s) continue;
-      const k = s.toLowerCase();
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(s);
-    }
-    return out.join(" ").trim();
-  };
-
-  const baseText = __mergeTextUniq([rawQuery, ghUserText, answerText]);
-
-  const kw0 = __cleanGithubSearchQuery((arr0 && arr0[0]) ? arr0[0] : baseText);
-  const kw = __cleanGithubSearchQuery(baseText) || kw0;
-
-  const list = [];
-  for (const q of (arr0 || [])) {
-    const qq = __cleanGithubSearchQuery(q);
-    if (qq) list.push(qq);
-  }
-  if (kw) list.push(kw);
-
-  // express/node 보정(검색 recall 상승)
-  const blob = ` ${list.join(" ")} `.toLowerCase();
-  const hasExpress = /\bexpress\b/.test(blob);
-  const hasNode = /\bnode\b|\bnodejs\b/.test(blob);
-
-  // repo search용 기본 확장(qualifier 부착)
-  const expanded = [];
-  for (const q of list) {
-    expanded.push(`${q} in:name,description,readme`);
-    expanded.push(`${q} stars:>20 in:name,description,readme`);
-  }
-
-  if (hasExpress) {
-    expanded.push(`expressjs in:name,description,readme stars:>50`);
-    if (hasNode) expanded.push(`express nodejs in:name,description,readme stars:>50`);
-  }
-  if (hasNode && !/\bnodejs\b/.test(blob)) {
-    expanded.push(`nodejs in:name,description,readme stars:>50`);
-  }
-
-  // cap + dedupe
-  return __uniqCI(expanded, 8);
-};
-
-// ghQueries 최종 확정(질문형 -> 키워드형 확장)
-try {
-  ghQueries = __expandGithubQueries(ghQueries);
-} catch {}
-
-// ✅ (B안) sentinel 규칙: ["__NON_CODE__::<reason>::<confidence>"] 면 DV/CV 종료
-let github_classifier = { is_code_query: true, reason: "", confidence: null };
-
-const forceGithubEvidenceQuery =
-  /(?:github|깃허브|repo|repository|레포|리포|issue|pull request|pr|commit|branch|npm|package|sdk|library)/i.test(
-    `${query} ${ghUserText || ""}`
-  ) ||
-  /(?:github\.com\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/i.test(`${query} ${answerText || ""}`);
-
-if (
-  ghQueries.length === 1 &&
-  typeof ghQueries[0] === "string" &&
-  ghQueries[0].startsWith("__NON_CODE__::")
-) {
-  // ✅ repo 힌트/개발근거 키워드가 있으면 sentinel을 “검색용 쿼리”로 강제 교체하고 DV 계속
-  if (forceGithubEvidenceQuery) {
-    const src = String(`${query} ${answerText || ""} ${ghUserText || ""}`);
-    const m = src.match(/(?:github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/i);
-
-    if (m) {
-      const owner = m[1];
-      const repo = String(m[2]).replace(/\.git$/i, "");
-      ghQueries = [
-        `user:${owner} ${repo} in:name,description,readme`,
-        `${owner}/${repo} in:name,description`,
-      ];
-    } else {
-      ghQueries = [
-        `${query} in:name,description,readme`,
-        `${query} stars:>20 in:name,description,readme`,
-      ];
-    }
-
-    // github_classifier는 “강제 통과”로 기록만 남기고 아래 흐름 계속
-    github_classifier.is_code_query = true;
-    github_classifier.reason = "forced_github_mode: repo hint / github keywords";
-    github_classifier.confidence = github_classifier.confidence ?? 0.6;
-
-  } else {
-    // ⬇️ (여기 아래는 기존 코드 그대로) non-code면 DV/CV 종료 return ...
-  github_classifier.is_code_query = false;
-
-  const prefix = "__NON_CODE__::";
-  const rest = ghQueries[0].slice(prefix.length);
-
-  // reason에 "::"가 들어가도 안전하게 파싱 (마지막 "::" 뒤를 confidence로 시도)
-  let reason = (rest || "").trim();
-  let confidence = null;
-
-  const lastSep = rest.lastIndexOf("::");
-  if (lastSep >= 0) {
-    const maybeReason = rest.slice(0, lastSep).trim();
-    const maybeConfStr = rest.slice(lastSep + 2).trim();
-    const conf = Number(maybeConfStr);
-    if (Number.isFinite(conf)) {
-      reason = maybeReason || reason;
-      confidence = conf;
-    }
-  }
-
-  github_classifier.reason = reason;
-  github_classifier.confidence = confidence;
-
-    const elapsedMs = Date.now() - start;
-
-  const suggestedMode = "qv";
-
-  const classifier = {
-  type: "heuristic_non_code",
-  method: "github_query_sentinel",
-  confidence: github_classifier.confidence,
-  reason: github_classifier.reason || "heuristic_classified_non_code",
-};
-
-  const msg =
-  `DV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
-  `휴리스틱 판정: 비코드 질의로 판단되어 DV를 종료합니다.\n` +
-  (github_classifier.reason ? `사유: ${github_classifier.reason}\n` : "") +
-  (github_classifier.confidence !== null ? `confidence: ${github_classifier.confidence}\n` : "") +
-  `\n권장:\n` +
-  `- 일반 사실/통계/정책 검증이면 ${suggestedMode.toUpperCase()}로 보내세요.\n` +
-  `- DV를 유지하려면 server.js/로그/에러/코드블록/레포 링크 등 "코드 근거"를 포함하세요.\n`;
-
-  return res.status(200).json({
-    success: true,
-    data: {
-      // ✅ (A안) 표준화
-      code: "MODE_MISMATCH",
-      suggested_mode: suggestedMode,
-      classifier,
-
-      mode: safeMode,
-      truthscore: "0.00%",
-      truthscore_pct: 0,
-      truthscore_01: 0,
-      elapsed: elapsedMs,
-
-      engines: [],
-      engines_requested: ["github"],
-
-      partial_scores: {
-  ...__ghDebug,
-  mode_mismatch: true,
-  expected: "code/dev query grounded on GitHub",
-  received: "gemini classified non-code query",
-
-  github_classifier,
-  github_queries: ghQueries,
-  engine_queries: { github: [] },
-  engine_results: { github: 0 },
-},
-
-      // DV/CV 응답 포맷 유지(프론트/로그 안정)
-      flash_summary: msg,
-            verify_raw: JSON.stringify(
-        {
-          mode_mismatch: true,
-          code: "MODE_MISMATCH",
+        // ✅ GitHub 관련 로직에서 항상 쓰는 텍스트(= TDZ/스코프 방지)
+        let ghUserText = String(query || "").trim();
+
+        // ✅ S-17 cache key (only QV/FV) — must be defined before cache get/set
+        // - __cacheKey is declared once near rawMode (var). Here we only assign.
+        __cacheKey = null;
+
+        if (safeMode === "qv" || safeMode === "fv") {
+          __cacheKey =
+            `v1|${safeMode}` +
+            `|u:${hash16(String(authUser?.id || logUserId || ""))}` +
+            `|q:${hash16(String(query || ""))}` +
+            `|core:${hash16(String(userCoreText || core_text || req.body?.snippet_meta?.snippet_core || ""))}` +
+            `|ua:${hash16(String(user_answer || ""))}`;
+        }
+
+        const __cachedPayload = __cacheKey ? verifyCacheGet(__cacheKey) : null;
+        if (__cachedPayload) {
+          const elapsedMs = Date.now() - start;
+
+          const out = {
+            ...__cachedPayload,
+            elapsed: elapsedMs,
+            cached: true,
+          };
+
+          if (out.partial_scores && typeof out.partial_scores === "object") {
+            out.partial_scores = { ...out.partial_scores, cache_hit: true };
+          } else {
+            out.partial_scores = { cache_hit: true };
+          }
+          // ✅ S-17b: 응답 직전 router_plan 재부착 (cache-hit path)
+          // - 최종 safeMode 반영 (stale 방지)
+          try {
+            const __rp = __buildRouterPlanPublicFinal({
+              safeMode,
+              rawMode,
+              routerPlan: __routerPlan,
+              runLvExtra: __runLvExtra,
+            });
+
+            if (out.partial_scores && typeof out.partial_scores === "object") {
+              out.partial_scores.router_plan = __rp;
+            } else {
+              out.partial_scores = { cache_hit: true, router_plan: __rp };
+            }
+          } catch (_) { }
+          return res.json(buildSuccess(out));
+        }
+
+        // ✅ (B안 보강) Gemini가 sentinel을 놓쳐도, "명백한 비코드"는 DV/CV를 강제 종료
+        // DV/CV: obvious non-code fast-exit (GitHub 전용 모드 오용 방지)
+        const looksObviouslyNonCode = (q) => {
+          const s0 = String(q ?? "").trim();
+          if (!s0) return true;
+
+          const low = s0.toLowerCase();
+
+          // ✅ 1) 하이픈 패키지명(예: express-rate-limit, rate-limit-redis)이면 개발 질문으로 본다
+          if (/[a-z0-9]+-[a-z0-9-]+/.test(low)) return false;
+
+          // ✅ 2) 개발/코드 힌트가 있으면 non-code로 보지 않는다
+          const codeHints = [
+            "github.com",
+            "http://",
+            "https://",
+            "`".repeat(3),
+            "stack",
+            "trace",
+            "exception",
+            "error",
+            "typeerror",
+            "referenceerror",
+            "syntaxerror",
+            "unhandled",
+
+            // package/tool/runtime
+            "npm",
+            "node",
+            "yarn",
+            "pnpm",
+            "pip",
+            "gradle",
+            "mvn",
+
+            // infra/dev keywords (중요)
+            "redis",
+            "rate-limit",
+            "ratelimit",
+            "express",
+            "middleware",
+            "store",
+
+            "docker",
+            "kubernetes",
+            "k8s",
+
+            // file ext
+            ".js",
+            ".ts",
+            ".py",
+            ".java",
+            ".go",
+            ".cs",
+            ".rb",
+            ".php",
+            ".rs",
+            ".cpp",
+            ".c",
+            ".h",
+
+            "/api/",
+            "curl ",
+
+            // SQL-ish
+            "select ",
+            "insert ",
+            "update ",
+            "delete ",
+            "from ",
+            "where ",
+
+            // code symbols
+            "{",
+            "}",
+            ";",
+            "=>",
+            "::",
+          ];
+
+          for (const h of codeHints) {
+            if (low.includes(String(h).toLowerCase())) return false;
+          }
+
+          // ✅ 심볼이 많으면 코드/로그 가능성이 높으니 non-code로 보지 않음
+          const symbolCount = (s0.match(/[{}[\]();<>:=`$\\\/]/g) || []).length;
+          if (symbolCount >= 4) return false;
+
+          // ✅ 질문형/일반질문 키워드가 “명확히” 있으면 non-code 가능성↑
+          const nlHints = [
+            "what", "why", "how", "meaning",
+            "설명", "뜻", "뭐야", "무엇", "어떻게", "왜", "정의", "비교", "차이", "요약", "알려줘",
+          ];
+          const hasNlHint = nlHints.some((k) => low.includes(k));
+
+          // 너무 길면(문서/로그/스니펫) 단정하지 않음
+          if (s0.length >= 220) return false;
+
+          // 마지막: “일반 질문 힌트가 명확히 있고” 자연어 비율이 높을 때만 true
+          const len = s0.length;
+          const space = (s0.match(/\s/g) || []).length;
+          const hangul = (s0.match(/[가-힣]/g) || []).length;
+          const alpha = (s0.match(/[A-Za-z]/g) || []).length;
+
+          const letter = hangul + alpha;
+          const letterRatio = len > 0 ? letter / len : 0;
+          const spaceRatio = len > 0 ? space / len : 0;
+
+          if (letterRatio >= 0.65 && spaceRatio >= 0.08 && hasNlHint) return true;
+
+          return false;
+        };
+
+        if ((safeMode === "dv" || safeMode === "cv") && looksObviouslyNonCode(query)) {
+          const elapsedMs = Date.now() - start;
+
+          const suggestedMode =
+            userCoreText && userCoreText.trim().length > 0 ? "fv" : "qv";
+
+          const classifier = {
+            type: "obvious_non_code",
+            method: "server/looksObviouslyNonCode",
+            confidence: 0.99,
+            reason: "obvious non-code stats/policy/general query",
+          };
+
+          const msg =
+            `DV/CV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
+            `현재 질의는 통계/정책/일반 사실 질문으로 보여 DV/CV를 종료합니다.\n\n` +
+            `- 권장: 동일 질의를 ${suggestedMode.toUpperCase()}로 보내 주세요.\n` +
+            `- DV/CV를 유지하려면: 코드/로그/레포 링크/에러 메시지 등 개발 근거를 포함해 주세요.\n`;
+
+          return res.status(200).json({
+            success: true,
+            data: {
+              code: "MODE_MISMATCH",
+              suggested_mode: suggestedMode,
+              classifier,
+
+              mode: safeMode,
+              truthscore: "0.00%",
+              truthscore_pct: 0,
+              truthscore_01: 0,
+              elapsed: elapsedMs,
+
+              engines: [],
+              engines_requested: ["github"],
+
+              partial_scores: {
+                ...__ghDebug,
+                mode_mismatch: true,
+                expected: "code/dev query grounded on GitHub",
+                received: "obvious non-code stats/policy/general query",
+                suggested_mode: suggestedMode,
+                classifier,
+              },
+
+              flash_summary: msg,
+              verify_raw: JSON.stringify({
+                code: "MODE_MISMATCH",
+                mode_mismatch: true,
+                mode: safeMode,
+                suggested_mode: suggestedMode,
+                classifier,
+                reason: "obvious non-code query blocked before GitHub search",
+              }),
+
+              // 프론트/로그가 기대하면 유지(안 써도 되지만 안전)
+              engine_times: {},
+              engine_metrics: {},
+              gemini_times: {},
+              gemini_metrics: {},
+              github_repos: [],
+            },
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        // ✅ GitHub 쿼리 생성 (Gemini) + (B안) 1-call 분류: 비코드면 sentinel로 종료
+        const t_q_github = Date.now();
+
+        const __ghQB = {};
+        const ghQueriesRaw = await buildGithubQueriesFromGemini(
+          safeMode,
+          query,
+          answerText,
+          gemini_key,
+          logUserId,
+          __ghQB
+        );
+
+        try {
+          if (typeof __ghDebug === "object" && __ghDebug) {
+            __ghDebug.github_query_builder = __ghQB;
+          }
+        } catch { }
+
+        ghUserText = String(query || "").trim();
+        const ms_q = Date.now() - t_q_github;
+        recordTime(geminiTimes, "github_query_builder_ms", ms_q);
+        recordMetric(geminiMetrics, "github_query_builder", ms_q);
+
+        // NOTE: buildGithubQueriesFromGemini는 항상 "배열"을 리턴한다고 가정
+        let ghQueries = Array.isArray(ghQueriesRaw)
+          ? ghQueriesRaw
+            .map((x) =>
+              String(x || "")
+                .replace(/["']/g, "") // ✅ 따옴표 제거(검색 0건 방지)
+                .replace(/[?!"“”‘’(){}\[\];]/g, " ") // ✅ 질문/문장부호 제거(검색 0건 방지)
+                .replace(/\s+/g, " ")
+                .trim()
+            )
+            .filter(Boolean)
+          : [];
+
+        // ✅ DV/CV: 질문형 문장을 GitHub repo search 친화 키워드로 압축 + query 확장
+        const __cleanGithubSearchQuery = (s) => {
+          const raw = String(s || "")
+            .replace(/[?!"“”‘’(){}\[\];]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          if (!raw) return "";
+
+          // keep qualifiers if already present (in:, user:, org:, repo:, stars:, etc.)
+          const hasQualifier = /(?:\b(in|user|org|repo|language|stars|forks|topic)\s*:)/i.test(raw);
+          if (hasQualifier) return raw;
+
+          const stop = new Set([
+            "how", "what", "why", "when", "where", "which", "who",
+            "can", "could", "should", "would", "do", "does", "did",
+            "is", "are", "was", "were", "be", "been", "being",
+            "the", "a", "an", "of", "to", "in", "on", "at", "and", "or", "for", "with", "as", "by", "from",
+            "please", "help", "example", "examples", "use", "using", "usage", "guide", "tutorial", "getting", "start", "started",
+          ]);
+
+          const toks0 = raw
+            .split(" ")
+            .map((w) => w.trim())
+            .filter(Boolean)
+            .map((w) => w.replace(/^[^A-Za-z0-9_.-]+|[^A-Za-z0-9_.-]+$/g, "")) // trim edge punct
+            .filter(Boolean)
+            .filter((w) => !stop.has(w.toLowerCase()))
+            .filter((w) => w.length >= 2);
+
+          if (!toks0.length) return raw;
+
+          // ✅ 같은 토큰 중복 제거(“awesome … list awesome … list” 같은 케이스 방지)
+          const toks = [];
+          const seenTok = new Set();
+          for (const w of toks0) {
+            const k = w.toLowerCase();
+            if (seenTok.has(k)) continue;
+            seenTok.add(k);
+            toks.push(w);
+          }
+
+          // keep only first N tokens to avoid over-specific “sentence” queries
+          const out = toks.slice(0, 8).join(" ").trim();
+          return out.length >= 3 ? out : raw;
+        };
+
+        const __uniqCI = (arr, cap = 10) => {
+          const out = [];
+          const seen = new Set();
+          for (const x of arr || []) {
+            const s = String(x || "").trim();
+            if (!s) continue;
+            const k = s.toLowerCase();
+            if (seen.has(k)) continue;
+            seen.add(k);
+            out.push(s);
+            if (out.length >= cap) break;
+          }
+          return out;
+        };
+
+        const __expandGithubQueries = (arr0) => {
+          // ✅ baseText 중복 제거(같은 문장이 query/rawQuery/answerText/ghUserText에 반복으로 들어오는 케이스)
+          const __mergeTextUniq = (parts) => {
+            const out = [];
+            const seen = new Set();
+            for (const p of (parts || [])) {
+              const s = String(p || "").replace(/\s+/g, " ").trim();
+              if (!s) continue;
+              const k = s.toLowerCase();
+              if (seen.has(k)) continue;
+              seen.add(k);
+              out.push(s);
+            }
+            return out.join(" ").trim();
+          };
+
+          const baseText = __mergeTextUniq([rawQuery, ghUserText, answerText]);
+
+          const kw0 = __cleanGithubSearchQuery((arr0 && arr0[0]) ? arr0[0] : baseText);
+          const kw = __cleanGithubSearchQuery(baseText) || kw0;
+
+          const list = [];
+          for (const q of (arr0 || [])) {
+            const qq = __cleanGithubSearchQuery(q);
+            if (qq) list.push(qq);
+          }
+          if (kw) list.push(kw);
+
+          // express/node 보정(검색 recall 상승)
+          const blob = ` ${list.join(" ")} `.toLowerCase();
+          const hasExpress = /\bexpress\b/.test(blob);
+          const hasNode = /\bnode\b|\bnodejs\b/.test(blob);
+
+          // repo search용 기본 확장(qualifier 부착)
+          const expanded = [];
+          for (const q of list) {
+            expanded.push(`${q} in:name,description,readme`);
+            expanded.push(`${q} stars:>20 in:name,description,readme`);
+          }
+
+          if (hasExpress) {
+            expanded.push(`expressjs in:name,description,readme stars:>50`);
+            if (hasNode) expanded.push(`express nodejs in:name,description,readme stars:>50`);
+          }
+          if (hasNode && !/\bnodejs\b/.test(blob)) {
+            expanded.push(`nodejs in:name,description,readme stars:>50`);
+          }
+
+          // cap + dedupe
+          return __uniqCI(expanded, 8);
+        };
+
+        // ghQueries 최종 확정(질문형 -> 키워드형 확장)
+        try {
+          ghQueries = __expandGithubQueries(ghQueries);
+        } catch { }
+
+        // ✅ (B안) sentinel 규칙: ["__NON_CODE__::<reason>::<confidence>"] 면 DV/CV 종료
+        let github_classifier = { is_code_query: true, reason: "", confidence: null };
+
+        const forceGithubEvidenceQuery =
+          /(?:github|깃허브|repo|repository|레포|리포|issue|pull request|pr|commit|branch|npm|package|sdk|library)/i.test(
+            `${query} ${ghUserText || ""}`
+          ) ||
+          /(?:github\.com\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/i.test(`${query} ${answerText || ""}`);
+
+        if (
+          ghQueries.length === 1 &&
+          typeof ghQueries[0] === "string" &&
+          ghQueries[0].startsWith("__NON_CODE__::")
+        ) {
+          // ✅ repo 힌트/개발근거 키워드가 있으면 sentinel을 “검색용 쿼리”로 강제 교체하고 DV 계속
+          if (forceGithubEvidenceQuery) {
+            const src = String(`${query} ${answerText || ""} ${ghUserText || ""}`);
+            const m = src.match(/(?:github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/i);
+
+            if (m) {
+              const owner = m[1];
+              const repo = String(m[2]).replace(/\.git$/i, "");
+              ghQueries = [
+                `user:${owner} ${repo} in:name,description,readme`,
+                `${owner}/${repo} in:name,description`,
+              ];
+            } else {
+              ghQueries = [
+                `${query} in:name,description,readme`,
+                `${query} stars:>20 in:name,description,readme`,
+              ];
+            }
+
+            // github_classifier는 “강제 통과”로 기록만 남기고 아래 흐름 계속
+            github_classifier.is_code_query = true;
+            github_classifier.reason = "forced_github_mode: repo hint / github keywords";
+            github_classifier.confidence = github_classifier.confidence ?? 0.6;
+
+          } else {
+            // ⬇️ (여기 아래는 기존 코드 그대로) non-code면 DV/CV 종료 return ...
+            github_classifier.is_code_query = false;
+
+            const prefix = "__NON_CODE__::";
+            const rest = ghQueries[0].slice(prefix.length);
+
+            // reason에 "::"가 들어가도 안전하게 파싱 (마지막 "::" 뒤를 confidence로 시도)
+            let reason = (rest || "").trim();
+            let confidence = null;
+
+            const lastSep = rest.lastIndexOf("::");
+            if (lastSep >= 0) {
+              const maybeReason = rest.slice(0, lastSep).trim();
+              const maybeConfStr = rest.slice(lastSep + 2).trim();
+              const conf = Number(maybeConfStr);
+              if (Number.isFinite(conf)) {
+                reason = maybeReason || reason;
+                confidence = conf;
+              }
+            }
+
+            github_classifier.reason = reason;
+            github_classifier.confidence = confidence;
+
+            const elapsedMs = Date.now() - start;
+
+            const suggestedMode = "qv";
+
+            const classifier = {
+              type: "heuristic_non_code",
+              method: "github_query_sentinel",
+              confidence: github_classifier.confidence,
+              reason: github_classifier.reason || "heuristic_classified_non_code",
+            };
+
+            const msg =
+              `DV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
+              `휴리스틱 판정: 비코드 질의로 판단되어 DV를 종료합니다.\n` +
+              (github_classifier.reason ? `사유: ${github_classifier.reason}\n` : "") +
+              (github_classifier.confidence !== null ? `confidence: ${github_classifier.confidence}\n` : "") +
+              `\n권장:\n` +
+              `- 일반 사실/통계/정책 검증이면 ${suggestedMode.toUpperCase()}로 보내세요.\n` +
+              `- DV를 유지하려면 server.js/로그/에러/코드블록/레포 링크 등 "코드 근거"를 포함하세요.\n`;
+
+            return res.status(200).json({
+              success: true,
+              data: {
+                // ✅ (A안) 표준화
+                code: "MODE_MISMATCH",
+                suggested_mode: suggestedMode,
+                classifier,
+
+                mode: safeMode,
+                truthscore: "0.00%",
+                truthscore_pct: 0,
+                truthscore_01: 0,
+                elapsed: elapsedMs,
+
+                engines: [],
+                engines_requested: ["github"],
+
+                partial_scores: {
+                  ...__ghDebug,
+                  mode_mismatch: true,
+                  expected: "code/dev query grounded on GitHub",
+                  received: "gemini classified non-code query",
+
+                  github_classifier,
+                  github_queries: ghQueries,
+                  engine_queries: { github: [] },
+                  engine_results: { github: 0 },
+                },
+
+                // DV/CV 응답 포맷 유지(프론트/로그 안정)
+                flash_summary: msg,
+                verify_raw: JSON.stringify(
+                  {
+                    mode_mismatch: true,
+                    code: "MODE_MISMATCH",
+                    mode: safeMode,
+                    suggested_mode: suggestedMode,
+                    classifier,
+                    github_classifier,
+                    note: "Non-code query rejected by heuristic sentinel; no GitHub search executed.",
+                  },
+                  null,
+                  2
+                ),
+
+                gemini_verify_model: GEMINI_VERIFY_MODEL || "gemini-2.0-flash", // 참고용(verify 기본)
+                engine_times: {},
+                engine_metrics: {},
+                gemini_times: {},
+                gemini_metrics: {},
+
+                github_repos: [],
+              },
+              timestamp: new Date().toISOString(),
+            });
+          }
+
+          // ✅ (DV/CV 품질) GitHub 검색 쿼리에서 'awesome/curated list'류를 기본 제외
+          // - 사용자가 리스트를 원하면(awesome/list 등) 그대로 둠
+          const wantsCuratedListsFromText = (t) =>
+            /\b(awesome|curated|curation|list|directory|collection|resources|public[- ]?apis)\b/i.test(String(t || ""));
+
+          ghUserText = String(answerText || query || "").trim();
+          const allowCuratedLists = wantsCuratedListsFromText(`${rawQuery || ""} ${answerText || ""} ${query || ""} ${ghUserText || ""}`);
+
+          // ✅ allowCurated는 요청 스코프(상단)에서 let으로 1회 선언됨 (스코프 이슈 방지)
+
+          // ✅ (DV/CV 품질) GitHub repo relevance 필터 + 1회 fallback
+          const githubRepoBlob = (r) => {
+            const topics = Array.isArray(r?.topics) ? r.topics.join(" ") : "";
+            return `${r?.full_name || ""}\n${r?.name || ""}\n${r?.description || ""}\n${topics}`.toLowerCase();
+          };
+
+          // 질의에 "강한 앵커"가 있으면 그게 repo 메타에 반드시 있어야 통과
+          const needExpressRateLimitAnchor = /express-rate-limit/i.test(rawQuery);
+          const needRedisAnchor = /\bredis\b/i.test(rawQuery);
+
+          // 1차 relevance 판정 (DV/CV 전용)
+          const isRelevantGithubRepoDV = (r) => {
+            const blob = githubRepoBlob(r);
+
+            if (needExpressRateLimitAnchor) {
+              // express-rate-limit 관련이면 "express-rate-limit" 또는 공식 store 이름( rate-limit-redis )이 최소 1개는 있어야 함
+              if (!blob.includes("express-rate-limit") && !blob.includes("rate-limit-redis")) return false;
+            }
+            if (needRedisAnchor) {
+              // redis가 질의에 있으면 repo 메타에도 redis가 있어야 함 (Hono/Koa 같은 엉뚱한 레포 컷)
+              if (!blob.includes("redis")) return false;
+            }
+            return true;
+          };
+
+          // ✅ DV: GitHub 검색 실행 (ghQueries 기반)
+          if (
+            safeMode === "dv" &&
+            Array.isArray(ghQueries) &&
+            ghQueries.length > 0
+          ) {
+            const githubSeen = new Set(); // ghQueries 전체에 대해 중복 제거
+            const githubCapTotal = Math.max(1, Number(process.env.GITHUB_DV_CV_MAX_REPOS || 18));
+            const githubCapPerQuery = Math.max(1, Number(process.env.GITHUB_DV_CV_MAX_PER_QUERY || 8));
+
+            // ✅ curated 의도는 요청당 1번만 계산
+            const wantCurated =
+              wantsCuratedListsFromText(rawQuery) || wantsCuratedListsFromText(ghUserText);
+
+            // curated 허용 조건: 전역 allowCuratedLists 이거나, 질문/텍스트가 curated를 원할 때
+            allowCurated = Boolean(allowCuratedLists || wantCurated);
+
+            // ✅ gh repo 중복 제거(여러 query/page에서 같은 repo 나오는 것 방지)
+            // (이미 상단에서 ghSeen을 만들었으므로 여기서는 재선언하지 않음)
+
+            // ✅ owner/repo 형태를 repo search 친화적으로 재작성 + (repo search에서 의미 없는) PR/issue 토큰 제거
+            const __escRe = (s) => String(s ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+            // repo-search에서 오히려 결과를 0으로 만드는 토큰(=issues/PR 검색이 아니라 repo 검색이기 때문)
+            const __DROP_GH_REPOSEARCH_TOKENS = new Set([
+              "pr", "prs", "pull", "pullrequest", "pull-request",
+              "issue", "issues",
+              "이슈", "풀리퀘", "풀리퀘스트", "풀리퀘스트(pr)",
+            ]);
+
+            const __stripRepoSearchNoise = (s) => {
+              const parts = String(s ?? "").split(/\s+/).filter(Boolean);
+              const kept = [];
+              for (const p of parts) {
+                const low = p.toLowerCase();
+                if (__DROP_GH_REPOSEARCH_TOKENS.has(low)) continue;
+                kept.push(p);
+              }
+              return kept.join(" ").trim();
+            };
+
+            // owner/repo가 있으면: "nodejs/node http2 ..." → "node org:nodejs http2 in:name,description,readme"
+            const __rewriteOwnerRepoForRepoSearch = (s) => {
+              let t = String(s ?? "").trim();
+              if (!t) return "";
+
+              const m = t.match(/\b([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\b/);
+              if (!m) return __stripRepoSearchNoise(t);
+
+              const owner = m[1];
+              const repo = m[2];
+
+              // owner/repo 토큰 제거
+              const re = new RegExp(`\\b${__escRe(owner)}\\/${__escRe(repo)}\\b`, "g");
+              t = t.replace(re, " ");
+
+              // PR/issue 등 repo-search 노이즈 제거
+              t = __stripRepoSearchNoise(t);
+
+              // org/user qualifier가 이미 있으면 유지, 없으면 org:<owner> 추가
+              const hasOrgOrUser = /\b(org|user)\s*:/i.test(t);
+
+              // repo name을 맨 앞에 앵커로 둬서 recall 올리기
+              t = `${repo} ${hasOrgOrUser ? "" : `org:${owner} `}${t}`.replace(/\s+/g, " ").trim();
+
+              // in:name,description,readme가 없으면 붙여서 적중률 보정(이미 있으면 유지)
+              if (!/\bin:name,description,readme\b/i.test(t)) t = `${t} in:name,description,readme`;
+
+              return t.trim();
+            };
+
+            for (const q of ghQueries) {
+              const qRaw = String(q || "").trim();
+              if (!qRaw) continue;
+
+              // ✅ rewrite first
+              const qFixed = __rewriteOwnerRepoForRepoSearch(qRaw);
+
+              // ✅ 질문형/장문을 1회 더 압축해서 GitHub repo search recall 확보
+              const q0 =
+                (typeof __cleanGithubSearchQuery === "function")
+                  ? __cleanGithubSearchQuery(qFixed)
+                  : qFixed;
+
+              const q1 = sanitizeGithubQuery(q0 || qFixed, ghUserText);
+              if (!q1) continue;
+
+              // engine_queries.github (있을 때만 push + 중복 방지)
+              try {
+                if (
+                  typeof engineQueries === "object" &&
+                  engineQueries &&
+                  Array.isArray(engineQueries.github)
+                ) {
+                  const exists = engineQueries.github.some(
+                    (x) => String(x || "").toLowerCase().trim() === String(q1 || "").toLowerCase().trim()
+                  );
+                  if (!exists) engineQueries.github.push(q1);
+                }
+              } catch { }
+
+              // 1) page 1
+              const pack1 = await safeFetchTimed(
+                "github",
+                (qq, ctx) => fetchGitHub(qq, githubTokenFinal, { ...ctx, page: 1, skipSanitize: true }),
+                q1,
+                engineTimes,
+                engineMetrics
+              );
+
+              let r1 = Array.isArray(pack1?.result) ? pack1.result : [];
+              r1 = r1.filter(isRelevantGithubRepoDV);
+
+              if (!allowCurated) r1 = r1.filter(r => !isBigCuratedListRepo(r));
+
+              // 2) page 2 (page1이 "필터 후 0"이면 한 번 더)
+              if (!r1.length) {
+                const pack2 = await safeFetchTimed(
+                  "github",
+                  (qq, ctx) => fetchGitHub(qq, githubTokenFinal, { ...ctx, page: 2, skipSanitize: true }),
+                  q1,
+                  engineTimes,
+                  engineMetrics
+                );
+
+                let r2 = Array.isArray(pack2?.result) ? pack2.result : [];
+                r2 = r2.filter(isRelevantGithubRepoDV);
+                if (!allowCurated) r2 = r2.filter(r => !isBigCuratedListRepo(r));
+
+                if (r2.length) r1 = r2;
+              }
+
+              if (r1.length) {
+                // per-query cap
+                if (r1.length > githubCapPerQuery) r1 = r1.slice(0, githubCapPerQuery);
+
+                // dedupe across all ghQueries/pages
+                const uniq = [];
+                for (const it of r1) {
+                  const k = String(it?.full_name || it?.html_url || it?.url || it?.name || "").toLowerCase().trim();
+                  if (!k) continue;
+                  if (githubSeen.has(k)) continue;
+                  githubSeen.add(k);
+                  uniq.push(it);
+                  if (external.github.length + uniq.length >= githubCapTotal) break;
+                }
+
+                if (uniq.length) pushGithubRepos(uniq);
+              }
+
+              // total cap reached? stop further ghQueries loop
+              if (external.github.length >= githubCapTotal) break;
+            }
+          }
+        }
+
+        // 🌟 필터링 전 raw 보관(디버깅/메시지용)
+        const github_raw_before_filter = Array.isArray(external.github) ? [...external.github] : [];
+
+        // 1차 필터
+        external.github = (external.github || [])
+          .filter(isRelevantGithubRepo)
+          .filter(r => (allowCurated ? true : !isBigCuratedListRepo(r)));
+
+        // ✅ fallback 트리거(Express rate-limit 류 질의일 때만)
+        const needExpressRateLimit = (() => {
+          const base = `${query || ""} ${answerText || ""}`.toLowerCase();
+
+          // ghQueries가 scope에 없을 수도 있으니 방어
+          const qs =
+            (typeof ghQueries !== "undefined" && Array.isArray(ghQueries) ? ghQueries : [])
+              .map(x => String(x || "").toLowerCase());
+
+          const blob = [base, ...qs].join(" ");
+
+          return (
+            blob.includes("express-rate-limit") ||
+            blob.includes("rate-limit-redis") ||
+            blob.includes("rate limit redis") ||
+            blob.includes("keygenerator") ||
+            blob.includes("trust proxy")
+          );
+        })();
+
+        // 0건이면(특히 express-rate-limit 케이스) GitHub에 1회 fallback 쿼리 추가로 더 찾아봄
+        if (
+          (safeMode === "dv" || safeMode === "cv") &&
+          external.github.length === 0 &&
+          needExpressRateLimit
+        ) {
+          const extraQueries = [
+            `org:express-rate-limit rate-limit-redis in:name,description,readme`,
+            `express-rate-limit rate-limit-redis in:name,description,readme`,
+          ];
+
+          for (const q of extraQueries.slice(0, 2)) {
+            // engine_queries에도 남기기(있을 때만)
+            try {
+              if (typeof engineQueries === "object" && engineQueries && Array.isArray(engineQueries.github)) {
+                engineQueries.github.push(q);
+              }
+            } catch { }
+
+            const { result } = await safeFetchTimed(
+              "github",
+              (qq, ctx) =>
+                fetchGitHub(qq, githubTokenFinal, {
+                  ...ctx,
+                  userText: ghUserText,
+                  skipSanitize: true,
+                  skipNormalize: true,
+                }),
+              String(q || "").trim(),
+              engineTimes,
+              engineMetrics
+            );
+            if (Array.isArray(result) && result.length) pushGithubRepos(result);
+          }
+
+          // fallback 후 재필터
+          external.github = (external.github || [])
+            .filter(isRelevantGithubRepoDV)
+            .filter(r => (allowCurated ? true : !isBigCuratedListRepo(r)));
+        }
+
+        // ✅ GitHub 결과 정리: 중복 제거 + stars 우선 + 최신 업데이트 우선 (품질 개선)
+        const GH_KEEP_TOP = Math.max(
+          1,
+          parseInt(process.env.GITHUB_DV_CV_KEEP_TOP || "12", 10) || 12
+        );
+
+        external.github = (external.github || [])
+          .filter(Boolean)
+          .map(r => ({
+            ...r,
+            stars: Number(r?.stars ?? r?.stargazers_count ?? 0),
+            updated: String(r?.updated ?? r?.updated_at ?? ""),
+          }))
+          .filter(r => (allowCurated ? true : !isBigCuratedListRepo(r))) // ✅ allowCurated면 curated 유지
+          // 중복 제거: name은 충돌 위험(서로 다른 owner의 같은 repo명) → full_name 우선
+          .filter((r, idx, arr) => {
+            const key = String(r?.full_name || r?.name || r?.html_url || r?.url || "").toLowerCase().trim();
+            if (!key) return false;
+            return idx === arr.findIndex(x =>
+              String(x?.full_name || x?.name || x?.html_url || x?.url || "").toLowerCase().trim() === key
+            );
+          })
+          // stars 내림차순 → updated 최신순
+          .sort((a, b) => {
+            const ds = (b.stars - a.stars);
+            if (ds !== 0) return ds;
+            const ta = Date.parse(a.updated || "") || 0;
+            const tb = Date.parse(b.updated || "") || 0;
+            return tb - ta;
+          })
+          .slice(0, GH_KEEP_TOP);
+
+        // ✅ GitHub results dedupe (multi-query/page overlap) + cap
+        if (Array.isArray(external.github) && external.github.length > 1) {
+          const seen = new Set();
+          const uniq = [];
+
+          for (const r of external.github) {
+            const key = String(r?.full_name || r?.html_url || r?.url || "").toLowerCase().trim();
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            uniq.push(r);
+          }
+
+          const cap = Math.max(
+            1,
+            parseInt(process.env.GITHUB_MAX_RESULTS_KEEP || "40", 10) || 40
+          );
+          external.github = uniq.slice(0, cap);
+        }
+
+        const GH_MIN_STARS = Math.max(
+          0,
+          parseInt(process.env.GH_MIN_STARS || "0", 10) || 0
+        );
+
+        const ghUrlHit = /https?:\/\/github\.com\/[^\s/]+\/[^\s/]+/i.test(rawQuery);
+        const ghOwnerRepoMatch = String(rawQuery || "").match(/\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/);
+
+        // api/verify 같은 "경로" 오탐만 제외하고, owner/repo는 기본 repo 힌트로 인정하되
+        // "문맥 힌트"가 있으면 더 확실히 repo로 취급 (nodejs/node 등)
+        const ghOwnerRepoHintText = /(github|깃헙|repo|repository|레포|issue|issues|pr|pull\s*request|commit|커밋)/i.test(String(rawQuery || ""));
+
+        const ghOwnerRepoHit = !!(
+          ghOwnerRepoMatch &&
+          !/^(api|v\d+)\/(verify|admin|settings|status)\b/i.test(String(ghOwnerRepoMatch[0] || "")) &&
+          (ghOwnerRepoHintText || ghUrlHit || /\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/.test(String(rawQuery || "")))
+        );
+
+        const ghHardRepoHint = ghUrlHit || ghOwnerRepoHit;
+
+        const ghMaxStars = Math.max(
+          0,
+          ...(Array.isArray(external.github) ? external.github : []).map(r =>
+            Number(r?.stars ?? r?.stargazers_count ?? 0)
+          )
+        );
+
+        if ((safeMode === "dv" || safeMode === "cv") && !ghHardRepoHint && ghMaxStars < GH_MIN_STARS) {
+          external.github = [];
+        }
+
+        // ✅ DV/CV는 GitHub 근거가 0이면 여기서 종료(헛소리 방지) + (스키마 통일: code/suggested_mode/classifier)
+        if (
+          (safeMode === "dv" || safeMode === "cv") &&
+          (!Array.isArray(external.github) || external.github.length === 0)
+        ) {
+          const suggestedMode = safeMode; // 모드는 맞는데 근거가 없음 → 모드 유지 + 입력을 더 구체화 유도
+
+          const classifier = {
+            type: "github_no_results",
+            method: "github/search",
+            confidence: null,
+            reason: "no_results",
+          };
+
+          // ✅ 실제로 기록된 github queries 우선 (sanitize된 q1이 engineQueries.github에 들어감)
+          const usedGhQueries =
+            (typeof engineQueries === "object" &&
+              engineQueries &&
+              Array.isArray(engineQueries.github) &&
+              engineQueries.github.length > 0)
+              ? engineQueries.github
+              : (Array.isArray(ghQueries) ? ghQueries : []);
+
+          const githubCount = Array.isArray(external?.github) ? external.github.length : 0;
+
+          const msg =
+            `DV/CV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
+            `하지만 이번 요청은 GitHub 검색 결과가 0건이라 근거를 확보하지 못했습니다.\n\n` +
+            `- 생성/사용된 GitHub queries:\n  - ${(Array.isArray(usedGhQueries) ? usedGhQueries.join("\n  - ") : "")}\n\n` +
+            `권장:\n` +
+            `- 레포 URL/패키지명/에러 로그/코드 블록을 포함해서 다시 요청\n` +
+            `- 일반 사실/통계 검증이면 QV/FV로 보내기\n`;
+
+          return res.status(200).json({
+            success: true,
+            data: {
+              code: "NO_EVIDENCE",
+              suggested_mode: suggestedMode,
+              classifier,
+
+              mode: safeMode,
+              truthscore: "0.00%",
+              truthscore_pct: 0,
+              truthscore_01: 0,
+              elapsed: Date.now() - start,
+
+              engines: [],
+              engines_requested: ["github"],
+
+              partial_scores: {
+                ...__ghDebug,
+                no_evidence: true,
+                expected: "GitHub evidence (repo/code/issue/commit)",
+                received: "github search returned 0 results",
+                suggested_mode: suggestedMode,
+                classifier,
+
+                github_queries: Array.isArray(usedGhQueries) ? usedGhQueries : [],
+                engine_queries: {
+                  github: Array.isArray(usedGhQueries) ? usedGhQueries.slice(0, 12) : [],
+                },
+                engine_results: { github: githubCount },
+              },
+
+              flash_summary: msg,
+              verify_raw: JSON.stringify({
+                code: "NO_EVIDENCE",
+                mode: safeMode,
+                suggested_mode: suggestedMode,
+                classifier,
+                github_queries: Array.isArray(usedGhQueries) ? usedGhQueries : [],
+                note: "No GitHub evidence found; DV/CV aborted before Gemini verify to avoid hallucination.",
+              }),
+
+              /// 프론트/로그 안정용(있어도 되고 없어도 되지만, 통일 위해 유지)
+              engine_times: engineTimes,
+              engine_metrics: engineMetrics,
+              gemini_times: geminiTimes,
+              gemini_metrics: geminiMetrics,
+              github_repos: [],
+            },
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        const rec = calcCompositeRecency({
           mode: safeMode,
-          suggested_mode: suggestedMode,
-          classifier,
-          github_classifier,
-          note: "Non-code query rejected by heuristic sentinel; no GitHub search executed.",
-        },
-        null,
-        2
-      ),
-
-      gemini_verify_model: GEMINI_VERIFY_MODEL || "gemini-2.0-flash", // 참고용(verify 기본)
-      engine_times: {},
-      engine_metrics: {},
-      gemini_times: {},
-      gemini_metrics: {},
-
-      github_repos: [],
-    },
-    timestamp: new Date().toISOString(),
-  });
-}
-
-// ✅ (DV/CV 품질) GitHub 검색 쿼리에서 'awesome/curated list'류를 기본 제외
-// - 사용자가 리스트를 원하면(awesome/list 등) 그대로 둠
-const wantsCuratedListsFromText = (t) =>
-  /\b(awesome|curated|curation|list|directory|collection|resources|public[- ]?apis)\b/i.test(String(t || ""));
-
-ghUserText = String(answerText || query || "").trim();
-const allowCuratedLists = wantsCuratedListsFromText(`${rawQuery || ""} ${answerText || ""} ${query || ""} ${ghUserText || ""}`);
-
-// ✅ allowCurated는 요청 스코프(상단)에서 let으로 1회 선언됨 (스코프 이슈 방지)
-
-// ✅ (DV/CV 품질) GitHub repo relevance 필터 + 1회 fallback
-const githubRepoBlob = (r) => {
-  const topics = Array.isArray(r?.topics) ? r.topics.join(" ") : "";
-  return `${r?.full_name || ""}\n${r?.name || ""}\n${r?.description || ""}\n${topics}`.toLowerCase();
-};
-
-// 질의에 "강한 앵커"가 있으면 그게 repo 메타에 반드시 있어야 통과
-const needExpressRateLimitAnchor = /express-rate-limit/i.test(rawQuery);
-const needRedisAnchor = /\bredis\b/i.test(rawQuery);
-
-// 1차 relevance 판정 (DV/CV 전용)
-const isRelevantGithubRepoDV = (r) => {
-  const blob = githubRepoBlob(r);
-
-  if (needExpressRateLimitAnchor) {
-    // express-rate-limit 관련이면 "express-rate-limit" 또는 공식 store 이름( rate-limit-redis )이 최소 1개는 있어야 함
-    if (!blob.includes("express-rate-limit") && !blob.includes("rate-limit-redis")) return false;
-  }
-  if (needRedisAnchor) {
-    // redis가 질의에 있으면 repo 메타에도 redis가 있어야 함 (Hono/Koa 같은 엉뚱한 레포 컷)
-    if (!blob.includes("redis")) return false;
-  }
-  return true;
-};
-
-// ✅ DV: GitHub 검색 실행 (ghQueries 기반)
-if (
-  safeMode === "dv" &&
-  Array.isArray(ghQueries) &&
-  ghQueries.length > 0
-) {
-  const githubSeen = new Set(); // ghQueries 전체에 대해 중복 제거
-const githubCapTotal = Math.max(1, Number(process.env.GITHUB_DV_CV_MAX_REPOS || 18));
-const githubCapPerQuery = Math.max(1, Number(process.env.GITHUB_DV_CV_MAX_PER_QUERY || 8));
-
-// ✅ curated 의도는 요청당 1번만 계산
-const wantCurated =
-  wantsCuratedListsFromText(rawQuery) || wantsCuratedListsFromText(ghUserText);
-
-// curated 허용 조건: 전역 allowCuratedLists 이거나, 질문/텍스트가 curated를 원할 때
-allowCurated = Boolean(allowCuratedLists || wantCurated);
-
-// ✅ gh repo 중복 제거(여러 query/page에서 같은 repo 나오는 것 방지)
-// (이미 상단에서 ghSeen을 만들었으므로 여기서는 재선언하지 않음)
-
-// ✅ owner/repo 형태를 repo search 친화적으로 재작성 + (repo search에서 의미 없는) PR/issue 토큰 제거
-const __escRe = (s) => String(s ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-// repo-search에서 오히려 결과를 0으로 만드는 토큰(=issues/PR 검색이 아니라 repo 검색이기 때문)
-const __DROP_GH_REPOSEARCH_TOKENS = new Set([
-  "pr", "prs", "pull", "pullrequest", "pull-request",
-  "issue", "issues",
-  "이슈", "풀리퀘", "풀리퀘스트", "풀리퀘스트(pr)",
-]);
-
-const __stripRepoSearchNoise = (s) => {
-  const parts = String(s ?? "").split(/\s+/).filter(Boolean);
-  const kept = [];
-  for (const p of parts) {
-    const low = p.toLowerCase();
-    if (__DROP_GH_REPOSEARCH_TOKENS.has(low)) continue;
-    kept.push(p);
-  }
-  return kept.join(" ").trim();
-};
-
-// owner/repo가 있으면: "nodejs/node http2 ..." → "node org:nodejs http2 in:name,description,readme"
-const __rewriteOwnerRepoForRepoSearch = (s) => {
-  let t = String(s ?? "").trim();
-  if (!t) return "";
-
-  const m = t.match(/\b([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\b/);
-  if (!m) return __stripRepoSearchNoise(t);
-
-  const owner = m[1];
-  const repo = m[2];
-
-  // owner/repo 토큰 제거
-  const re = new RegExp(`\\b${__escRe(owner)}\\/${__escRe(repo)}\\b`, "g");
-  t = t.replace(re, " ");
-
-  // PR/issue 등 repo-search 노이즈 제거
-  t = __stripRepoSearchNoise(t);
-
-  // org/user qualifier가 이미 있으면 유지, 없으면 org:<owner> 추가
-  const hasOrgOrUser = /\b(org|user)\s*:/i.test(t);
-
-  // repo name을 맨 앞에 앵커로 둬서 recall 올리기
-  t = `${repo} ${hasOrgOrUser ? "" : `org:${owner} `}${t}`.replace(/\s+/g, " ").trim();
-
-  // in:name,description,readme가 없으면 붙여서 적중률 보정(이미 있으면 유지)
-  if (!/\bin:name,description,readme\b/i.test(t)) t = `${t} in:name,description,readme`;
-
-  return t.trim();
-};
-
-for (const q of ghQueries) {
-  const qRaw = String(q || "").trim();
-  if (!qRaw) continue;
-
-  // ✅ rewrite first
-  const qFixed = __rewriteOwnerRepoForRepoSearch(qRaw);
-
-  // ✅ 질문형/장문을 1회 더 압축해서 GitHub repo search recall 확보
-  const q0 =
-    (typeof __cleanGithubSearchQuery === "function")
-      ? __cleanGithubSearchQuery(qFixed)
-      : qFixed;
-
-  const q1 = sanitizeGithubQuery(q0 || qFixed, ghUserText);
-  if (!q1) continue;
-
-  // engine_queries.github (있을 때만 push + 중복 방지)
-  try {
-    if (
-      typeof engineQueries === "object" &&
-      engineQueries &&
-      Array.isArray(engineQueries.github)
-    ) {
-      const exists = engineQueries.github.some(
-        (x) => String(x || "").toLowerCase().trim() === String(q1 || "").toLowerCase().trim()
-      );
-      if (!exists) engineQueries.github.push(q1);
-    }
-  } catch {}
-
-  // 1) page 1
-  const pack1 = await safeFetchTimed(
-  "github",
-  (qq, ctx) => fetchGitHub(qq, githubTokenFinal, { ...ctx, page: 1, skipSanitize: true }),
-  q1,
-  engineTimes,
-  engineMetrics
-);
-
-let r1 = Array.isArray(pack1?.result) ? pack1.result : [];
-r1 = r1.filter(isRelevantGithubRepoDV);
-
-if (!allowCurated) r1 = r1.filter(r => !isBigCuratedListRepo(r));
-
-// 2) page 2 (page1이 "필터 후 0"이면 한 번 더)
-if (!r1.length) {
-  const pack2 = await safeFetchTimed(
-  "github",
-  (qq, ctx) => fetchGitHub(qq, githubTokenFinal, { ...ctx, page: 2, skipSanitize: true }),
-  q1,
-  engineTimes,
-  engineMetrics
-);
-
-  let r2 = Array.isArray(pack2?.result) ? pack2.result : [];
-    r2 = r2.filter(isRelevantGithubRepoDV);
-  if (!allowCurated) r2 = r2.filter(r => !isBigCuratedListRepo(r));
-
-  if (r2.length) r1 = r2;
-}
-
-if (r1.length) {
-  // per-query cap
-  if (r1.length > githubCapPerQuery) r1 = r1.slice(0, githubCapPerQuery);
-
-  // dedupe across all ghQueries/pages
-  const uniq = [];
-  for (const it of r1) {
-    const k = String(it?.full_name || it?.html_url || it?.url || it?.name || "").toLowerCase().trim();
-    if (!k) continue;
-    if (githubSeen.has(k)) continue;
-    githubSeen.add(k);
-    uniq.push(it);
-    if (external.github.length + uniq.length >= githubCapTotal) break;
-  }
-
-  if (uniq.length) pushGithubRepos(uniq);
-}
-
-// total cap reached? stop further ghQueries loop
-if (external.github.length >= githubCapTotal) break;
-    }
-  }
-}
-
-// 🌟 필터링 전 raw 보관(디버깅/메시지용)
-const github_raw_before_filter = Array.isArray(external.github) ? [...external.github] : [];
-
-// 1차 필터
-external.github = (external.github || [])
-  .filter(isRelevantGithubRepo)
-  .filter(r => (allowCurated ? true : !isBigCuratedListRepo(r)));
-
-// ✅ fallback 트리거(Express rate-limit 류 질의일 때만)
-const needExpressRateLimit = (() => {
-  const base = `${query || ""} ${answerText || ""}`.toLowerCase();
-
-  // ghQueries가 scope에 없을 수도 있으니 방어
-  const qs =
-    (typeof ghQueries !== "undefined" && Array.isArray(ghQueries) ? ghQueries : [])
-      .map(x => String(x || "").toLowerCase());
-
-  const blob = [base, ...qs].join(" ");
-
-  return (
-    blob.includes("express-rate-limit") ||
-    blob.includes("rate-limit-redis") ||
-    blob.includes("rate limit redis") ||
-    blob.includes("keygenerator") ||
-    blob.includes("trust proxy")
-  );
-})();
-  
-// 0건이면(특히 express-rate-limit 케이스) GitHub에 1회 fallback 쿼리 추가로 더 찾아봄
-if (
-  (safeMode === "dv" || safeMode === "cv") &&
-  external.github.length === 0 &&
-  needExpressRateLimit
-) {
-  const extraQueries = [
-  `org:express-rate-limit rate-limit-redis in:name,description,readme`,
-  `express-rate-limit rate-limit-redis in:name,description,readme`,
-];
-
-  for (const q of extraQueries.slice(0, 2)) {
-    // engine_queries에도 남기기(있을 때만)
-    try {
-      if (typeof engineQueries === "object" && engineQueries && Array.isArray(engineQueries.github)) {
-        engineQueries.github.push(q);
-      }
-    } catch {}
-
-    const { result } = await safeFetchTimed(
-  "github",
-  (qq, ctx) =>
-    fetchGitHub(qq, githubTokenFinal, {
-      ...ctx,
-      userText: ghUserText,
-      skipSanitize: true,
-      skipNormalize: true,
-    }),
-  String(q || "").trim(),
-  engineTimes,
-  engineMetrics
-);
-    if (Array.isArray(result) && result.length) pushGithubRepos(result);
-  }
-
-  // fallback 후 재필터
-  external.github = (external.github || [])
-  .filter(isRelevantGithubRepoDV)
-  .filter(r => (allowCurated ? true : !isBigCuratedListRepo(r)));
-}
-
-// ✅ GitHub 결과 정리: 중복 제거 + stars 우선 + 최신 업데이트 우선 (품질 개선)
-const GH_KEEP_TOP = Math.max(
-  1,
-  parseInt(process.env.GITHUB_DV_CV_KEEP_TOP || "12", 10) || 12
-);
-
-external.github = (external.github || [])
-  .filter(Boolean)
-  .map(r => ({
-    ...r,
-    stars: Number(r?.stars ?? r?.stargazers_count ?? 0),
-    updated: String(r?.updated ?? r?.updated_at ?? ""),
-  }))
-  .filter(r => (allowCurated ? true : !isBigCuratedListRepo(r))) // ✅ allowCurated면 curated 유지
-  // 중복 제거: name은 충돌 위험(서로 다른 owner의 같은 repo명) → full_name 우선
-  .filter((r, idx, arr) => {
-    const key = String(r?.full_name || r?.name || r?.html_url || r?.url || "").toLowerCase().trim();
-    if (!key) return false;
-    return idx === arr.findIndex(x =>
-      String(x?.full_name || x?.name || x?.html_url || x?.url || "").toLowerCase().trim() === key
-    );
-  })
-  // stars 내림차순 → updated 최신순
-  .sort((a, b) => {
-    const ds = (b.stars - a.stars);
-    if (ds !== 0) return ds;
-    const ta = Date.parse(a.updated || "") || 0;
-    const tb = Date.parse(b.updated || "") || 0;
-    return tb - ta;
-  })
-  .slice(0, GH_KEEP_TOP);
-
-  // ✅ GitHub results dedupe (multi-query/page overlap) + cap
-if (Array.isArray(external.github) && external.github.length > 1) {
-  const seen = new Set();
-  const uniq = [];
-
-  for (const r of external.github) {
-    const key = String(r?.full_name || r?.html_url || r?.url || "").toLowerCase().trim();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    uniq.push(r);
-  }
-
-  const cap = Math.max(
-    1,
-    parseInt(process.env.GITHUB_MAX_RESULTS_KEEP || "40", 10) || 40
-  );
-  external.github = uniq.slice(0, cap);
-}
-
-const GH_MIN_STARS = Math.max(
-  0,
-  parseInt(process.env.GH_MIN_STARS || "0", 10) || 0
-);
-
-const ghUrlHit = /https?:\/\/github\.com\/[^\s/]+\/[^\s/]+/i.test(rawQuery);
-const ghOwnerRepoMatch = String(rawQuery || "").match(/\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/);
-
-// api/verify 같은 "경로" 오탐만 제외하고, owner/repo는 기본 repo 힌트로 인정하되
-// "문맥 힌트"가 있으면 더 확실히 repo로 취급 (nodejs/node 등)
-const ghOwnerRepoHintText = /(github|깃헙|repo|repository|레포|issue|issues|pr|pull\s*request|commit|커밋)/i.test(String(rawQuery || ""));
-
-const ghOwnerRepoHit = !!(
-  ghOwnerRepoMatch &&
-  !/^(api|v\d+)\/(verify|admin|settings|status)\b/i.test(String(ghOwnerRepoMatch[0] || "")) &&
-  (ghOwnerRepoHintText || ghUrlHit || /\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/.test(String(rawQuery || "")))
-);
-
-const ghHardRepoHint = ghUrlHit || ghOwnerRepoHit;
-
-const ghMaxStars = Math.max(
-  0,
-  ...(Array.isArray(external.github) ? external.github : []).map(r =>
-    Number(r?.stars ?? r?.stargazers_count ?? 0)
-  )
-);
-
-if ((safeMode === "dv" || safeMode === "cv") && !ghHardRepoHint && ghMaxStars < GH_MIN_STARS) {
-  external.github = [];
-}
-
-// ✅ DV/CV는 GitHub 근거가 0이면 여기서 종료(헛소리 방지) + (스키마 통일: code/suggested_mode/classifier)
-if (
-  (safeMode === "dv" || safeMode === "cv") &&
-  (!Array.isArray(external.github) || external.github.length === 0)
-) {
-  const suggestedMode = safeMode; // 모드는 맞는데 근거가 없음 → 모드 유지 + 입력을 더 구체화 유도
-
-  const classifier = {
-    type: "github_no_results",
-    method: "github/search",
-    confidence: null,
-    reason: "no_results",
-  };
-
-    // ✅ 실제로 기록된 github queries 우선 (sanitize된 q1이 engineQueries.github에 들어감)
-  const usedGhQueries =
-    (typeof engineQueries === "object" &&
-      engineQueries &&
-      Array.isArray(engineQueries.github) &&
-      engineQueries.github.length > 0)
-      ? engineQueries.github
-      : (Array.isArray(ghQueries) ? ghQueries : []);
-
-  const githubCount = Array.isArray(external?.github) ? external.github.length : 0;
-
-  const msg =
-    `DV/CV 모드는 GitHub(코드/레포/이슈/커밋) 근거 기반 검증 전용입니다.\n` +
-    `하지만 이번 요청은 GitHub 검색 결과가 0건이라 근거를 확보하지 못했습니다.\n\n` +
-    `- 생성/사용된 GitHub queries:\n  - ${(Array.isArray(usedGhQueries) ? usedGhQueries.join("\n  - ") : "")}\n\n` +
-    `권장:\n` +
-    `- 레포 URL/패키지명/에러 로그/코드 블록을 포함해서 다시 요청\n` +
-    `- 일반 사실/통계 검증이면 QV/FV로 보내기\n`;
-
-  return res.status(200).json({
-    success: true,
-    data: {
-      code: "NO_EVIDENCE",
-      suggested_mode: suggestedMode,
-      classifier,
-
-      mode: safeMode,
-      truthscore: "0.00%",
-      truthscore_pct: 0,
-      truthscore_01: 0,
-      elapsed: Date.now() - start,
-
-      engines: [],
-      engines_requested: ["github"],
-
-      partial_scores: {
-       ...__ghDebug,
-        no_evidence: true,
-        expected: "GitHub evidence (repo/code/issue/commit)",
-        received: "github search returned 0 results",
-        suggested_mode: suggestedMode,
-        classifier,
-
-        github_queries: Array.isArray(usedGhQueries) ? usedGhQueries : [],
-        engine_queries: {
-          github: Array.isArray(usedGhQueries) ? usedGhQueries.slice(0, 12) : [],
-        },
-        engine_results: { github: githubCount },
-      },
-
-      flash_summary: msg,
-        verify_raw: JSON.stringify({
-        code: "NO_EVIDENCE",
-        mode: safeMode,
-        suggested_mode: suggestedMode,
-        classifier,
-        github_queries: Array.isArray(usedGhQueries) ? usedGhQueries : [],
-        note: "No GitHub evidence found; DV/CV aborted before Gemini verify to avoid hallucination.",
-      }),
-
-      /// 프론트/로그 안정용(있어도 되고 없어도 되지만, 통일 위해 유지)
-      engine_times: engineTimes,
-      engine_metrics: engineMetrics,
-      gemini_times: geminiTimes,
-      gemini_metrics: geminiMetrics,
-      github_repos: [],
-    },
-    timestamp: new Date().toISOString(),
-  });
-}
-
-const rec = calcCompositeRecency({
-  mode: safeMode,
-  github: external.github,
-});
-partial_scores.recency = rec.overall;
-partial_scores.recency_detail = rec.detail;
+          github: external.github,
+        });
+        partial_scores.recency = rec.overall;
+        partial_scores.recency_detail = rec.detail;
 
         partial_scores.validity =
-      (Array.isArray(external.github) && external.github.length > 0)
-        ? calcValidityScore(external.github)
-        : null;
-    // ✅ 실제로 사용된 github queries 우선 (sanitize된 q1이 engineQueries.github에 들어감)
-const usedGhQueriesMain =
-  (typeof engineQueries === "object" &&
-    engineQueries &&
-    Array.isArray(engineQueries.github) &&
-    engineQueries.github.length > 0)
-    ? engineQueries.github
-    : (Array.isArray(ghQueries) ? ghQueries : []);
+          (Array.isArray(external.github) && external.github.length > 0)
+            ? calcValidityScore(external.github)
+            : null;
+        // ✅ 실제로 사용된 github queries 우선 (sanitize된 q1이 engineQueries.github에 들어감)
+        const usedGhQueriesMain =
+          (typeof engineQueries === "object" &&
+            engineQueries &&
+            Array.isArray(engineQueries.github) &&
+            engineQueries.github.length > 0)
+            ? engineQueries.github
+            : (Array.isArray(ghQueries) ? ghQueries : []);
 
-partial_scores.github_queries = usedGhQueriesMain;
-partial_scores.engine_queries = {
-  github: uniqStrings(usedGhQueriesMain, 12),
-};
+        partial_scores.github_queries = usedGhQueriesMain;
+        partial_scores.engine_queries = {
+          github: uniqStrings(usedGhQueriesMain, 12),
+        };
 
-// ✅ DV/CV도 engines_used 계산(쿼리/calls/results 기준)
-partial_scores.engine_results = {
-  github: Array.isArray(external.github) ? external.github.length : 0,
-};
+        // ✅ DV/CV도 engines_used 계산(쿼리/calls/results 기준)
+        partial_scores.engine_results = {
+          github: Array.isArray(external.github) ? external.github.length : 0,
+        };
 
-// QV/FV처럼 로그용으로 얘네도 남겨두면 Admin UI에서 보기 편함
-partial_scores.engine_times = engineTimes;
-partial_scores.engine_metrics = engineMetrics;
+        // QV/FV처럼 로그용으로 얘네도 남겨두면 Admin UI에서 보기 편함
+        partial_scores.engine_times = engineTimes;
+        partial_scores.engine_metrics = engineMetrics;
 
-// ✅ evidence digest (DV/CV: github only)
-try {
-  const _trim = (s, n) => {
-    s = String(s ?? "").trim();
-    if (!s) return "";
-    return s.length > n ? (s.slice(0, n - 1) + "…") : s;
-  };
+        // ✅ evidence digest (DV/CV: github only)
+        try {
+          const _trim = (s, n) => {
+            s = String(s ?? "").trim();
+            if (!s) return "";
+            return s.length > n ? (s.slice(0, n - 1) + "…") : s;
+          };
 
-  const _pickLink = (it) => _trim(it?.html_url ?? it?.url ?? it?.link ?? "", 260);
+          const _pickLink = (it) => _trim(it?.html_url ?? it?.url ?? it?.link ?? "", 260);
 
-  const _pickHost = (it) => {
-    const u = String(it?.html_url ?? it?.url ?? it?.link ?? "").trim();
-    if (!u) return null;
-    try { return (new URL(u)).hostname; } catch { return null; }
-  };
+          const _pickHost = (it) => {
+            const u = String(it?.html_url ?? it?.url ?? it?.link ?? "").trim();
+            if (!u) return null;
+            try { return (new URL(u)).hostname; } catch { return null; }
+          };
 
-  const _pickTitle = (it) =>
-    _trim(it?.title ?? it?.name ?? it?.full_name ?? it?.repo ?? "", 160);
+          const _pickTitle = (it) =>
+            _trim(it?.title ?? it?.name ?? it?.full_name ?? it?.repo ?? "", 160);
 
-  const _pickRepo = (it) =>
-    _trim(it?.full_name ?? it?.name ?? it?.repo ?? "", 140);
+          const _pickRepo = (it) =>
+            _trim(it?.full_name ?? it?.name ?? it?.repo ?? "", 140);
 
-  const _pickStars = (it) => {
-    const n = Number(it?.stars ?? it?.stargazers_count ?? it?.stargazers ?? 0);
-    return Number.isFinite(n) ? n : 0;
-  };
+          const _pickStars = (it) => {
+            const n = Number(it?.stars ?? it?.stargazers_count ?? it?.stargazers ?? 0);
+            return Number.isFinite(n) ? n : 0;
+          };
 
-  const _pickUpdated = (it) =>
-    _trim(
-      it?.updated_at ??
-        it?.updated ??
-        it?.pushed_at ??
-        it?.created_at ??
-        it?.date ??
-        "",
-      40
-    );
+          const _pickUpdated = (it) =>
+            _trim(
+              it?.updated_at ??
+              it?.updated ??
+              it?.pushed_at ??
+              it?.created_at ??
+              it?.date ??
+              "",
+              40
+            );
 
-  const gh = Array.isArray(external?.github) ? external.github : [];
+          const gh = Array.isArray(external?.github) ? external.github : [];
 
-    // ✅ 기존 digest를 덮어쓰지 말고 github만 병합(merge)
-  const __prevDigest =
-  (partial_scores && partial_scores.evidence_digest && typeof partial_scores.evidence_digest === "object")
-    ? partial_scores.evidence_digest
-    : {};
+          // ✅ 기존 digest를 덮어쓰지 말고 github만 병합(merge)
+          const __prevDigest =
+            (partial_scores && partial_scores.evidence_digest && typeof partial_scores.evidence_digest === "object")
+              ? partial_scores.evidence_digest
+              : {};
 
-const __prevTotals =
-  (__prevDigest && __prevDigest.totals && typeof __prevDigest.totals === "object")
-    ? __prevDigest.totals
-    : {};
+          const __prevTotals =
+            (__prevDigest && __prevDigest.totals && typeof __prevDigest.totals === "object")
+              ? __prevDigest.totals
+              : {};
 
-const __prevTop =
-  (__prevDigest && __prevDigest.top && typeof __prevDigest.top === "object")
-    ? __prevDigest.top
-    : {};
+          const __prevTop =
+            (__prevDigest && __prevDigest.top && typeof __prevDigest.top === "object")
+              ? __prevDigest.top
+              : {};
 
-const __TOPK = Math.max(1, Number(process.env.BLOCK_EVIDENCE_TOPK || 3));
+          const __TOPK = Math.max(1, Number(process.env.BLOCK_EVIDENCE_TOPK || 3));
 
-// ✅ object spread는 반드시 "객체"만 펼치도록 (|| {}) 가드
-partial_scores.evidence_digest = {
-  ...(__prevDigest || {}),
-  totals: { ...(__prevTotals || {}), github: gh.length },
-  top: {
-    ...(__prevTop || {}),
-    github: gh
-      .slice(0, __TOPK)
-      .map((it) => ({
-        title: _pickTitle(it),
-        repo: _pickRepo(it),
-        link: _pickLink(it),
-        host: _pickHost(it),
-        stars: _pickStars(it),
-        updated: _pickUpdated(it),
-      }))
-      .filter((x) => x.title || x.link),
-  },
-};
-} catch {}
+          // ✅ object spread는 반드시 "객체"만 펼치도록 (|| {}) 가드
+          partial_scores.evidence_digest = {
+            ...(__prevDigest || {}),
+            totals: { ...(__prevTotals || {}), github: gh.length },
+            top: {
+              ...(__prevTop || {}),
+              github: gh
+                .slice(0, __TOPK)
+                .map((it) => ({
+                  title: _pickTitle(it),
+                  repo: _pickRepo(it),
+                  link: _pickLink(it),
+                  host: _pickHost(it),
+                  stars: _pickStars(it),
+                  updated: _pickUpdated(it),
+                }))
+                .filter((x) => x.title || x.link),
+            },
+          };
+        } catch { }
 
-// ✅ 요청 body.engines(또는 engines_requested/enginesRequested)가 있으면 그걸 우선 반영
-const enginesRequestedFinalize = __resolveEnginesRequestedFromReq({ req, partial_scores, engines, safeMode });
+        // ✅ 요청 body.engines(또는 engines_requested/enginesRequested)가 있으면 그걸 우선 반영
+        const enginesRequestedFinalize = __resolveEnginesRequestedFromReq({ req, partial_scores, engines, safeMode });
 
-const { used: enginesUsedPre, excluded: enginesExcludedPre } = computeEnginesUsed({
-  enginesRequested: enginesRequestedFinalize,
-  partial_scores,
-  engineMetrics,
-});
+        const { used: enginesUsedPre, excluded: enginesExcludedPre } = computeEnginesUsed({
+          enginesRequested: enginesRequestedFinalize,
+          partial_scores,
+          engineMetrics,
+        });
 
-partial_scores.engines_requested = enginesRequestedFinalize;
+        partial_scores.engines_requested = enginesRequestedFinalize;
 
-// FINALIZE에서 engines_used 확정(여긴 pre만)
-partial_scores.engines_used_pre = enginesUsedPre;
-partial_scores.engines_excluded_pre = enginesExcludedPre;
-partial_scores.engine_exclusion_reasons_pre = Object.fromEntries(
-  Object.entries(enginesExcludedPre || {}).map(([k, v]) => [k, v?.reason || "excluded"])
-);
+        // FINALIZE에서 engines_used 확정(여긴 pre만)
+        partial_scores.engines_used_pre = enginesUsedPre;
+        partial_scores.engines_excluded_pre = enginesExcludedPre;
+        partial_scores.engine_exclusion_reasons_pre = Object.fromEntries(
+          Object.entries(enginesExcludedPre || {}).map(([k, v]) => [k, v?.reason || "excluded"])
+        );
 
-    // ✅ consistency (Gemini Pro)
-    const t_cons = Date.now();
-    partial_scores.consistency = await calcConsistencyFromGemini(
-  safeMode,
-  query,
-  answerText,
-  external.github,
-  gemini_key,
-  logUserId
-);
-    const ms_cons = Date.now() - t_cons;
-    recordTime(geminiTimes, "consistency_ms", ms_cons);
-    recordMetric(geminiMetrics, "consistency", ms_cons);
+        // ✅ consistency (Gemini Pro)
+        const t_cons = Date.now();
+        partial_scores.consistency = await calcConsistencyFromGemini(
+          safeMode,
+          query,
+          answerText,
+          external.github,
+          gemini_key,
+          logUserId
+        );
+        const ms_cons = Date.now() - t_cons;
+        recordTime(geminiTimes, "consistency_ms", ms_cons);
+        recordMetric(geminiMetrics, "consistency", ms_cons);
 
-    break;
-  }
+        break;
+      }
 
-  case "lv": {
-  // ✅ LV 모드 제거: 여기로 오면 차단
-  return res.status(400).json(
-    buildError(
-      "VALIDATION_ERROR",
-      "LV 모드는 제거되었습니다. mode=qv 또는 mode=fv로 요청하세요. (법률 키워드 + klaw_key가 있으면 klaw 엔진을 추가 실행합니다.)"
-    )
-  );
-}
-}
+      case "lv": {
+        // ✅ LV 모드 제거: 여기로 오면 차단
+        return res.status(400).json(
+          buildError(
+            "VALIDATION_ERROR",
+            "LV 모드는 제거되었습니다. mode=qv 또는 mode=fv로 요청하세요. (법률 키워드 + klaw_key가 있으면 klaw 엔진을 추가 실행합니다.)"
+          )
+        );
+      }
+    }
 
-// ✅ 이후 로직(보정계수/로그/응답)은 enginesUsed를 기준으로 사용
+    // ✅ 이후 로직(보정계수/로그/응답)은 enginesUsed를 기준으로 사용
 
 
     // ─────────────────────────────
     // ② LV 모드는 TruthScore/가중치 계산 없이 바로 반환
     // ─────────────────────────────
-   if (safeMode === "lv") {
-  const elapsed = Date.now() - start;
+    if (safeMode === "lv") {
+      const elapsed = Date.now() - start;
 
-// ✅ LV도 Gemini 총합(ms) 계산 (Flash-Lite 요약 등 포함)
-partial_scores.gemini_total_ms = Object.values(geminiTimes)
-  .filter((v) => typeof v === "number" && Number.isFinite(v))
-  .reduce((s, v) => s + v, 0);
+      // ✅ LV도 Gemini 총합(ms) 계산 (Flash-Lite 요약 등 포함)
+      partial_scores.gemini_total_ms = Object.values(geminiTimes)
+        .filter((v) => typeof v === "number" && Number.isFinite(v))
+        .reduce((s, v) => s + v, 0);
 
-partial_scores.gemini_times = geminiTimes;
-partial_scores.gemini_metrics = geminiMetrics;
+      partial_scores.gemini_times = geminiTimes;
+      partial_scores.gemini_metrics = geminiMetrics;
 
-// sources(text)에 서버 메타/부분점수 등을 JSON으로 저장(필요한 만큼만)
-const sourcesText = safeSourcesForDB(
-  {
-    meta: { mode: safeMode },
-    external,
-    partial_scores,
-  },
-  20000
-);
+      // sources(text)에 서버 메타/부분점수 등을 JSON으로 저장(필요한 만큼만)
+      const sourcesText = safeSourcesForDB(
+        {
+          meta: { mode: safeMode },
+          external,
+          partial_scores,
+        },
+        20000
+      );
 
-await supabase.from("verification_logs").insert([
-  {
-    user_id: logUserId,
-    question: query,          // ✅ 대표 질문
-    query: query,             // ✅ (스키마에 있으니 같이)
-    truth_score: null,        // ✅ LV는 TruthScore 없음
-    summary: partial_scores.lv_summary || null,
-    cross_score: null,
-    adjusted_score: null,
-    status: safeMode,         // ✅ mode 컬럼이 없으니 status에 mode 저장
-    engines,                  // ✅ jsonb (stringify 금지)
-    keywords: null,           // ✅ 필요하면 배열 넣기
-    elapsed: String(elapsed), // ✅ text 컬럼
-    model_main: partial_scores.lv_summary ? "gemini-2.5-flash-lite" : null,
-    model_eval: null,
-    sources: sourcesText,
-    gemini_model: null,
-    error: null,
-    created_at: new Date(),
-  },
-]);
+      await supabase.from("verification_logs").insert([
+        {
+          user_id: logUserId,
+          question: query,          // ✅ 대표 질문
+          query: query,             // ✅ (스키마에 있으니 같이)
+          truth_score: null,        // ✅ LV는 TruthScore 없음
+          summary: partial_scores.lv_summary || null,
+          cross_score: null,
+          adjusted_score: null,
+          status: safeMode,         // ✅ mode 컬럼이 없으니 status에 mode 저장
+          engines,                  // ✅ jsonb (stringify 금지)
+          keywords: null,           // ✅ 필요하면 배열 넣기
+          elapsed: String(elapsed), // ✅ text 컬럼
+          model_main: partial_scores.lv_summary ? "gemini-2.5-flash-lite" : null,
+          model_eval: null,
+          sources: sourcesText,
+          gemini_model: null,
+          error: null,
+          created_at: new Date(),
+        },
+      ]);
 
 
-  return res.json(
-    buildSuccess({
-      mode: safeMode,
-      elapsed,
-      engines,
-      klaw_result: external.klaw,
-      // 🔹 Flash-Lite 요약본을 함께 내려줌 (없으면 null)
-      lv_summary: partial_scores.lv_summary || null,
-    })
-  );
-}
+      return res.json(
+        buildSuccess({
+          mode: safeMode,
+          elapsed,
+          engines,
+          klaw_result: external.klaw,
+          // 🔹 Flash-Lite 요약본을 함께 내려줌 (없으면 null)
+          lv_summary: partial_scores.lv_summary || null,
+        })
+      );
+    }
 
-// ③ 엔진 보정계수는 engines_used(E_eff) FINALIZE 이후 계산하도록 아래로 이동
-engineFactor = 1.0;
-partial_scores.engine_factor = 1.0;
-partial_scores.engine_factor_engines = [];
+    // ③ 엔진 보정계수는 engines_used(E_eff) FINALIZE 이후 계산하도록 아래로 이동
+    engineFactor = 1.0;
+    partial_scores.engine_factor = 1.0;
+    partial_scores.engine_factor_engines = [];
 
     // ─────────────────────────────
     // ④ Gemini 요청 단계 (Flash → Pro)
     //   - QV/FV: 전처리에서 이미 답변/블록 생성 → 여기서는 검증(verify)만 수행
     //   - DV/CV: external을 포함한 요약(flash) + 검증(verify)
     // ─────────────────────────────
-let flash = "";
-let verify = "";
-let verifyMeta = null;
+    let flash = "";
+    let verify = "";
+    let verifyMeta = null;
 
-// ✅ verifyModelUsed는 기본적으로 선택된 verifyModel에서 시작.
-//    (실제 성공 모델은 아래 Gemini fallback 루프에서 성공 시점에 갱신됨)
-verifyModelUsed = verifyModelUsed || verifyModel;
+    // ✅ verifyModelUsed는 기본적으로 선택된 verifyModel에서 시작.
+    //    (실제 성공 모델은 아래 Gemini fallback 루프에서 성공 시점에 갱신됨)
+    verifyModelUsed = verifyModelUsed || verifyModel;
 
-// ✅ flash(요약/답변) 단계에서 쓸 모델 (flash / flash-lite만 허용)
-// - 기본은 env 상수(GEMINI_QVFV_PRE_MODEL), 없으면 verifyModel/verify 상수로 폴백
-let answerModelUsed = GEMINI_QVFV_PRE_MODEL || GEMINI_VERIFY_MODEL || verifyModel;
+    // ✅ flash(요약/답변) 단계에서 쓸 모델 (flash / flash-lite만 허용)
+    // - 기본은 env 상수(GEMINI_QVFV_PRE_MODEL), 없으면 verifyModel/verify 상수로 폴백
+    let answerModelUsed = GEMINI_QVFV_PRE_MODEL || GEMINI_VERIFY_MODEL || verifyModel;
 
-if (safeMode === "qv" || safeMode === "fv") {
-  // QV/FV에서도 이제 flash / flash-lite만 허용
-  const gRaw = String(geminiModelRaw || "").toLowerCase();
+    if (safeMode === "qv" || safeMode === "fv") {
+      // QV/FV에서도 이제 flash / flash-lite만 허용
+      const gRaw = String(geminiModelRaw || "").toLowerCase();
 
-  if (gRaw === "flash-lite" || gRaw === "lite" || /flash-lite/i.test(gRaw)) {
-    answerModelUsed =
-      GEMINI_VERIFY_LITE_MODEL || GEMINI_QVFV_PRE_MODEL || GEMINI_VERIFY_MODEL || verifyModel;
-  } else {
-    answerModelUsed = GEMINI_QVFV_PRE_MODEL || GEMINI_VERIFY_MODEL || verifyModel;
-  }
-}
+      if (gRaw === "flash-lite" || gRaw === "lite" || /flash-lite/i.test(gRaw)) {
+        answerModelUsed =
+          GEMINI_VERIFY_LITE_MODEL || GEMINI_QVFV_PRE_MODEL || GEMINI_VERIFY_MODEL || verifyModel;
+      } else {
+        answerModelUsed = GEMINI_QVFV_PRE_MODEL || GEMINI_VERIFY_MODEL || verifyModel;
+      }
+    }
 
     try {
       // 4-1) Flash 단계
-const effMode = (() => {
-  const m = String(safeMode || "").trim().toLowerCase();
-  if (!m || m === "auto" || m === "overlay" || m === "route") return "qv";
-  if (m === "qv" || m === "fv" || m === "dv" || m === "cv") return m;
-  return "qv";
-})();
+      const effMode = (() => {
+        const m = String(safeMode || "").trim().toLowerCase();
+        if (!m || m === "auto" || m === "overlay" || m === "route") return "qv";
+        if (m === "qv" || m === "fv" || m === "dv" || m === "uv") return m;
+        return "qv";
+      })();
 
-if (effMode === "qv") {
-  flash = String(partial_scores?.qv_answer || "");
-  // ✅ 전처리(one-shot)에서 answer_ko가 비어 있으면 flash도 빈값으로 두고 진행한다.
-} else if (effMode === "fv") {
-  // ✅ FV: 검증 대상은 사용자가 준 사실 문장(core_text)이므로 별도 flash 불필요
-  flash = "";
-} else {
-  // ✅ DV/CV: external을 포함한 1차 요약/설명 생성 (기존 로직 유지)
-  const flashPrompt =
-    `[${effMode.toUpperCase()}] ${query}\n` +
-    `참조자료:\n${JSON.stringify(external).slice(0, FLASH_REF_CHARS)}`;
+      if (effMode === "qv") {
+        flash = String(partial_scores?.qv_answer || "");
+        // ✅ 전처리(one-shot)에서 answer_ko가 비어 있으면 flash도 빈값으로 두고 진행한다.
+      } else if (effMode === "fv") {
+        // ✅ FV: 검증 대상은 사용자가 준 사실 문장(core_text)이므로 별도 flash 불필요
+        flash = "";
+      } else {
+        // ✅ DV/CV: external을 포함한 1차 요약/설명 생성 (기존 로직 유지)
+        const flashPrompt =
+          `[${effMode.toUpperCase()}] ${query}\n` +
+          `참조자료:\n${JSON.stringify(external).slice(0, FLASH_REF_CHARS)}`;
 
-  const t_flash = Date.now();
-  flash = await fetchGeminiSmart({
-    userId: logUserId,
-    keyHint: gemini_key,
-    model: answerModelUsed,
-    payload: { contents: [{ parts: [{ text: flashPrompt }] }] },
-  });
-  const ms_flash = Date.now() - t_flash;
-  recordTime(geminiTimes, "flash_ms", ms_flash);
-  recordMetric(geminiMetrics, "flash", ms_flash);
-}
+        const t_flash = Date.now();
+        flash = await fetchGeminiSmart({
+          userId: logUserId,
+          keyHint: gemini_key,
+          model: answerModelUsed,
+          payload: { contents: [{ parts: [{ text: flashPrompt }] }] },
+        });
+        const ms_flash = Date.now() - t_flash;
+        recordTime(geminiTimes, "flash_ms", ms_flash);
+        recordMetric(geminiMetrics, "flash", ms_flash);
+      }
 
       // 4-2) verify 입력 패키지 구성
       const blocksForVerify =
-  (effMode === "qv" || effMode === "fv") &&
-  Array.isArray(qvfvBlocksForVerifyFull)
-    ? qvfvBlocksForVerifyFull
-    : [];
+        (effMode === "qv" || effMode === "fv" || effMode === "uv") &&
+          Array.isArray(qvfvBlocksForVerifyFull)
+          ? qvfvBlocksForVerifyFull
+          : [];
       // ✅ (패치) 숫자 블록이면: 선택된 Naver evidence URL을 열어 "숫자 포함 발췌(evidence_text)"를 채움
       // - 특정 사이트 고정 없이 동작
       // - 숫자 블록일 때만, TOPK URL만, 총 fetch 수 제한
-            // ✅ (패치) 숫자/연도 블록이면: 블록별로 "가장 맞는" Naver URL을 골라 evidence_text를 채움
-    if (NAVER_NUMERIC_FETCH && (effMode === "qv" || effMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
-  let budget = NAVER_NUMERIC_FETCH_MAX;
+      // ✅ (패치) 숫자/연도 블록이면: 블록별로 "가장 맞는" Naver URL을 골라 evidence_text를 채움
+      if (NAVER_NUMERIC_FETCH && (effMode === "qv" || effMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
+        let budget = NAVER_NUMERIC_FETCH_MAX;
 
-  // 이미 본 URL 중복 fetch 방지(성능/부하)
-  const __nfSeen = new Set();
+        // 이미 본 URL 중복 fetch 방지(성능/부하)
+        const __nfSeen = new Set();
 
-    // (일반화) 화이트리스트 tier1 전체를 "핵심 공공/국제 도메인"으로 보고
-  // 숫자 검증 시 우선순위를 조금 더 올려 줌.
-  //
-  // - 도메인은 naver_whitelist.json 의 tiers.tier1.domains 에서만 관리
-  // - 코드는 "tier1에 속해 있냐?"만 본다.
-  const wlForNumeric = loadNaverWhitelist();
-  const __numericPriorityDomains = Array.isArray(wlForNumeric?.tiers?.tier1?.domains)
-    ? wlForNumeric.tiers.tier1.domains
-    : [];
+        // (일반화) 화이트리스트 tier1 전체를 "핵심 공공/국제 도메인"으로 보고
+        // 숫자 검증 시 우선순위를 조금 더 올려 줌.
+        //
+        // - 도메인은 naver_whitelist.json 의 tiers.tier1.domains 에서만 관리
+        // - 코드는 "tier1에 속해 있냐?"만 본다.
+        const wlForNumeric = loadNaverWhitelist();
+        const __numericPriorityDomains = Array.isArray(wlForNumeric?.tiers?.tier1?.domains)
+          ? wlForNumeric.tiers.tier1.domains
+          : [];
 
-  const __isCoreStatHost = (host = "") =>
-    __numericPriorityDomains.some((d) => host.endsWith(d));
+        const __isCoreStatHost = (host = "") =>
+          __numericPriorityDomains.some((d) => host.endsWith(d));
 
-  const __getHostFromUrl = (u = "") => {
-    try {
-      const _u = new URL(u);
-      return String(_u.hostname || "").toLowerCase();
-    } catch {
-      return "";
-    }
-  };
+        const __getHostFromUrl = (u = "") => {
+          try {
+            const _u = new URL(u);
+            return String(_u.hostname || "").toLowerCase();
+          } catch {
+            return "";
+          }
+        };
 
-  for (const b of blocksForVerify) {
-    if (budget <= 0) break;
-    if (!hasNumberLike(b?.text) && !hasNumberLike(query)) continue;
+        for (const b of blocksForVerify) {
+          if (budget <= 0) break;
+          if (!hasNumberLike(b?.text) && !hasNumberLike(query)) continue;
 
-    const evsAll = Array.isArray(b?.evidence?.naver) ? b.evidence.naver : [];
-    if (evsAll.length === 0) continue;
+          const evsAll = Array.isArray(b?.evidence?.naver) ? b.evidence.naver : [];
+          if (evsAll.length === 0) continue;
 
-    const needle = String(b?.text || "").trim();
-const years = extractYearTokens(needle);
-const nums = extractQuantNumberTokens(needle);
-const numsCompact = nums.map(normalizeNumToken);
-const kw = extractKeywords(needle, 12);
+          const needle = String(b?.text || "").trim();
+          const years = extractYearTokens(needle);
+          const nums = extractQuantNumberTokens(needle);
+          const numsCompact = nums.map(normalizeNumToken);
+          const kw = extractKeywords(needle, 12);
 
-    // URL별 fetch 후보 3개 정도만: 연도/숫자 매칭 + 관련도 + 화이트리스트/도메인 가중치
-    const scored = [];
-    for (const ev of evsAll) {
-      const urlCand = String(ev?.source_url || ev?.link || "").trim();
-      if (!urlCand) continue;
-      if (!isSafeExternalHttpUrl(urlCand)) continue;
+          // URL별 fetch 후보 3개 정도만: 연도/숫자 매칭 + 관련도 + 화이트리스트/도메인 가중치
+          const scored = [];
+          for (const ev of evsAll) {
+            const urlCand = String(ev?.source_url || ev?.link || "").trim();
+            if (!urlCand) continue;
+            if (!isSafeExternalHttpUrl(urlCand)) continue;
 
-      const text = `${String(ev?.title || "")} ${String(ev?.desc || "")}`;
-      const rel = keywordHitRatio(text, kw);
+            const text = `${String(ev?.title || "")} ${String(ev?.desc || "")}`;
+            const rel = keywordHitRatio(text, kw);
 
-      const isWhitelisted = (ev?.whitelisted === true) || !!ev?.tier;
+            const isWhitelisted = (ev?.whitelisted === true) || !!ev?.tier;
 
-// display-only는 evidence로 쓰지 않음(일관성)
-const isDisplayOnly =
-  (ev?.display_only === true) || (ev?._whitelist_display_only === true);
-if (isDisplayOnly) continue;
+            // display-only는 evidence로 쓰지 않음(일관성)
+            const isDisplayOnly =
+              (ev?.display_only === true) || (ev?._whitelist_display_only === true);
+            if (isDisplayOnly) continue;
 
-const textCompact = String(text || "").replace(/[,\s]/g, "");
+            const textCompact = String(text || "").replace(/[,\s]/g, "");
 
-const hasYear = years.length
-  ? years.some(y => text.includes(String(y)) || textCompact.includes(String(y)))
-  : false;
+            const hasYear = years.length
+              ? years.some(y => text.includes(String(y)) || textCompact.includes(String(y)))
+              : false;
 
-const hasExactNum = numsCompact.length
-  ? numsCompact.some(n => n && textCompact.includes(String(n)))
-  : false;
+            const hasExactNum = numsCompact.length
+              ? numsCompact.some(n => n && textCompact.includes(String(n)))
+              : false;
 
-const hasAnyNum = hasNumberLike(text);
+            const hasAnyNum = hasNumberLike(text);
 
-if (!isWhitelisted) continue;
+            if (!isWhitelisted) continue;
 
-      let baseW = 1.0;
-      if (typeof ev?.tier_weight === "number" && Number.isFinite(ev.tier_weight)) baseW *= ev.tier_weight;
-      if (typeof ev?.type_weight === "number" && Number.isFinite(ev.type_weight)) baseW *= ev.type_weight;
+            let baseW = 1.0;
+            if (typeof ev?.tier_weight === "number" && Number.isFinite(ev.tier_weight)) baseW *= ev.tier_weight;
+            if (typeof ev?.type_weight === "number" && Number.isFinite(ev.type_weight)) baseW *= ev.type_weight;
 
-      // (추가) 도메인 기준 가중치 – 통계청/KOSIS 계열은 강하게 우대
-      const hostRaw = String(ev?.host || ev?.source_host || "").toLowerCase();
-      const hostFromUrl = __getHostFromUrl(urlCand);
-      const host = hostRaw || hostFromUrl;
+            // (추가) 도메인 기준 가중치 – 통계청/KOSIS 계열은 강하게 우대
+            const hostRaw = String(ev?.host || ev?.source_host || "").toLowerCase();
+            const hostFromUrl = __getHostFromUrl(urlCand);
+            const host = hostRaw || hostFromUrl;
 
-      let hostBonus = 1.0;
-      if (host && __isCoreStatHost(host)) {
-        hostBonus *= 1.35;        // 통계청/KOSIS/국가통계/국제통계 사이트 강한 우대
-      } else if (host && host.endsWith("un.org")) {
-        hostBonus *= 1.15;        // UN 계열(인구 DB 등)
-      } else if (host && host.includes("blog.naver.com")) {
-        // 블로그는 기본적으로 숫자가 잘 맞아도 살짝 디스카운트
-        hostBonus *= 0.9;
-      }
+            let hostBonus = 1.0;
+            if (host && __isCoreStatHost(host)) {
+              hostBonus *= 1.35;        // 통계청/KOSIS/국가통계/국제통계 사이트 강한 우대
+            } else if (host && host.endsWith("un.org")) {
+              hostBonus *= 1.15;        // UN 계열(인구 DB 등)
+            } else if (host && host.includes("blog.naver.com")) {
+              // 블로그는 기본적으로 숫자가 잘 맞아도 살짝 디스카운트
+              hostBonus *= 0.9;
+            }
 
-      let bonus = 1.0;
-      if (years.length || nums.length) {
-        if (hasYear) bonus *= 1.10;
-        if (hasExactNum) bonus *= NAVER_NUM_MATCH_BOOST;
-        if (!hasYear && !hasExactNum) bonus *= 0.85;
-      }
-      if (hasAnyNum) bonus *= 1.10;
+            let bonus = 1.0;
+            if (years.length || nums.length) {
+              if (hasYear) bonus *= 1.10;
+              if (hasExactNum) bonus *= NAVER_NUM_MATCH_BOOST;
+              if (!hasYear && !hasExactNum) bonus *= 0.85;
+            }
+            if (hasAnyNum) bonus *= 1.10;
 
-      const score = baseW * hostBonus * (0.55 + 0.45 * rel) * bonus;
-      scored.push({ ev, score, host });
-    }
+            const score = baseW * hostBonus * (0.55 + 0.45 * rel) * bonus;
+            scored.push({ ev, score, host });
+          }
 
-    if (scored.length === 0) continue;
+          if (scored.length === 0) continue;
 
-    scored.sort((a, b) => b.score - a.score);
+          scored.sort((a, b) => b.score - a.score);
 
-    // (추가) 핵심 통계 도메인에서 최소 1개는 보호 슬롯으로 확보
-    let corePreferred = null;
-    for (const item of scored) {
-      if (item.host && __isCoreStatHost(item.host)) {
-        corePreferred = item;
-        break;
-      }
-    }
+          // (추가) 핵심 통계 도메인에서 최소 1개는 보호 슬롯으로 확보
+          let corePreferred = null;
+          for (const item of scored) {
+            if (item.host && __isCoreStatHost(item.host)) {
+              corePreferred = item;
+              break;
+            }
+          }
 
-    const candidates = [];
-    const candSeen = new Set();
+          const candidates = [];
+          const candSeen = new Set();
 
-    if (corePreferred && corePreferred.ev) {
-      const ev = corePreferred.ev;
-      const u = String(ev?.source_url || ev?.link || "").trim();
-      candidates.push(ev);
-      if (u) candSeen.add(u);
-    }
+          if (corePreferred && corePreferred.ev) {
+            const ev = corePreferred.ev;
+            const u = String(ev?.source_url || ev?.link || "").trim();
+            candidates.push(ev);
+            if (u) candSeen.add(u);
+          }
 
-    for (const item of scored) {
-      if (candidates.length >= 3) break;
-      const ev = item.ev;
-      if (!ev) continue;
-      if (corePreferred && ev === corePreferred.ev) continue;
+          for (const item of scored) {
+            if (candidates.length >= 3) break;
+            const ev = item.ev;
+            if (!ev) continue;
+            if (corePreferred && ev === corePreferred.ev) continue;
 
-      const u = String(ev?.source_url || ev?.link || "").trim();
-      if (u && candSeen.has(u)) continue;
+            const u = String(ev?.source_url || ev?.link || "").trim();
+            if (u && candSeen.has(u)) continue;
 
-      candidates.push(ev);
-      if (u) candSeen.add(u);
-    }
+            candidates.push(ev);
+            if (u) candSeen.add(u);
+          }
 
-    for (const ev of candidates) {
-      if (budget <= 0) break;
-      if (ev?.evidence_text) continue;
+          for (const ev of candidates) {
+            if (budget <= 0) break;
+            if (ev?.evidence_text) continue;
 
-      const url = String(ev?.source_url || ev?.link || "").trim();
-      if (!url) continue;
+            const url = String(ev?.source_url || ev?.link || "").trim();
+            if (!url) continue;
 
-      if (__nfSeen.has(url)) continue;
-      __nfSeen.add(url);
+            if (__nfSeen.has(url)) continue;
+            __nfSeen.add(url);
 
-      let pageText = null;
-      try {
-        pageText = await withTimebox(
-          ({ signal }) => fetchReadableText(url, NAVER_FETCH_TIMEOUT_MS, { signal }),
-          NAVER_FETCH_TIMEOUT_MS,
-          "naver_numeric_fetch"
-        );
-      } catch {
-        continue;
-      }
-      if (!pageText) continue;
+            let pageText = null;
+            try {
+              pageText = await withTimebox(
+                ({ signal }) => fetchReadableText(url, NAVER_FETCH_TIMEOUT_MS, { signal }),
+                NAVER_FETCH_TIMEOUT_MS,
+                "naver_numeric_fetch"
+              );
+            } catch {
+              continue;
+            }
+            if (!pageText) continue;
 
-      let excerpt = extractExcerptContainingNumbers(pageText, needle, EVIDENCE_EXCERPT_CHARS);
+            let excerpt = extractExcerptContainingNumbers(pageText, needle, EVIDENCE_EXCERPT_CHARS);
 
-if (!excerpt) {
-  // ✅ 하드 드랍(continue) 금지: needle(숫자/연도)을 못 찾아도 evidence는 유지
-  // - 대신 소프트 플래그 + 패널티 메타만 남김
-  const _fallback = String(pageText || "").trim();
-  excerpt = _fallback ? _fallback.slice(0, Math.max(200, EVIDENCE_EXCERPT_CHARS)) : null;
+            if (!excerpt) {
+              // ✅ 하드 드랍(continue) 금지: needle(숫자/연도)을 못 찾아도 evidence는 유지
+              // - 대신 소프트 플래그 + 패널티 메타만 남김
+              const _fallback = String(pageText || "").trim();
+              excerpt = _fallback ? _fallback.slice(0, Math.max(200, EVIDENCE_EXCERPT_CHARS)) : null;
 
-  // excerpt가 정말 없으면(페이지 텍스트 자체가 이상한 케이스)만 조용히 드랍
-  if (!excerpt) continue;
+              // excerpt가 정말 없으면(페이지 텍스트 자체가 이상한 케이스)만 조용히 드랍
+              if (!excerpt) continue;
 
-  // ✅ 숫자(needle) 매칭 실패 소프트 플래그
-  ev._soft_num_miss = true;
-  ev._soft_num_miss_needles = [needle].filter(Boolean).slice(0, 6);
-  ev._soft_num_miss_penalty = (typeof NUMERIC_SOFT_WARNING_PENALTY !== "undefined" ? NUMERIC_SOFT_WARNING_PENALTY : undefined);
+              // ✅ 숫자(needle) 매칭 실패 소프트 플래그
+              ev._soft_num_miss = true;
+              ev._soft_num_miss_needles = [needle].filter(Boolean).slice(0, 6);
+              ev._soft_num_miss_penalty = (typeof NUMERIC_SOFT_WARNING_PENALTY !== "undefined" ? NUMERIC_SOFT_WARNING_PENALTY : undefined);
 
-  // ✅ numeric soft warning 누적(있으면 기록, 없으면 조용히 무시)
-  try {
-    if (Array.isArray(numeric_soft_warnings)) {
-      const _u = String(ev?.source_url || ev?.link || "").trim();
-      const _host = String(ev?.host || ev?.source_host || "").toLowerCase();
-      numeric_soft_warnings.push({
-        block_id: Number.isFinite(Number(b?.id)) ? Number(b.id) : null,
-        url: _u || null,
-        host: _host || null,
-        needles: [needle].filter(Boolean).slice(0, 6),
-        reason: "numeric_excerpt_not_found",
-        action: "soft_keep",
-      });
-    }
-  } catch (_) {}
-}
+              // ✅ numeric soft warning 누적(있으면 기록, 없으면 조용히 무시)
+              try {
+                if (Array.isArray(numeric_soft_warnings)) {
+                  const _u = String(ev?.source_url || ev?.link || "").trim();
+                  const _host = String(ev?.host || ev?.source_host || "").toLowerCase();
+                  numeric_soft_warnings.push({
+                    block_id: Number.isFinite(Number(b?.id)) ? Number(b.id) : null,
+                    url: _u || null,
+                    host: _host || null,
+                    needles: [needle].filter(Boolean).slice(0, 6),
+                    reason: "numeric_excerpt_not_found",
+                    action: "soft_keep",
+                  });
+                }
+              } catch (_) { }
+            }
 
-      if (NAVER_STRICT_YEAR_MATCH && years.length) {
-  const _hasYearInExcerpt = years.some((y) => excerpt.includes(String(y)));
+            if (NAVER_STRICT_YEAR_MATCH && years.length) {
+              const _hasYearInExcerpt = years.some((y) => excerpt.includes(String(y)));
 
-  if (!_hasYearInExcerpt) {
-    // ✅ 하드 드랍(continue) 금지: 소프트 플래그 + 패널티 메타만 남기고 evidence_text는 유지
-    ev._soft_year_miss = true;
-    ev._soft_year_miss_years = years.slice(0, 6);
+              if (!_hasYearInExcerpt) {
+                // ✅ 하드 드랍(continue) 금지: 소프트 플래그 + 패널티 메타만 남기고 evidence_text는 유지
+                ev._soft_year_miss = true;
+                ev._soft_year_miss_years = years.slice(0, 6);
 
-    // ✅ "소프트 패널티" 값 기록(가중치/선정 로직에서 참고 가능)
-    ev._soft_year_miss_penalty = NAVER_YEAR_MISS_PENALTY;
+                // ✅ "소프트 패널티" 값 기록(가중치/선정 로직에서 참고 가능)
+                ev._soft_year_miss_penalty = NAVER_YEAR_MISS_PENALTY;
 
-    // NOTE: year miss는 여기서 weight/score를 깎지 않고, S-13(soft_penalties)에서 일괄 패널티로만 반영
+                // NOTE: year miss는 여기서 weight/score를 깎지 않고, S-13(soft_penalties)에서 일괄 패널티로만 반영
 
-        // ✅ year soft warning 누적(있으면 기록, 없으면 조용히 무시)
-    try {
-      if (Array.isArray(year_soft_warnings)) {
-        const _u = String(ev?.source_url || ev?.link || "").trim();
-        const _host = String(ev?.host || ev?.source_host || "").toLowerCase();
-        year_soft_warnings.push({
-          block_id: Number.isFinite(Number(b?.id)) ? Number(b.id) : null,
-          url: _u || null,
-          host: _host || null,
-          years: Array.isArray(ev._soft_year_miss_years) ? ev._soft_year_miss_years : [],
-          penalty: ev._soft_year_miss_penalty,
-        });
-      }
-    } catch (_) {}
-  }
-}
+                // ✅ year soft warning 누적(있으면 기록, 없으면 조용히 무시)
+                try {
+                  if (Array.isArray(year_soft_warnings)) {
+                    const _u = String(ev?.source_url || ev?.link || "").trim();
+                    const _host = String(ev?.host || ev?.source_host || "").toLowerCase();
+                    year_soft_warnings.push({
+                      block_id: Number.isFinite(Number(b?.id)) ? Number(b.id) : null,
+                      url: _u || null,
+                      host: _host || null,
+                      years: Array.isArray(ev._soft_year_miss_years) ? ev._soft_year_miss_years : [],
+                      penalty: ev._soft_year_miss_penalty,
+                    });
+                  }
+                } catch (_) { }
+              }
+            }
 
-      ev.evidence_text = excerpt;
-      budget -= 1;
-    }
-  }
-}
-
-// ✅ S-12: evidence-aware block pruning (no-evidence blocks removed BEFORE Gemini verify)
-// - blocksForVerify는 "검증 입력"이므로 여기서 잘라내면 (1) 환각 블록 방지 (2) verify 시간 단축
-if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
-  const dropped = [];
-const kept = [];
-const year_soft_warnings = [];
-const numeric_soft_warnings = [];
-
-  for (const b of blocksForVerify) {
-    const ev = b?.evidence || {};
-
-    // 엔진 evidence가 1개라도 있으면 통과
-    const hasAnyEvidence = Object.values(ev).some((v) => Array.isArray(v) && v.length > 0);
-    if (!hasAnyEvidence) {
-      dropped.push({
-        id: b?.id,
-        text: String(b?.text || "").slice(0, 220),
-        reason: "no_engine_evidence",
-      });
-      continue;
-    }
-
-    // 숫자/연도 주장 블록이면: excerpt/title/desc 어디든 숫자 흔적이 있는 evidence가 최소 1개는 있어야 통과
-    // (숫자근거 없이 숫자블록이 붙으면 QV2에서 '근거 있는데도 무근거' / '중간구간 환각' 둘 다 악화)
-    const claimText = String(b?.text || "");
-const isNumericClaim = hasStrongNumberLike(claimText);
-
-if (isNumericClaim) {
-      const evItems = Object.values(ev).filter(Array.isArray).flat();
-
-      const evTextBlob = evItems
-        .map((x) => `${x?.evidence_text || ""} ${x?.title || ""} ${x?.desc || ""} ${x?.url || ""} ${x?.host || ""}`)
-        .join(" ");
-
-      const hasTrusted = evItems.some(isTrustedNumericEvidenceItem);
-
-      // ✅ 기본: 숫자 못 찾더라도 "소프트 킵" (Gemini가 최종 판단)
-      // ✅ 필요하면 STRICT_NUMERIC_PRUNE=true로 예전처럼 하드 드랍 가능
-      if (!hasNumberLike(evTextBlob) && !hasTrusted) {
-        if (STRICT_NUMERIC_PRUNE) {
-          dropped.push({
-            id: b?.id,
-            text: String(b?.text || "").slice(0, 220),
-            reason: "numeric_claim_no_numeric_evidence",
-          });
-          continue;
-        } else {
-          numeric_soft_warnings.push({
-            id: b?.id,
-            text: String(b?.text || "").slice(0, 220),
-            reason: "numeric_claim_no_numeric_evidence",
-            action: "soft_keep",
-          });
+            ev.evidence_text = excerpt;
+            budget -= 1;
+          }
         }
       }
-    }
-// NOTE: year miss는 "블록 내 naver evidence가 전부 year-miss"인 경우에만 soft warning으로 집계
-//       (일부 아이템만 miss인 혼합 케이스는 경고로 잡지 않음)
-try {
-  const evItems2 = Object.values(ev).filter(Array.isArray).flat();
-  const total = evItems2.length;
-  const yearMissItems = evItems2.filter((x) => x && x._soft_year_miss);
-  const miss = yearMissItems.length;
 
-  if (total > 0 && miss === total) {
-    const years = Array.from(
-      new Set(
-        yearMissItems
-          .map((x) => (Array.isArray(x._soft_year_miss_years) ? x._soft_year_miss_years : []))
-          .flat()
-          .filter((y) => Number.isFinite(Number(y)))
-          .map((y) => Number(y))
-      )
-    ).slice(0, 8);
+      // ✅ S-12: evidence-aware block pruning (no-evidence blocks removed BEFORE Gemini verify)
+      // - blocksForVerify는 "검증 입력"이므로 여기서 잘라내면 (1) 환각 블록 방지 (2) verify 시간 단축
+      if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
+        const dropped = [];
+        const kept = [];
+        const year_soft_warnings = [];
+        const numeric_soft_warnings = [];
 
-    year_soft_warnings.push({
-      id: b?.id,
-      text: String(b?.text || "").slice(0, 220),
-      reason: "year_soft_miss_in_evidence",
-      years,
-      items: miss,
-      total,
-      action: "soft_keep",
-    });
-  }
-} catch (_e) {}
-    kept.push(b);
-  }
+        for (const b of blocksForVerify) {
+          const ev = b?.evidence || {};
 
-  // blocksForVerify가 const여도 안전하게(배열 in-place 교체)
-  blocksForVerify.splice(0, blocksForVerify.length, ...kept);
+          // 엔진 evidence가 1개라도 있으면 통과
+          const hasAnyEvidence = Object.values(ev).some((v) => Array.isArray(v) && v.length > 0);
+          if (!hasAnyEvidence) {
+            dropped.push({
+              id: b?.id,
+              text: String(b?.text || "").slice(0, 220),
+              reason: "no_engine_evidence",
+            });
+            continue;
+          }
 
-    partial_scores.evidence_prune = {
-  before: kept.length + dropped.length,
-  after: kept.length,
-  dropped,
-  numeric_soft_warnings,
-  year_soft_warnings,
-};
-// ✅ E_eff (effective engines) helpers (DETAIL ONLY)
-// - 최종 effective_engines/coverage_factor는 아래(9460: E_cov/E_eff 블록)에서 단일 소스로 확정
-// - 여기서는 "counts/ratio/detail"만 기록 + exclusion_reasons 보강만 수행
-try {
-  const __counts = __calcEngineEvidenceCounts(blocksForVerify);
-  const __requested = Array.isArray(engines_requested) ? engines_requested : [];
-  const __eff = __getEffectiveEngines(__requested, __counts);
+          // 숫자/연도 주장 블록이면: excerpt/title/desc 어디든 숫자 흔적이 있는 evidence가 최소 1개는 있어야 통과
+          // (숫자근거 없이 숫자블록이 붙으면 QV2에서 '근거 있는데도 무근거' / '중간구간 환각' 둘 다 악화)
+          const claimText = String(b?.text || "");
+          const isNumericClaim = hasStrongNumberLike(claimText);
 
-  // (detail) 최종값을 덮어쓰지 않도록 *_detail / *_ratio 로만 남김
-  const __ratio01 =
-    (__requested.length > 0)
-      ? Math.min(1.0, Math.max(0.0, (__eff.length / __requested.length)))
-      : 0.0;
+          if (isNumericClaim) {
+            const evItems = Object.values(ev).filter(Array.isArray).flat();
 
-  partial_scores.coverage_detail = {
-    requested: __requested.length,
-    effective: __eff.length,
-    ratio_01: __ratio01,
-    counts: __counts,
-  };
-  partial_scores.effective_engines_detail = __eff.slice();
-  partial_scores.effective_engines_count_detail = __eff.length;
-  partial_scores.coverage_ratio_01 = __ratio01;
+            const evTextBlob = evItems
+              .map((x) => `${x?.evidence_text || ""} ${x?.title || ""} ${x?.desc || ""} ${x?.url || ""} ${x?.host || ""}`)
+              .join(" ");
 
-  // ✅ engine_exclusion_reasons에 "no_effective_evidence" 동기화(coverage penalty target)
-  if (engine_exclusion_reasons && typeof engine_exclusion_reasons === "object") {
-    for (const e of __requested) {
-      const c = (__counts?.[e] || 0);
-      if (c > 0) continue;
+            const hasTrusted = evItems.some(isTrustedNumericEvidenceItem);
 
-      const arr = Array.isArray(engine_exclusion_reasons[e]) ? engine_exclusion_reasons[e] : [];
-      const already = arr.some(r => (r?.code || r?.reason) === "no_effective_evidence");
-      if (!already) {
-        arr.push({
-          code: "no_effective_evidence",
-          details: { evidence_count: 0 },
-          coverage_penalty_target: true,
-        });
-      }
-      engine_exclusion_reasons[e] = arr;
-    }
-  }
-} catch (_e) {}
-}
+            // ✅ 기본: 숫자 못 찾더라도 "소프트 킵" (Gemini가 최종 판단)
+            // ✅ 필요하면 STRICT_NUMERIC_PRUNE=true로 예전처럼 하드 드랍 가능
+            if (!hasNumberLike(evTextBlob) && !hasTrusted) {
+              if (STRICT_NUMERIC_PRUNE) {
+                dropped.push({
+                  id: b?.id,
+                  text: String(b?.text || "").slice(0, 220),
+                  reason: "numeric_claim_no_numeric_evidence",
+                });
+                continue;
+              } else {
+                numeric_soft_warnings.push({
+                  id: b?.id,
+                  text: String(b?.text || "").slice(0, 220),
+                  reason: "numeric_claim_no_numeric_evidence",
+                  action: "soft_keep",
+                });
+              }
+            }
+          }
+          // NOTE: year miss는 "블록 내 naver evidence가 전부 year-miss"인 경우에만 soft warning으로 집계
+          //       (일부 아이템만 miss인 혼합 케이스는 경고로 잡지 않음)
+          try {
+            const evItems2 = Object.values(ev).filter(Array.isArray).flat();
+            const total = evItems2.length;
+            const yearMissItems = evItems2.filter((x) => x && x._soft_year_miss);
+            const miss = yearMissItems.length;
 
-// ✅ soft-year-miss summary (for logging / diagnostics)
-try {
-  if (
-    (safeMode === "qv" || safeMode === "fv") &&
-    partial_scores &&
-    typeof partial_scores === "object" &&
-    Array.isArray(blocksForVerify)
-  ) {
-    let __cnt = 0;
-    const __samples = [];
+            if (total > 0 && miss === total) {
+              const years = Array.from(
+                new Set(
+                  yearMissItems
+                    .map((x) => (Array.isArray(x._soft_year_miss_years) ? x._soft_year_miss_years : []))
+                    .flat()
+                    .filter((y) => Number.isFinite(Number(y)))
+                    .map((y) => Number(y))
+                )
+              ).slice(0, 8);
 
-    for (const b of blocksForVerify) {
-      const bid = b?.id ?? null;
-      const evs = b?.evidence?.naver;
-      if (!Array.isArray(evs)) continue;
-
-      for (const ev of evs) {
-        if (!ev || !ev._soft_year_miss) continue;
-        __cnt += 1;
-
-        if (__samples.length < 20) {
-          __samples.push({
-            block_id: bid,
-            where: ev._soft_year_miss_where ?? null,
-            years: Array.isArray(ev._soft_year_miss_years) ? ev._soft_year_miss_years.slice(0, 6) : null,
-            penalty: (typeof ev._soft_year_miss_penalty === "number" ? ev._soft_year_miss_penalty : null),
-            url: ev?.url ?? ev?.link ?? null,
-            host: ev?.host ?? ev?.source_host ?? null,
-          });
+              year_soft_warnings.push({
+                id: b?.id,
+                text: String(b?.text || "").slice(0, 220),
+                reason: "year_soft_miss_in_evidence",
+                years,
+                items: miss,
+                total,
+                action: "soft_keep",
+              });
+            }
+          } catch (_e) { }
+          kept.push(b);
         }
-      }
-    }
 
-    partial_scores.naver_soft_year_miss = { count: __cnt, samples: __samples };
-  }
-} catch (_e) {}
+        // blocksForVerify가 const여도 안전하게(배열 in-place 교체)
+        blocksForVerify.splice(0, blocksForVerify.length, ...kept);
 
-// (log) numeric_evidence_match 직전: 숫자 claim 블록/엔진 개괄 로그
-if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
-  try {
-    const numericCandidates = [];
-
-    for (const b of blocksForVerify) {
-      const txt = String(b?.text || "");
-if (!hasStrongNumberLike(txt)) continue;
-
-      const ev = b?.evidence || {};
-      const enginesWithEvidence = Object.keys(ev).filter(
-        (k) => Array.isArray(ev[k]) && ev[k].length > 0
-      );
-
-      numericCandidates.push({
-        id: b?.id,
-        text: String(b?.text || "").slice(0, 200),
-        engines: enginesWithEvidence,
-      });
-    }
-
-    partial_scores.numeric_evidence_match_pre = {
-      blocks_total: blocksForVerify.length,
-      numeric_candidates: numericCandidates,
-    };
-  } catch (_e) {
-    // logging 실패는 무시
-  }
-}
-
-// ✅ S-13/S-12: numeric/year strict evidence match + (optional) drop no-evidence claim blocks (QV/FV)
-// (insert here: AFTER evidence_prune block, BEFORE FINALIZE block)
-if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
-  // ✅ 기본은 SOFT(블록/근거 안 버림). STRICT=true일 때만 하드 필터/드랍
-  const __NUMERIC_PRUNE_ENGINES = new Set(["naver"]); // numeric prune은 naver에만 적용
-
-  const cleanEvidenceText = (raw = "") => {
-    let s = String(raw || "");
-    s = s.replace(/<script[\s\S]*?<\/script>/gi, " ");
-    s = s.replace(/<style[\s\S]*?<\/style>/gi, " ");
-    s = s.replace(/<[^>]+>/g, " ");
-    s = s.replace(/&nbsp;|&amp;|&quot;|&#39;|&lt;|&gt;/g, " ");
-    s = s.replace(/\s+/g, " ").trim();
-    s = s.replace(/\b(복사|공유|인쇄|댓글|신고|추천|구독)\b/g, " ").replace(/\s+/g, " ").trim();
-    return s;
-  };
-
-  const extractNumericTokens = (text = "") => {
-    const t = String(text || "");
-
-    // years: 4자리 연도만
-    const years = Array.from(new Set((t.match(/\b(19\d{2}|20\d{2}|2100)\b/g) || [])));
-
-    // nums: 콤마/소수 포함 숫자 토큰 추출 후 정규화(콤마 제거)
-    const rawNums = t.match(/\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\b/g) || [];
-    const nums = Array.from(
-      new Set(
-        rawNums
-          .map((x) => normalizeNumToken(x)) // "5,156" -> "5156"
-          .filter((n) => {
-            if (!n) return false;
-
-            // 연도(YYYY)는 nums에서 제외 (years에서만 체크)
-            if (/^(19\d{2}|20\d{2}|2100)$/.test(n)) return false;
-
-            // 너무 약한 숫자(한 자리)는 제외
-            if (/^\d$/.test(n)) return false;
-
-            // 최소 3자리 이상 or 소수는 유지
-            return n.includes(".") || n.length >= 3;
-          })
-      )
-    );
-
-    return { years, nums };
-  };
-
-  const numericPassForEvidence = (claimTokens, evidenceText) => {
-    const evRaw = String(evidenceText || "");
-    const evCompact = evRaw.replace(/[,\s]/g, ""); // "5,156" -> "5156" (+ 공백도 제거)
-
-    const years = Array.isArray(claimTokens?.years) ? claimTokens.years : [];
-    const nums = Array.isArray(claimTokens?.nums) ? claimTokens.nums : [];
-
-    const needYear = years.length > 0;
-    const needNum = nums.length > 0;
-
-    const yearsHit = needYear
-      ? years.some((y) => evRaw.includes(String(y)) || evCompact.includes(String(y)))
-      : false;
-
-    const numsHit = needNum
-      ? nums.some((n) => {
-          const s = String(n);
-          return s && (evRaw.includes(s) || evCompact.includes(s));
-        })
-      : false;
-
-    // 둘 다 필요한데 둘 다 미스면 fail
-    // 하나만 필요하면 그 하나만 만족하면 pass
-    const pass =
-      (needYear && needNum) ? (yearsHit && numsHit)
-      : needYear ? yearsHit
-      : needNum ? numsHit
-      : true;
-
-    return { needYear, needNum, yearsHit, numsHit, pass };
-  };
-
-  let itemsBefore = 0;
-  let itemsAfter = 0;
-
-  const touched = [];
-  const mismatchFallback = [];
-
-  for (const b of blocksForVerify) {
-    const claimText = String(b?.text || "").trim();
-    if (!claimText) continue;
-
-    // 숫자/연도 토큰이 없으면 이 블록은 스킵
-    const claimTokens = extractNumericTokens(claimText);
-    const needAny = (claimTokens.years.length > 0) || (claimTokens.nums.length > 0);
-    if (!needAny) continue;
-
-    // 엔진별(현재는 naver만)
-    for (const eng of __NUMERIC_PRUNE_ENGINES) {
-      const arr = b?.evidence?.[eng];
-      if (!Array.isArray(arr) || arr.length === 0) continue;
-
-      itemsBefore += arr.length;
-
-      const kept = [];
-      for (const ev of arr) {
-        // evidence text blob (excerpt/title/desc/url/host)
-        const evBlob = cleanEvidenceText(
-          `${ev?.evidence_text || ""} ${ev?.title || ""} ${ev?.desc || ""} ${ev?.url || ev?.link || ev?.source_url || ""} ${ev?.host || ev?.source_host || ""}`
-        );
-
-        const r = numericPassForEvidence(claimTokens, evBlob);
-
-        // trusted host 예외(통계/국제기구 등): excerpt가 빈약해도 하드 프룬에서는 보호
-        let trusted = false;
+        partial_scores.evidence_prune = {
+          before: kept.length + dropped.length,
+          after: kept.length,
+          dropped,
+          numeric_soft_warnings,
+          year_soft_warnings,
+        };
+        // ✅ E_eff (effective engines) helpers (DETAIL ONLY)
+        // - 최종 effective_engines/coverage_factor는 아래(9460: E_cov/E_eff 블록)에서 단일 소스로 확정
+        // - 여기서는 "counts/ratio/detail"만 기록 + exclusion_reasons 보강만 수행
         try {
-          trusted = (typeof isTrustedNumericEvidenceItem === "function") ? !!isTrustedNumericEvidenceItem(ev) : false;
-        } catch (_) {}
+          const __counts = __calcEngineEvidenceCounts(blocksForVerify);
+          const __requested = Array.isArray(engines_requested) ? engines_requested : [];
+          const __eff = __getEffectiveEngines(__requested, __counts);
 
-        // ✅ SOFT penalty product (중복 적용 방지)
-        const baseTw =
-          (typeof ev?._tier_weight_before_soft === "number" && Number.isFinite(ev._tier_weight_before_soft))
-            ? ev._tier_weight_before_soft
-            : (typeof ev?.tier_weight === "number" && Number.isFinite(ev.tier_weight))
-              ? ev.tier_weight
-              : 1.0;
+          // (detail) 최종값을 덮어쓰지 않도록 *_detail / *_ratio 로만 남김
+          const __ratio01 =
+            (__requested.length > 0)
+              ? Math.min(1.0, Math.max(0.0, (__eff.length / __requested.length)))
+              : 0.0;
 
-        let penalty = 1.0;
+          partial_scores.coverage_detail = {
+            requested: __requested.length,
+            effective: __eff.length,
+            ratio_01: __ratio01,
+            counts: __counts,
+          };
+          partial_scores.effective_engines_detail = __eff.slice();
+          partial_scores.effective_engines_count_detail = __eff.length;
+          partial_scores.coverage_ratio_01 = __ratio01;
 
-        // year miss: 이미 numeric_fetch에서 soft flag가 찍혔을 수도 있으니 “있으면 그 값” 사용
-        const yearMiss = r.needYear && !r.yearsHit;
-        const yearPenalty =
-          (typeof ev?._soft_year_miss_penalty === "number" && Number.isFinite(ev._soft_year_miss_penalty))
-            ? ev._soft_year_miss_penalty
-            : (yearMiss ? NAVER_YEAR_MISS_PENALTY : 1.0);
+          // ✅ engine_exclusion_reasons에 "no_effective_evidence" 동기화(coverage penalty target)
+          if (engine_exclusion_reasons && typeof engine_exclusion_reasons === "object") {
+            for (const e of __requested) {
+              const c = (__counts?.[e] || 0);
+              if (c > 0) continue;
 
-        if (yearMiss) {
-          ev._soft_year_miss = true;
-          ev._soft_year_miss_years = Array.isArray(ev._soft_year_miss_years) ? ev._soft_year_miss_years : claimTokens.years.slice(0, 6);
-          ev._soft_year_miss_penalty = yearPenalty;
-          penalty *= yearPenalty;
-        }
-
-        // numeric miss: SOFT warning 패널티
-        const numMiss = r.needNum && !r.numsHit;
-        const numPenalty =
-          (typeof ev?._soft_numeric_miss_penalty === "number" && Number.isFinite(ev._soft_numeric_miss_penalty))
-            ? ev._soft_numeric_miss_penalty
-            : (numMiss ? NUMERIC_SOFT_WARNING_PENALTY : 1.0);
-
-        if (numMiss) {
-          ev._soft_numeric_miss = true;
-          ev._soft_numeric_miss_nums = Array.isArray(ev._soft_numeric_miss_nums) ? ev._soft_numeric_miss_nums : claimTokens.nums.slice(0, 8);
-          ev._soft_numeric_miss_penalty = numPenalty;
-          penalty *= numPenalty;
-        }
-
-        // ✅ penalty가 실질적으로 있으면 기록만 남김 (tier_weight 직접 변경 금지: double-penalty 방지)
-// - soft penalty는 Swap-in A/B에서 final truthscore_01에 "딱 1번"만 적용
-if (penalty < 0.999999) {
-  ev._tier_weight_before_soft = baseTw;
-
-  // per-evidence soft penalty product 기록(나중에 Swap-in A의 geometric mean에도 쓰임)
-  ev._soft_penalty_product = penalty;
-
-  // debug-only: tier_weight에 반영했다면 이 정도였다는 참고값만 남김
-  ev._tier_weight_soft_suggested = baseTw * penalty;
-
-  // ❌ DO NOT APPLY:
-  // ev.tier_weight = baseTw * penalty;
-
-  touched.push({
-    url: ev?.url || ev?.link || ev?.source_url || null,
-    host: ev?.host || ev?.source_host || null,
-    year_miss: !!yearMiss,
-    num_miss: !!numMiss,
-    penalty,
-  });
-}
-
-        // ✅ STRICT=true일 때만 하드 프룬(단, trusted는 보호)
-        const passOrTrusted = r.pass || trusted;
-        if (STRICT_NUMERIC_PRUNE && !passOrTrusted) {
-          mismatchFallback.push({
-            url: ev?.url || ev?.link || ev?.source_url || null,
-            host: ev?.host || ev?.source_host || null,
-            reason: (yearMiss && numMiss) ? "year_and_num_miss" : yearMiss ? "year_miss" : numMiss ? "num_miss" : "mismatch",
-            trusted: !!trusted,
-          });
-          continue;
-        }
-
-        kept.push(ev);
-      }
-
-      // write back
-      b.evidence[eng] = kept;
-      itemsAfter += kept.length;
-    }
-  }
-
-  try {
-    partial_scores.numeric_evidence_match = {
-      strict_prune: STRICT_NUMERIC_PRUNE,
-      items_before: itemsBefore,
-      items_after: itemsAfter,
-      pruned: Math.max(0, itemsBefore - itemsAfter),
-      penalties_applied: touched.length,
-      touched: touched.slice(0, 30),
-      mismatch_fallback: mismatchFallback.slice(0, 30),
-    };
-  } catch (_e) {}
-}
-
-// ✅ URL canonical key: query/hash 제거 + https 통일 + trailing slash 제거
-const __canonUrlKey = (u0) => {
-  try {
-    let s = String(u0 || "").trim();
-    if (!s) return "";
-
-    const h = s.indexOf("#");
-    if (h >= 0) s = s.slice(0, h);
-
-    const q = s.indexOf("?");
-    if (q >= 0) s = s.slice(0, q);
-
-    s = s.replace(/^http:\/\//i, "https://");
-    s = s.replace(/\/+$/g, "");
-
-    return s;
-  } catch (_) {
-    return String(u0 || "").trim();
-  }
-};
-
-// ✅ NOTE: year/number soft-miss flags & penalties are stamped earlier (numeric_evidence_match / prune).
-//          Swap-in A reads ev._soft_year_miss/_penalty and ev._soft_numeric_miss/_penalty directly.
-//          Remove duplicate “stamp-to-blocks” steps to avoid duplication and confusion.
-
-
-// ✅ Swap-in A: compute soft_penalty_factor (QV/FV evidence 기반 + numeric/year mismatch touch 포함)
-// - year miss: ev._soft_year_miss_penalty (없으면 NAVER_YEAR_MISS_PENALTY fallback)
-// - numeric miss: ev._soft_numeric_miss_penalty (없으면 NUMERIC_SOFT_WARNING_PENALTY fallback)
-// - per-evidence: ev._soft_penalty_product 저장
-// - overall factor: penalized evidence들의 geometric mean
-// - IMPORTANT: numeric_evidence_match.touched / naver_soft_year_miss.samples 로 찍힌 penalty도 합산
-try {
-  if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
-    let sumLog = 0;
-    let cnt = 0;
-    let minP = null;
-    let yearMiss = 0;
-    let numMiss = 0;
-
-    let itemsTotal = 0;
-    let itemsUnknown = 0; // url이 없는 evidence 카운트(중복 제거 불가)
-
-    const __known = new Set();   // "최종 evidence로 살아있는" url 집합(드랍 제외용)
-    const __counted = new Set(); // 이미 penalty를 집계한 url 집합(이중 집계 방지)
-    const __strictPrune = !!(numeric_evidence_match && numeric_evidence_match.strict_prune);
-    const __keyOf = (x) => {
-      const u = x?.url || x?.link || x?.href || x?.source_url || x?.sourceUrl || null;
-      return (typeof u === "string" && u) ? u : null;
-    };
-
-    const __clamp01 = (v) => {
-      const n = Number(v);
-      if (!Number.isFinite(n)) return null;
-      return Math.max(0.0, Math.min(1.0, n));
-    };
-
-    const __defaultYearPenalty = __clamp01((typeof NAVER_YEAR_MISS_PENALTY !== "undefined" ? NAVER_YEAR_MISS_PENALTY : null)) ?? 0.90;
-    const __defaultNumPenalty  = __clamp01((typeof NUMERIC_SOFT_WARNING_PENALTY !== "undefined" ? NUMERIC_SOFT_WARNING_PENALTY : null)) ?? 0.95;
-
-        // key canonicalize + (strict_prune일 때) "현재 살아있는 evidence"만 집계
-    // - __known: 최종 blocks에서 살아있는 URL 집합
-    // - __counted: 이미 penalty를 집계한 URL 집합(중복 집계 방지)
-        const __accPenalty = (p, flags, keyRaw, opts) => {
-  // key canonicalize
-  const key = keyRaw ? __canonUrlKey(keyRaw) : null;
-  const force = !!(opts && opts.force);
-
-  // STRICT prune가 켜져 있으면: 기본은 "최종 blocks evidence에 살아있는 URL"만 집계
-  // 단, touched/samples 등 “로그 기반 penalty”는 force로 우회 집계
-  if (!force && __strictPrune && key && !__known.has(key)) return;
-
-  // 이미 집계한 URL은 중복 집계 금지
-  if (key && __counted.has(key)) return;
-  if (key) __counted.add(key);
-
-  itemsTotal += 1;
-
-  const pp = __clamp01(p);
-  if (pp == null) return;
-
-  // "패널티"로 간주할 건 (0 < p < 1) 만
-  if (pp > 0 && pp < 1) {
-    sumLog += Math.log(pp);
-    cnt += 1;
-    if (minP == null || pp < minP) minP = pp;
-  }
-
-  if (flags?.year_miss) yearMiss += 1;
-  if (flags?.num_miss) numMiss += 1;
-};
-
-                // 0) __known 채우기: 최종 blocks evidence에 "살아있는" URL만 모음
-    for (const b of blocksForVerify) {
-      const evs = (() => {
-        if (Array.isArray(b?.evidence_items)) return b.evidence_items;
-        if (Array.isArray(b?.evidence)) return b.evidence;
-        if (b?.evidence && typeof b.evidence === "object") {
-          const tmp = [];
-          for (const k of Object.keys(b.evidence)) {
-            const arr = b.evidence[k];
-            if (Array.isArray(arr)) tmp.push(...arr);
+              const arr = Array.isArray(engine_exclusion_reasons[e]) ? engine_exclusion_reasons[e] : [];
+              const already = arr.some(r => (r?.code || r?.reason) === "no_effective_evidence");
+              if (!already) {
+                arr.push({
+                  code: "no_effective_evidence",
+                  details: { evidence_count: 0 },
+                  coverage_penalty_target: true,
+                });
+              }
+              engine_exclusion_reasons[e] = arr;
+            }
           }
-          return tmp;
-        }
-        return [];
-      })();
-
-      for (const ev of evs) {
-        if (typeof __isEvidenceLikeItem === "function" && !__isEvidenceLikeItem(ev)) continue;
-        const k0 = __keyOf(ev);
-        const k = k0 ? __canonUrlKey(k0) : null;
-        if (k) __known.add(k);
+        } catch (_e) { }
       }
-    }
 
-        // 1) blocksForVerify 내부 evidence(ev) 기반 (URL canonical + 중복 집계 방지)
-    for (const b of blocksForVerify) {
-      const evs = (() => {
-        if (Array.isArray(b?.evidence_items)) return b.evidence_items;
-        if (Array.isArray(b?.evidence)) return b.evidence;
-        if (b?.evidence && typeof b.evidence === "object") {
-          const tmp = [];
-          for (const k of Object.keys(b.evidence)) {
-            const arr = b.evidence[k];
-            if (Array.isArray(arr)) tmp.push(...arr);
+      // ✅ soft-year-miss summary (for logging / diagnostics)
+      try {
+        if (
+          (safeMode === "qv" || safeMode === "fv") &&
+          partial_scores &&
+          typeof partial_scores === "object" &&
+          Array.isArray(blocksForVerify)
+        ) {
+          let __cnt = 0;
+          const __samples = [];
+
+          for (const b of blocksForVerify) {
+            const bid = b?.id ?? null;
+            const evs = b?.evidence?.naver;
+            if (!Array.isArray(evs)) continue;
+
+            for (const ev of evs) {
+              if (!ev || !ev._soft_year_miss) continue;
+              __cnt += 1;
+
+              if (__samples.length < 20) {
+                __samples.push({
+                  block_id: bid,
+                  where: ev._soft_year_miss_where ?? null,
+                  years: Array.isArray(ev._soft_year_miss_years) ? ev._soft_year_miss_years.slice(0, 6) : null,
+                  penalty: (typeof ev._soft_year_miss_penalty === "number" ? ev._soft_year_miss_penalty : null),
+                  url: ev?.url ?? ev?.link ?? null,
+                  host: ev?.host ?? ev?.source_host ?? null,
+                });
+              }
+            }
           }
-          return tmp;
+
+          partial_scores.naver_soft_year_miss = { count: __cnt, samples: __samples };
         }
-        return [];
-      })();
+      } catch (_e) { }
 
-      for (const ev of evs) {
-        if (typeof __isEvidenceLikeItem === "function" && !__isEvidenceLikeItem(ev)) continue;
+      // (log) numeric_evidence_match 직전: 숫자 claim 블록/엔진 개괄 로그
+      if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
+        try {
+          const numericCandidates = [];
 
-        const key0 = __keyOf(ev);
-        const key = key0 ? __canonUrlKey(key0) : null;
+          for (const b of blocksForVerify) {
+            const txt = String(b?.text || "");
+            if (!hasStrongNumberLike(txt)) continue;
 
-        // "최종 evidence로 살아있는" URL 집합 구성
-        if (key) __known.add(key);
-        else itemsUnknown += 1;
+            const ev = b?.evidence || {};
+            const enginesWithEvidence = Object.keys(ev).filter(
+              (k) => Array.isArray(ev[k]) && ev[k].length > 0
+            );
 
-        const _y = !!ev?._soft_year_miss;
-        const _n = !!ev?._soft_numeric_miss;
+            numericCandidates.push({
+              id: b?.id,
+              text: String(b?.text || "").slice(0, 200),
+              engines: enginesWithEvidence,
+            });
+          }
 
-        // 기본은 1.0, 미스면 penalty 적용
-        const py = _y ? (__clamp01(ev?._soft_year_miss_penalty) ?? __defaultYearPenalty) : 1.0;
-        const pn = _n ? (__clamp01(ev?._soft_numeric_miss_penalty) ?? __defaultNumPenalty) : 1.0;
+          partial_scores.numeric_evidence_match_pre = {
+            blocks_total: blocksForVerify.length,
+            numeric_candidates: numericCandidates,
+          };
+        } catch (_e) {
+          // logging 실패는 무시
+        }
+      }
 
-        const prod = Math.max(0.0, Math.min(1.0, py * pn));
+      // ✅ S-13/S-12: numeric/year strict evidence match + (optional) drop no-evidence claim blocks (QV/FV)
+      // (insert here: AFTER evidence_prune block, BEFORE FINALIZE block)
+      if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
+        // ✅ 기본은 SOFT(블록/근거 안 버림). STRICT=true일 때만 하드 필터/드랍
+        const __NUMERIC_PRUNE_ENGINES = new Set(["naver"]); // numeric prune은 naver에만 적용
 
-        // per-evidence debug 저장
-        if ((_y || _n) && typeof ev === "object" && ev) {
-          try { ev._soft_penalty_product = Number(prod.toFixed(6)); } catch {}
+        const cleanEvidenceText = (raw = "") => {
+          let s = String(raw || "");
+          s = s.replace(/<script[\s\S]*?<\/script>/gi, " ");
+          s = s.replace(/<style[\s\S]*?<\/style>/gi, " ");
+          s = s.replace(/<[^>]+>/g, " ");
+          s = s.replace(/&nbsp;|&amp;|&quot;|&#39;|&lt;|&gt;/g, " ");
+          s = s.replace(/\s+/g, " ").trim();
+          s = s.replace(/\b(복사|공유|인쇄|댓글|신고|추천|구독)\b/g, " ").replace(/\s+/g, " ").trim();
+          return s;
+        };
+
+        const extractNumericTokens = (text = "") => {
+          const t = String(text || "");
+
+          // years: 4자리 연도만
+          const years = Array.from(new Set((t.match(/\b(19\d{2}|20\d{2}|2100)\b/g) || [])));
+
+          // nums: 콤마/소수 포함 숫자 토큰 추출 후 정규화(콤마 제거)
+          const rawNums = t.match(/\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\b/g) || [];
+          const nums = Array.from(
+            new Set(
+              rawNums
+                .map((x) => normalizeNumToken(x)) // "5,156" -> "5156"
+                .filter((n) => {
+                  if (!n) return false;
+
+                  // 연도(YYYY)는 nums에서 제외 (years에서만 체크)
+                  if (/^(19\d{2}|20\d{2}|2100)$/.test(n)) return false;
+
+                  // 너무 약한 숫자(한 자리)는 제외
+                  if (/^\d$/.test(n)) return false;
+
+                  // 최소 3자리 이상 or 소수는 유지
+                  return n.includes(".") || n.length >= 3;
+                })
+            )
+          );
+
+          return { years, nums };
+        };
+
+        const numericPassForEvidence = (claimTokens, evidenceText) => {
+          const evRaw = String(evidenceText || "");
+          const evCompact = evRaw.replace(/[,\s]/g, ""); // "5,156" -> "5156" (+ 공백도 제거)
+
+          const years = Array.isArray(claimTokens?.years) ? claimTokens.years : [];
+          const nums = Array.isArray(claimTokens?.nums) ? claimTokens.nums : [];
+
+          const needYear = years.length > 0;
+          const needNum = nums.length > 0;
+
+          const yearsHit = needYear
+            ? years.some((y) => evRaw.includes(String(y)) || evCompact.includes(String(y)))
+            : false;
+
+          const numsHit = needNum
+            ? nums.some((n) => {
+              const s = String(n);
+              return s && (evRaw.includes(s) || evCompact.includes(s));
+            })
+            : false;
+
+          // 둘 다 필요한데 둘 다 미스면 fail
+          // 하나만 필요하면 그 하나만 만족하면 pass
+          const pass =
+            (needYear && needNum) ? (yearsHit && numsHit)
+              : needYear ? yearsHit
+                : needNum ? numsHit
+                  : true;
+
+          return { needYear, needNum, yearsHit, numsHit, pass };
+        };
+
+        let itemsBefore = 0;
+        let itemsAfter = 0;
+
+        const touched = [];
+        const mismatchFallback = [];
+
+        for (const b of blocksForVerify) {
+          const claimText = String(b?.text || "").trim();
+          if (!claimText) continue;
+
+          // 숫자/연도 토큰이 없으면 이 블록은 스킵
+          const claimTokens = extractNumericTokens(claimText);
+          const needAny = (claimTokens.years.length > 0) || (claimTokens.nums.length > 0);
+          if (!needAny) continue;
+
+          // 엔진별(현재는 naver만)
+          for (const eng of __NUMERIC_PRUNE_ENGINES) {
+            const arr = b?.evidence?.[eng];
+            if (!Array.isArray(arr) || arr.length === 0) continue;
+
+            itemsBefore += arr.length;
+
+            const kept = [];
+            for (const ev of arr) {
+              // evidence text blob (excerpt/title/desc/url/host)
+              const evBlob = cleanEvidenceText(
+                `${ev?.evidence_text || ""} ${ev?.title || ""} ${ev?.desc || ""} ${ev?.url || ev?.link || ev?.source_url || ""} ${ev?.host || ev?.source_host || ""}`
+              );
+
+              const r = numericPassForEvidence(claimTokens, evBlob);
+
+              // trusted host 예외(통계/국제기구 등): excerpt가 빈약해도 하드 프룬에서는 보호
+              let trusted = false;
+              try {
+                trusted = (typeof isTrustedNumericEvidenceItem === "function") ? !!isTrustedNumericEvidenceItem(ev) : false;
+              } catch (_) { }
+
+              // ✅ SOFT penalty product (중복 적용 방지)
+              const baseTw =
+                (typeof ev?._tier_weight_before_soft === "number" && Number.isFinite(ev._tier_weight_before_soft))
+                  ? ev._tier_weight_before_soft
+                  : (typeof ev?.tier_weight === "number" && Number.isFinite(ev.tier_weight))
+                    ? ev.tier_weight
+                    : 1.0;
+
+              let penalty = 1.0;
+
+              // year miss: 이미 numeric_fetch에서 soft flag가 찍혔을 수도 있으니 “있으면 그 값” 사용
+              const yearMiss = r.needYear && !r.yearsHit;
+              const yearPenalty =
+                (typeof ev?._soft_year_miss_penalty === "number" && Number.isFinite(ev._soft_year_miss_penalty))
+                  ? ev._soft_year_miss_penalty
+                  : (yearMiss ? NAVER_YEAR_MISS_PENALTY : 1.0);
+
+              if (yearMiss) {
+                ev._soft_year_miss = true;
+                ev._soft_year_miss_years = Array.isArray(ev._soft_year_miss_years) ? ev._soft_year_miss_years : claimTokens.years.slice(0, 6);
+                ev._soft_year_miss_penalty = yearPenalty;
+                penalty *= yearPenalty;
+              }
+
+              // numeric miss: SOFT warning 패널티
+              const numMiss = r.needNum && !r.numsHit;
+              const numPenalty =
+                (typeof ev?._soft_numeric_miss_penalty === "number" && Number.isFinite(ev._soft_numeric_miss_penalty))
+                  ? ev._soft_numeric_miss_penalty
+                  : (numMiss ? NUMERIC_SOFT_WARNING_PENALTY : 1.0);
+
+              if (numMiss) {
+                ev._soft_numeric_miss = true;
+                ev._soft_numeric_miss_nums = Array.isArray(ev._soft_numeric_miss_nums) ? ev._soft_numeric_miss_nums : claimTokens.nums.slice(0, 8);
+                ev._soft_numeric_miss_penalty = numPenalty;
+                penalty *= numPenalty;
+              }
+
+              // ✅ penalty가 실질적으로 있으면 기록만 남김 (tier_weight 직접 변경 금지: double-penalty 방지)
+              // - soft penalty는 Swap-in A/B에서 final truthscore_01에 "딱 1번"만 적용
+              if (penalty < 0.999999) {
+                ev._tier_weight_before_soft = baseTw;
+
+                // per-evidence soft penalty product 기록(나중에 Swap-in A의 geometric mean에도 쓰임)
+                ev._soft_penalty_product = penalty;
+
+                // debug-only: tier_weight에 반영했다면 이 정도였다는 참고값만 남김
+                ev._tier_weight_soft_suggested = baseTw * penalty;
+
+                // ❌ DO NOT APPLY:
+                // ev.tier_weight = baseTw * penalty;
+
+                touched.push({
+                  url: ev?.url || ev?.link || ev?.source_url || null,
+                  host: ev?.host || ev?.source_host || null,
+                  year_miss: !!yearMiss,
+                  num_miss: !!numMiss,
+                  penalty,
+                });
+              }
+
+              // ✅ STRICT=true일 때만 하드 프룬(단, trusted는 보호)
+              const passOrTrusted = r.pass || trusted;
+              if (STRICT_NUMERIC_PRUNE && !passOrTrusted) {
+                mismatchFallback.push({
+                  url: ev?.url || ev?.link || ev?.source_url || null,
+                  host: ev?.host || ev?.source_host || null,
+                  reason: (yearMiss && numMiss) ? "year_and_num_miss" : yearMiss ? "year_miss" : numMiss ? "num_miss" : "mismatch",
+                  trusted: !!trusted,
+                });
+                continue;
+              }
+
+              kept.push(ev);
+            }
+
+            // write back
+            b.evidence[eng] = kept;
+            itemsAfter += kept.length;
+          }
         }
 
-        __accPenalty(
-          prod,
-          { year_miss: _y, num_miss: _n },
-          key0,
-          { force: false }
-        );
+        try {
+          partial_scores.numeric_evidence_match = {
+            strict_prune: STRICT_NUMERIC_PRUNE,
+            items_before: itemsBefore,
+            items_after: itemsAfter,
+            pruned: Math.max(0, itemsBefore - itemsAfter),
+            penalties_applied: touched.length,
+            touched: touched.slice(0, 30),
+            mismatch_fallback: mismatchFallback.slice(0, 30),
+          };
+        } catch (_e) { }
       }
-    }
 
-    // 2) numeric_evidence_match.touched 기반 (ev에 안 묻는 케이스 보완)
-    if (numeric_evidence_match && Array.isArray(numeric_evidence_match.touched)) {
-      for (const t of numeric_evidence_match.touched) {
-        const key = (__keyOf(t) || (typeof t?.url === "string" ? t.url : null));
-        __accPenalty(
-  t?.penalty,
-  { year_miss: !!t?.year_miss, num_miss: !!t?.num_miss },
-  key,
-  { force: true }
-);
-      }
-    }
+      // ✅ URL canonical key: query/hash 제거 + https 통일 + trailing slash 제거
+      const __canonUrlKey = (u0) => {
+        try {
+          let s = String(u0 || "").trim();
+          if (!s) return "";
 
-    // 3) naver_soft_year_miss.samples 기반 (year miss가 samples로만 남는 케이스 보완)
-    if (naver_soft_year_miss && Array.isArray(naver_soft_year_miss.samples)) {
-      for (const s of naver_soft_year_miss.samples) {
-        const key = __keyOf(s) || (typeof s?.url === "string" ? s.url : null);
-        __accPenalty(
-  s?.penalty,
-  { year_miss: true, num_miss: false },
-  key,
-  { force: true }
-);
-      }
-    }
+          const h = s.indexOf("#");
+          if (h >= 0) s = s.slice(0, h);
 
-        // ✅ itemsTotal: "최종 살아있는 evidence" 기준으로 확정(중복 제거)
-    // - url 없는 evidence는 itemsUnknown으로 보정
-    itemsTotal = (__known ? __known.size : 0) + (itemsUnknown || 0);
+          const q = s.indexOf("?");
+          if (q >= 0) s = s.slice(0, q);
 
-    // geometric mean
-    const factor = (cnt > 0) ? Math.exp(sumLog / cnt) : 1.0;
+          s = s.replace(/^http:\/\//i, "https://");
+          s = s.replace(/\/+$/g, "");
 
-    partial_scores.soft_penalty_factor = Number(Math.max(0.0, Math.min(1.0, factor)).toFixed(6));
-    partial_scores.soft_penalty_meta = {
-      penalized_evidence_items: cnt,
-      min_penalty: (minP == null) ? null : Number(minP.toFixed(6)),
-      year_miss_items: yearMiss,
-      num_miss_items: numMiss,
-    };
-    partial_scores.soft_penalties_overview = {
-      items: itemsTotal,
-      penalized: cnt,
-      year_miss: yearMiss,
-      num_miss: numMiss,
-    };
-  } else {
-    // non QV/FV or no blocks
-    partial_scores.soft_penalty_factor = 1.0;
-    try {
-      partial_scores.soft_penalty_meta = {
-        penalized_evidence_items: 0,
-        min_penalty: null,
-        year_miss_items: 0,
-        num_miss_items: 0,
+          return s;
+        } catch (_) {
+          return String(u0 || "").trim();
+        }
       };
-      partial_scores.soft_penalties_overview = {
-        items: 0,
-        penalized: 0,
-        year_miss: 0,
-        num_miss: 0,
-      };
-    } catch {}
-  }
-} catch (_) {
-  try { partial_scores.soft_penalty_factor = 1.0; } catch {}
-}
 
-// ✅ FINALIZE: engines_requested / engines_used(E_eff) / engine_explain / engine_exclusion_reasons
-{
-  // requested 확정
-  if (!Array.isArray(partial_scores.engines_requested) || partial_scores.engines_requested.length === 0) {
-    partial_scores.engines_requested = Array.isArray(engines) ? engines.slice() : [];
-  }
+      // ✅ NOTE: year/number soft-miss flags & penalties are stamped earlier (numeric_evidence_match / prune).
+      //          Swap-in A reads ev._soft_year_miss/_penalty and ev._soft_numeric_miss/_penalty directly.
+      //          Remove duplicate “stamp-to-blocks” steps to avoid duplication and confusion.
 
-  // ✅ IMPORTANT:
-  // - engines_requested는 "사용자 요청/플랜" 의미를 유지해야 함 (calls>0 엔진을 섞지 말 것)
-  // - 실제 호출된 엔진은 engines_called 로 분리 기록
-  try {
-    const __rawEng =
-      (req && req.body && typeof req.body === "object")
-        ? (req.body.engines ?? req.body.engines_requested ?? req.body.enginesRequested)
-        : null;
 
-    const __norm = (x) => String(x || "").trim().toLowerCase();
-    const __allowed = new Set((Array.isArray(engines) ? engines : []).map(__norm));
+      // ✅ Swap-in A: compute soft_penalty_factor (QV/FV evidence 기반 + numeric/year mismatch touch 포함)
+      // - year miss: ev._soft_year_miss_penalty (없으면 NAVER_YEAR_MISS_PENALTY fallback)
+      // - numeric miss: ev._soft_numeric_miss_penalty (없으면 NUMERIC_SOFT_WARNING_PENALTY fallback)
+      // - per-evidence: ev._soft_penalty_product 저장
+      // - overall factor: penalized evidence들의 geometric mean
+      // - IMPORTANT: numeric_evidence_match.touched / naver_soft_year_miss.samples 로 찍힌 penalty도 합산
+      try {
+        if ((safeMode === "qv" || safeMode === "fv") && Array.isArray(blocksForVerify) && blocksForVerify.length > 0) {
+          let sumLog = 0;
+          let cnt = 0;
+          let minP = null;
+          let yearMiss = 0;
+          let numMiss = 0;
 
-    let __explicit = [];
-    if (Array.isArray(__rawEng)) __explicit = __rawEng.map(__norm).filter(Boolean);
-    else if (typeof __rawEng === "string") __explicit = __rawEng.split(/[\s,]+/).map(__norm).filter(Boolean);
+          let itemsTotal = 0;
+          let itemsUnknown = 0; // url이 없는 evidence 카운트(중복 제거 불가)
 
-    if (__explicit.length > 0) {
-      const __filtered = [...new Set(__explicit)].filter((e) => __allowed.has(e));
-      if (__filtered.length > 0) {
-        partial_scores.engines_requested = __filtered;
-        partial_scores.engines_requested_source = "request";
+          const __known = new Set();   // "최종 evidence로 살아있는" url 집합(드랍 제외용)
+          const __counted = new Set(); // 이미 penalty를 집계한 url 집합(이중 집계 방지)
+          const __strictPrune = !!(numeric_evidence_match && numeric_evidence_match.strict_prune);
+          const __keyOf = (x) => {
+            const u = x?.url || x?.link || x?.href || x?.source_url || x?.sourceUrl || null;
+            return (typeof u === "string" && u) ? u : null;
+          };
+
+          const __clamp01 = (v) => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return null;
+            return Math.max(0.0, Math.min(1.0, n));
+          };
+
+          const __defaultYearPenalty = __clamp01((typeof NAVER_YEAR_MISS_PENALTY !== "undefined" ? NAVER_YEAR_MISS_PENALTY : null)) ?? 0.90;
+          const __defaultNumPenalty = __clamp01((typeof NUMERIC_SOFT_WARNING_PENALTY !== "undefined" ? NUMERIC_SOFT_WARNING_PENALTY : null)) ?? 0.95;
+
+          // key canonicalize + (strict_prune일 때) "현재 살아있는 evidence"만 집계
+          // - __known: 최종 blocks에서 살아있는 URL 집합
+          // - __counted: 이미 penalty를 집계한 URL 집합(중복 집계 방지)
+          const __accPenalty = (p, flags, keyRaw, opts) => {
+            // key canonicalize
+            const key = keyRaw ? __canonUrlKey(keyRaw) : null;
+            const force = !!(opts && opts.force);
+
+            // STRICT prune가 켜져 있으면: 기본은 "최종 blocks evidence에 살아있는 URL"만 집계
+            // 단, touched/samples 등 “로그 기반 penalty”는 force로 우회 집계
+            if (!force && __strictPrune && key && !__known.has(key)) return;
+
+            // 이미 집계한 URL은 중복 집계 금지
+            if (key && __counted.has(key)) return;
+            if (key) __counted.add(key);
+
+            itemsTotal += 1;
+
+            const pp = __clamp01(p);
+            if (pp == null) return;
+
+            // "패널티"로 간주할 건 (0 < p < 1) 만
+            if (pp > 0 && pp < 1) {
+              sumLog += Math.log(pp);
+              cnt += 1;
+              if (minP == null || pp < minP) minP = pp;
+            }
+
+            if (flags?.year_miss) yearMiss += 1;
+            if (flags?.num_miss) numMiss += 1;
+          };
+
+          // 0) __known 채우기: 최종 blocks evidence에 "살아있는" URL만 모음
+          for (const b of blocksForVerify) {
+            const evs = (() => {
+              if (Array.isArray(b?.evidence_items)) return b.evidence_items;
+              if (Array.isArray(b?.evidence)) return b.evidence;
+              if (b?.evidence && typeof b.evidence === "object") {
+                const tmp = [];
+                for (const k of Object.keys(b.evidence)) {
+                  const arr = b.evidence[k];
+                  if (Array.isArray(arr)) tmp.push(...arr);
+                }
+                return tmp;
+              }
+              return [];
+            })();
+
+            for (const ev of evs) {
+              if (typeof __isEvidenceLikeItem === "function" && !__isEvidenceLikeItem(ev)) continue;
+              const k0 = __keyOf(ev);
+              const k = k0 ? __canonUrlKey(k0) : null;
+              if (k) __known.add(k);
+            }
+          }
+
+          // 1) blocksForVerify 내부 evidence(ev) 기반 (URL canonical + 중복 집계 방지)
+          for (const b of blocksForVerify) {
+            const evs = (() => {
+              if (Array.isArray(b?.evidence_items)) return b.evidence_items;
+              if (Array.isArray(b?.evidence)) return b.evidence;
+              if (b?.evidence && typeof b.evidence === "object") {
+                const tmp = [];
+                for (const k of Object.keys(b.evidence)) {
+                  const arr = b.evidence[k];
+                  if (Array.isArray(arr)) tmp.push(...arr);
+                }
+                return tmp;
+              }
+              return [];
+            })();
+
+            for (const ev of evs) {
+              if (typeof __isEvidenceLikeItem === "function" && !__isEvidenceLikeItem(ev)) continue;
+
+              const key0 = __keyOf(ev);
+              const key = key0 ? __canonUrlKey(key0) : null;
+
+              // "최종 evidence로 살아있는" URL 집합 구성
+              if (key) __known.add(key);
+              else itemsUnknown += 1;
+
+              const _y = !!ev?._soft_year_miss;
+              const _n = !!ev?._soft_numeric_miss;
+
+              // 기본은 1.0, 미스면 penalty 적용
+              const py = _y ? (__clamp01(ev?._soft_year_miss_penalty) ?? __defaultYearPenalty) : 1.0;
+              const pn = _n ? (__clamp01(ev?._soft_numeric_miss_penalty) ?? __defaultNumPenalty) : 1.0;
+
+              const prod = Math.max(0.0, Math.min(1.0, py * pn));
+
+              // per-evidence debug 저장
+              if ((_y || _n) && typeof ev === "object" && ev) {
+                try { ev._soft_penalty_product = Number(prod.toFixed(6)); } catch { }
+              }
+
+              __accPenalty(
+                prod,
+                { year_miss: _y, num_miss: _n },
+                key0,
+                { force: false }
+              );
+            }
+          }
+
+          // 2) numeric_evidence_match.touched 기반 (ev에 안 묻는 케이스 보완)
+          if (numeric_evidence_match && Array.isArray(numeric_evidence_match.touched)) {
+            for (const t of numeric_evidence_match.touched) {
+              const key = (__keyOf(t) || (typeof t?.url === "string" ? t.url : null));
+              __accPenalty(
+                t?.penalty,
+                { year_miss: !!t?.year_miss, num_miss: !!t?.num_miss },
+                key,
+                { force: true }
+              );
+            }
+          }
+
+          // 3) naver_soft_year_miss.samples 기반 (year miss가 samples로만 남는 케이스 보완)
+          if (naver_soft_year_miss && Array.isArray(naver_soft_year_miss.samples)) {
+            for (const s of naver_soft_year_miss.samples) {
+              const key = __keyOf(s) || (typeof s?.url === "string" ? s.url : null);
+              __accPenalty(
+                s?.penalty,
+                { year_miss: true, num_miss: false },
+                key,
+                { force: true }
+              );
+            }
+          }
+
+          // ✅ itemsTotal: "최종 살아있는 evidence" 기준으로 확정(중복 제거)
+          // - url 없는 evidence는 itemsUnknown으로 보정
+          itemsTotal = (__known ? __known.size : 0) + (itemsUnknown || 0);
+
+          // geometric mean
+          const factor = (cnt > 0) ? Math.exp(sumLog / cnt) : 1.0;
+
+          partial_scores.soft_penalty_factor = Number(Math.max(0.0, Math.min(1.0, factor)).toFixed(6));
+          partial_scores.soft_penalty_meta = {
+            penalized_evidence_items: cnt,
+            min_penalty: (minP == null) ? null : Number(minP.toFixed(6)),
+            year_miss_items: yearMiss,
+            num_miss_items: numMiss,
+          };
+          partial_scores.soft_penalties_overview = {
+            items: itemsTotal,
+            penalized: cnt,
+            year_miss: yearMiss,
+            num_miss: numMiss,
+          };
+        } else {
+          // non QV/FV or no blocks
+          partial_scores.soft_penalty_factor = 1.0;
+          try {
+            partial_scores.soft_penalty_meta = {
+              penalized_evidence_items: 0,
+              min_penalty: null,
+              year_miss_items: 0,
+              num_miss_items: 0,
+            };
+            partial_scores.soft_penalties_overview = {
+              items: 0,
+              penalized: 0,
+              year_miss: 0,
+              num_miss: 0,
+            };
+          } catch { }
+        }
+      } catch (_) {
+        try { partial_scores.soft_penalty_factor = 1.0; } catch { }
+      }
+
+      // ✅ FINALIZE: engines_requested / engines_used(E_eff) / engine_explain / engine_exclusion_reasons
+      {
+        // requested 확정
+        if (!Array.isArray(partial_scores.engines_requested) || partial_scores.engines_requested.length === 0) {
+          partial_scores.engines_requested = Array.isArray(engines) ? engines.slice() : [];
+        }
+
+        // ✅ IMPORTANT:
+        // - engines_requested는 "사용자 요청/플랜" 의미를 유지해야 함 (calls>0 엔진을 섞지 말 것)
+        // - 실제 호출된 엔진은 engines_called 로 분리 기록
+        try {
+          const __rawEng =
+            (req && req.body && typeof req.body === "object")
+              ? (req.body.engines ?? req.body.engines_requested ?? req.body.enginesRequested)
+              : null;
+
+          const __norm = (x) => String(x || "").trim().toLowerCase();
+          const __allowed = new Set((Array.isArray(engines) ? engines : []).map(__norm));
+
+          let __explicit = [];
+          if (Array.isArray(__rawEng)) __explicit = __rawEng.map(__norm).filter(Boolean);
+          else if (typeof __rawEng === "string") __explicit = __rawEng.split(/[\s,]+/).map(__norm).filter(Boolean);
+
+          if (__explicit.length > 0) {
+            const __filtered = [...new Set(__explicit)].filter((e) => __allowed.has(e));
+            if (__filtered.length > 0) {
+              partial_scores.engines_requested = __filtered;
+              partial_scores.engines_requested_source = "request";
+            } else {
+              partial_scores.engines_requested_source = "request_invalid";
+            }
+          }
+        } catch (_) { }
+
+        // 실제 호출/시도된 엔진 — calls>0 OR ms>0 OR queries_used>0
+        try {
+          const __norm2 = (x) => String(x || "").trim().toLowerCase();
+          const __allowed2 = new Set((Array.isArray(engines) ? engines : []).map(__norm2));
+
+          const __calledSet2 = new Set();
+
+          // 1) engine_metrics: calls>0
+          const __m2 =
+            (partial_scores && partial_scores.engine_metrics && typeof partial_scores.engine_metrics === "object")
+              ? partial_scores.engine_metrics
+              : ((typeof engineMetrics !== "undefined" && engineMetrics && typeof engineMetrics === "object") ? engineMetrics : null);
+
+          if (__m2 && typeof __m2 === "object") {
+            for (const [k, v] of Object.entries(__m2)) {
+              const kk = __norm2(k);
+              if (!kk || (__allowed2.size > 0 && !__allowed2.has(kk))) continue;
+
+              const calls = Number(v?.calls ?? v?.call_count ?? v?.n_calls ?? v?.count ?? 0);
+              if (Number.isFinite(calls) && calls > 0) __calledSet2.add(kk);
+            }
+          }
+
+          // 2) engineTimes: ms>0
+          const __t2 =
+            (typeof engineTimes !== "undefined" && engineTimes && typeof engineTimes === "object")
+              ? engineTimes
+              : null;
+
+          if (__t2 && typeof __t2 === "object") {
+            for (const [k, v] of Object.entries(__t2)) {
+              const kk = __norm2(k);
+              if (!kk || (__allowed2.size > 0 && !__allowed2.has(kk))) continue;
+
+              const ms = Number(v);
+              if (Number.isFinite(ms) && ms > 0) __calledSet2.add(kk);
+            }
+          }
+
+          // 3) engine_queries_used: queries.length>0 (attempt/plan 흔적)
+          const __q2 =
+            (partial_scores && partial_scores.engine_queries_used && typeof partial_scores.engine_queries_used === "object")
+              ? partial_scores.engine_queries_used
+              : ((typeof engineQueriesUsed !== "undefined" && engineQueriesUsed && typeof engineQueriesUsed === "object") ? engineQueriesUsed : null);
+
+          if (__q2 && typeof __q2 === "object") {
+            for (const [k, arr] of Object.entries(__q2)) {
+              const kk = __norm2(k);
+              if (!kk || (__allowed2.size > 0 && !__allowed2.has(kk))) continue;
+              if (Array.isArray(arr) && arr.length > 0) __calledSet2.add(kk);
+            }
+          }
+
+          const __called2 = [...__calledSet2].filter((e) => (__allowed2.size === 0) || __allowed2.has(e));
+
+          partial_scores.engines_called = __called2;
+          partial_scores.engines_called_source = (__called2.length > 0) ? "metrics_or_times_or_queries" : "none";
+        } catch (_) { }
+
+        const __requested = partial_scores.engines_requested.slice();
+
+        const __used = [];
+        const __reasons = {};
+        const __explain = {};
+
+        const __countBlockEvidence = (engineKey) => {
+          const __bfv =
+            (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
+              ? blocksForVerify
+              : null;
+
+          if (!__bfv) return 0;
+
+          let n = 0;
+          for (const b of __bfv) {
+            const arr = b?.evidence?.[engineKey];
+            if (Array.isArray(arr)) n += arr.length;
+          }
+          return n;
+        };
+
+        // ✅ soft penalty/year/num miss 집계(엔진별) — QV/FV blocks evidence 기준
+        const __collectBlockSoftMeta = (engineKey) => {
+          const out = {
+            items: 0,
+            penalized: 0,
+            year_miss: 0,
+            num_miss: 0,
+            avg_penalty: null, // geometric mean
+            min_penalty: null,
+          };
+
+          const __bfv =
+            (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
+              ? blocksForVerify
+              : null;
+
+          if (!__bfv) return out;
+
+          let sumLog = 0;
+
+          for (const b of __bfv) {
+            const arr = b?.evidence?.[engineKey];
+            if (!Array.isArray(arr) || arr.length === 0) continue;
+
+            for (const ev of arr) {
+              out.items++;
+
+              if (ev?._soft_year_miss) out.year_miss++;
+              if (ev?._soft_numeric_miss) out.num_miss++;
+
+              const p =
+                (typeof ev?._soft_penalty_product === "number" && Number.isFinite(ev._soft_penalty_product))
+                  ? ev._soft_penalty_product
+                  : null;
+
+              if (p != null && p < 0.999999) {
+                out.penalized++;
+                const pp = Math.max(1e-6, Math.min(1.0, p));
+                sumLog += Math.log(pp);
+                out.min_penalty = (out.min_penalty == null) ? pp : Math.min(out.min_penalty, pp);
+              }
+            }
+          }
+
+          if (out.penalized > 0) {
+            out.avg_penalty = Math.exp(sumLog / out.penalized);
+          }
+          return out;
+        };
+
+        for (const name of __requested) {
+          if (!name) continue;
+
+          const extArr = external?.[name];
+          const extCount = Array.isArray(extArr) ? extArr.length : 0;
+
+          const blockCount =
+            (safeMode === "qv" || safeMode === "fv") ? __countBlockEvidence(name) : 0;
+
+          const ms =
+            (typeof engineTimes?.[name] === "number" && Number.isFinite(engineTimes[name]))
+              ? engineTimes[name]
+              : null;
+
+          let used = false;
+
+          // ✅ used 판정(모드별)
+          if (name === "klaw") {
+            // lv는 위에서 return 하니까 사실상 여기까지 오면 제외 취급
+            used = (safeMode === "lv") && extCount > 0;
+            if (!used) __reasons[name] = "excluded_policy";
+          } else if (safeMode === "qv" || safeMode === "fv") {
+            // QV/FV: prune 이후 blocks evidence 기준이 “정답”
+            used = blockCount > 0;
+
+            if (!used) {
+              const preReason =
+                (partial_scores?.engine_exclusion_reasons_pre &&
+                  typeof partial_scores.engine_exclusion_reasons_pre[name] === "string")
+                  ? partial_scores.engine_exclusion_reasons_pre[name]
+                  : null;
+
+              // pre에서 no_query/no_calls/no_results가 잡혔으면 그걸 우선 반영
+              __reasons[name] = preReason || "no_block_evidence";
+            }
+          } else {
+            // DV/CV(+기타): external 결과 기준
+            used = extCount > 0;
+
+            if (!used) {
+              const preReason =
+                (partial_scores?.engine_exclusion_reasons_pre &&
+                  typeof partial_scores.engine_exclusion_reasons_pre[name] === "string")
+                  ? partial_scores.engine_exclusion_reasons_pre[name]
+                  : null;
+
+              __reasons[name] = preReason || "no_results";
+            }
+          }
+
+          if (used) __used.push(name);
+
+          const softMeta =
+            (safeMode === "qv" || safeMode === "fv")
+              ? __collectBlockSoftMeta(name)
+              : null;
+
+          __explain[name] = {
+            used,
+            ext_count: extCount,
+            block_evidence_count: blockCount,
+            ms,
+            soft_meta: softMeta, // {items, penalized, year_miss, num_miss, avg_penalty, min_penalty}
+          };
+        }
+
+        // ✅ 핵심: fallback으로 채우지 말 것(증거 0이면 engines_used = [])
+        partial_scores.engines_used = __used;
+        partial_scores.effective_engines = __used.slice();
+        partial_scores.effective_engines_count = __used.length;
+
+        // (옵션) excluded도 같이 남기고 싶으면
+        partial_scores.engines_excluded = __requested.filter((x) => x && !__used.includes(x));
+
+        partial_scores.engine_explain = __explain;
+
+        // ✅ 전체 soft penalty 집계(옵션)
+        if (safeMode === "qv" || safeMode === "fv") {
+          try {
+            let totalItems = 0, totalPen = 0, totalYear = 0, totalNum = 0;
+            for (const k of Object.keys(__explain || {})) {
+              const sm = __explain?.[k]?.soft_meta;
+              if (!sm || typeof sm !== "object") continue;
+              totalItems += (sm.items || 0);
+              totalPen += (sm.penalized || 0);
+              totalYear += (sm.year_miss || 0);
+              totalNum += (sm.num_miss || 0);
+            }
+            partial_scores.soft_penalties_overview = {
+              items: totalItems,
+              penalized: totalPen,
+              year_miss: totalYear,
+              num_miss: totalNum,
+            };
+          } catch (_) { }
+        }
+
+        // 기존 exclusion reason이 있으면 merge
+        const __prev =
+          (partial_scores.engine_exclusion_reasons && typeof partial_scores.engine_exclusion_reasons === "object")
+            ? partial_scores.engine_exclusion_reasons
+            : {};
+
+        partial_scores.engine_exclusion_reasons = {
+          ...__prev,
+          ...__reasons,
+          ...(__used.length ? {} : { _all: "all_pruned_or_no_evidence" }),
+        };
+      }
+
+      // ─────────────────────────────
+      // ③ 엔진 보정계수 조회 (서버 통계 기반) — FINALIZE 이후(E_eff 기준)
+      // ─────────────────────────────
+      const enginesForCorrection = Array.isArray(partial_scores.engines_used)
+        ? partial_scores.engines_used.filter((x) => x !== "klaw")
+        : engines.filter((x) => x !== "klaw");
+
+      if (enginesForCorrection.length > 0) {
+        engineStatsMap = await fetchEngineStatsMap(enginesForCorrection);
+        engineFactor = computeEngineCorrectionFactor(enginesForCorrection, engineStatsMap); // 0.9~1.1
+        partial_scores.engine_factor = engineFactor;
+        partial_scores.engine_factor_engines = enginesForCorrection;
       } else {
-        partial_scores.engines_requested_source = "request_invalid";
+        engineFactor = 1.0;
+        partial_scores.engine_factor = 1.0;
+        partial_scores.engine_factor_engines = [];
       }
-    }
-  } catch (_) {}
-
-      // 실제 호출/시도된 엔진 — calls>0 OR ms>0 OR queries_used>0
-  try {
-    const __norm2 = (x) => String(x || "").trim().toLowerCase();
-    const __allowed2 = new Set((Array.isArray(engines) ? engines : []).map(__norm2));
-
-    const __calledSet2 = new Set();
-
-    // 1) engine_metrics: calls>0
-    const __m2 =
-      (partial_scores && partial_scores.engine_metrics && typeof partial_scores.engine_metrics === "object")
-        ? partial_scores.engine_metrics
-        : ((typeof engineMetrics !== "undefined" && engineMetrics && typeof engineMetrics === "object") ? engineMetrics : null);
-
-    if (__m2 && typeof __m2 === "object") {
-      for (const [k, v] of Object.entries(__m2)) {
-        const kk = __norm2(k);
-        if (!kk || (__allowed2.size > 0 && !__allowed2.has(kk))) continue;
-
-        const calls = Number(v?.calls ?? v?.call_count ?? v?.n_calls ?? v?.count ?? 0);
-        if (Number.isFinite(calls) && calls > 0) __calledSet2.add(kk);
-      }
-    }
-
-    // 2) engineTimes: ms>0
-    const __t2 =
-      (typeof engineTimes !== "undefined" && engineTimes && typeof engineTimes === "object")
-        ? engineTimes
-        : null;
-
-    if (__t2 && typeof __t2 === "object") {
-      for (const [k, v] of Object.entries(__t2)) {
-        const kk = __norm2(k);
-        if (!kk || (__allowed2.size > 0 && !__allowed2.has(kk))) continue;
-
-        const ms = Number(v);
-        if (Number.isFinite(ms) && ms > 0) __calledSet2.add(kk);
-      }
-    }
-
-    // 3) engine_queries_used: queries.length>0 (attempt/plan 흔적)
-    const __q2 =
-      (partial_scores && partial_scores.engine_queries_used && typeof partial_scores.engine_queries_used === "object")
-        ? partial_scores.engine_queries_used
-        : ((typeof engineQueriesUsed !== "undefined" && engineQueriesUsed && typeof engineQueriesUsed === "object") ? engineQueriesUsed : null);
-
-    if (__q2 && typeof __q2 === "object") {
-      for (const [k, arr] of Object.entries(__q2)) {
-        const kk = __norm2(k);
-        if (!kk || (__allowed2.size > 0 && !__allowed2.has(kk))) continue;
-        if (Array.isArray(arr) && arr.length > 0) __calledSet2.add(kk);
-      }
-    }
-
-    const __called2 = [...__calledSet2].filter((e) => (__allowed2.size === 0) || __allowed2.has(e));
-
-    partial_scores.engines_called = __called2;
-    partial_scores.engines_called_source = (__called2.length > 0) ? "metrics_or_times_or_queries" : "none";
-  } catch (_) {}
-
-  const __requested = partial_scores.engines_requested.slice();
-
-  const __used = [];
-  const __reasons = {};
-  const __explain = {};
-
-    const __countBlockEvidence = (engineKey) => {
-    const __bfv =
-      (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
-        ? blocksForVerify
-        : null;
-
-    if (!__bfv) return 0;
-
-    let n = 0;
-    for (const b of __bfv) {
-      const arr = b?.evidence?.[engineKey];
-      if (Array.isArray(arr)) n += arr.length;
-    }
-    return n;
-  };
-
-    // ✅ soft penalty/year/num miss 집계(엔진별) — QV/FV blocks evidence 기준
-   const __collectBlockSoftMeta = (engineKey) => {
-    const out = {
-      items: 0,
-      penalized: 0,
-      year_miss: 0,
-      num_miss: 0,
-      avg_penalty: null, // geometric mean
-      min_penalty: null,
-    };
-
-    const __bfv =
-      (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
-        ? blocksForVerify
-        : null;
-
-    if (!__bfv) return out;
-
-    let sumLog = 0;
-
-    for (const b of __bfv) {
-      const arr = b?.evidence?.[engineKey];
-      if (!Array.isArray(arr) || arr.length === 0) continue;
-
-      for (const ev of arr) {
-        out.items++;
-
-        if (ev?._soft_year_miss) out.year_miss++;
-        if (ev?._soft_numeric_miss) out.num_miss++;
-
-        const p =
-          (typeof ev?._soft_penalty_product === "number" && Number.isFinite(ev._soft_penalty_product))
-            ? ev._soft_penalty_product
-            : null;
-
-        if (p != null && p < 0.999999) {
-          out.penalized++;
-          const pp = Math.max(1e-6, Math.min(1.0, p));
-          sumLog += Math.log(pp);
-          out.min_penalty = (out.min_penalty == null) ? pp : Math.min(out.min_penalty, pp);
-        }
-      }
-    }
-
-    if (out.penalized > 0) {
-      out.avg_penalty = Math.exp(sumLog / out.penalized);
-    }
-    return out;
-  };
-
-  for (const name of __requested) {
-    if (!name) continue;
-
-    const extArr = external?.[name];
-    const extCount = Array.isArray(extArr) ? extArr.length : 0;
-
-    const blockCount =
-      (safeMode === "qv" || safeMode === "fv") ? __countBlockEvidence(name) : 0;
-
-    const ms =
-      (typeof engineTimes?.[name] === "number" && Number.isFinite(engineTimes[name]))
-        ? engineTimes[name]
-        : null;
-
-    let used = false;
-
-    // ✅ used 판정(모드별)
-    if (name === "klaw") {
-      // lv는 위에서 return 하니까 사실상 여기까지 오면 제외 취급
-      used = (safeMode === "lv") && extCount > 0;
-      if (!used) __reasons[name] = "excluded_policy";
-    } else if (safeMode === "qv" || safeMode === "fv") {
-  // QV/FV: prune 이후 blocks evidence 기준이 “정답”
-  used = blockCount > 0;
-
-  if (!used) {
-    const preReason =
-      (partial_scores?.engine_exclusion_reasons_pre &&
-        typeof partial_scores.engine_exclusion_reasons_pre[name] === "string")
-        ? partial_scores.engine_exclusion_reasons_pre[name]
-        : null;
-
-    // pre에서 no_query/no_calls/no_results가 잡혔으면 그걸 우선 반영
-    __reasons[name] = preReason || "no_block_evidence";
-  }
-} else {
-  // DV/CV(+기타): external 결과 기준
-  used = extCount > 0;
-
-  if (!used) {
-    const preReason =
-      (partial_scores?.engine_exclusion_reasons_pre &&
-        typeof partial_scores.engine_exclusion_reasons_pre[name] === "string")
-        ? partial_scores.engine_exclusion_reasons_pre[name]
-        : null;
-
-    __reasons[name] = preReason || "no_results";
-  }
-}
-
-    if (used) __used.push(name);
-
-        const softMeta =
-      (safeMode === "qv" || safeMode === "fv")
-        ? __collectBlockSoftMeta(name)
-        : null;
-
-    __explain[name] = {
-      used,
-      ext_count: extCount,
-      block_evidence_count: blockCount,
-      ms,
-      soft_meta: softMeta, // {items, penalized, year_miss, num_miss, avg_penalty, min_penalty}
-    };
-  }
-
-  // ✅ 핵심: fallback으로 채우지 말 것(증거 0이면 engines_used = [])
-  partial_scores.engines_used = __used;
-  partial_scores.effective_engines = __used.slice();
-  partial_scores.effective_engines_count = __used.length;
-
-  // (옵션) excluded도 같이 남기고 싶으면
-  partial_scores.engines_excluded = __requested.filter((x) => x && !__used.includes(x));
-
-  partial_scores.engine_explain = __explain;
-
-    // ✅ 전체 soft penalty 집계(옵션)
-  if (safeMode === "qv" || safeMode === "fv") {
-    try {
-      let totalItems = 0, totalPen = 0, totalYear = 0, totalNum = 0;
-      for (const k of Object.keys(__explain || {})) {
-        const sm = __explain?.[k]?.soft_meta;
-        if (!sm || typeof sm !== "object") continue;
-        totalItems += (sm.items || 0);
-        totalPen += (sm.penalized || 0);
-        totalYear += (sm.year_miss || 0);
-        totalNum += (sm.num_miss || 0);
-      }
-      partial_scores.soft_penalties_overview = {
-        items: totalItems,
-        penalized: totalPen,
-        year_miss: totalYear,
-        num_miss: totalNum,
-      };
-    } catch (_) {}
-  }
-
-  // 기존 exclusion reason이 있으면 merge
-  const __prev =
-    (partial_scores.engine_exclusion_reasons && typeof partial_scores.engine_exclusion_reasons === "object")
-      ? partial_scores.engine_exclusion_reasons
-      : {};
-
-  partial_scores.engine_exclusion_reasons = {
-    ...__prev,
-    ...__reasons,
-    ...(__used.length ? {} : { _all: "all_pruned_or_no_evidence" }),
-  };
-}
-
-// ─────────────────────────────
-// ③ 엔진 보정계수 조회 (서버 통계 기반) — FINALIZE 이후(E_eff 기준)
-// ─────────────────────────────
-const enginesForCorrection = Array.isArray(partial_scores.engines_used)
-  ? partial_scores.engines_used.filter((x) => x !== "klaw")
-  : engines.filter((x) => x !== "klaw");
-
-if (enginesForCorrection.length > 0) {
-  engineStatsMap = await fetchEngineStatsMap(enginesForCorrection);
-  engineFactor = computeEngineCorrectionFactor(enginesForCorrection, engineStatsMap); // 0.9~1.1
-  partial_scores.engine_factor = engineFactor;
-  partial_scores.engine_factor_engines = enginesForCorrection;
-} else {
-  engineFactor = 1.0;
-  partial_scores.engine_factor = 1.0;
-  partial_scores.engine_factor_engines = [];
-}
 
       const __bfvText =
-  (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
-    ? blocksForVerify
-    : [];
+        (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
+          ? blocksForVerify
+          : [];
 
-const __blocksText =
-  (safeMode === "qv" || safeMode === "fv") && __bfvText.length > 0
-    ? __bfvText.map((b) => String(b?.text || "").trim()).filter(Boolean).join("\n")
-    : "";
+      const __blocksText =
+        (safeMode === "qv" || safeMode === "fv") && __bfvText.length > 0
+          ? __bfvText.map((b) => String(b?.text || "").trim()).filter(Boolean).join("\n")
+          : "";
 
-const coreText =
-  safeMode === "qv"
-    ? (flash && flash.trim().length > 0
-        ? flash
-        : (__blocksText || qvfvPre?.korean_core || query))
-    : safeMode === "fv"
-    ? (userCoreText || __blocksText || query)
-    : safeMode === "cv" && user_answer && user_answer.trim().length > 0
-    ? user_answer
-    : query;
+      const coreText =
+        safeMode === "qv"
+          ? (flash && flash.trim().length > 0
+            ? flash
+            : (__blocksText || qvfvPre?.korean_core || query))
+          : safeMode === "fv"
+            ? (userCoreText || __blocksText || query)
+            : safeMode === "cv" && user_answer && user_answer.trim().length > 0
+              ? user_answer
+              : query;
 
       const verifyInput = {
         mode: safeMode,
@@ -14550,7 +14813,7 @@ const coreText =
         partial_scores,
       };
 
-            const verifyPrompt = `
+      const verifyPrompt = `
 You are the evaluation module of "Cross-Verified AI".
 
 RETURN ONLY VALID JSON.
@@ -14620,418 +14883,418 @@ Rules:
 `.trim();
 
       // ✅ verify는 모델 실패/빈문자 발생이 있어서 fallback 시도
-const verifyPayload = { contents: [{ parts: [{ text: verifyPrompt }] }] };
+      const verifyPayload = { contents: [{ parts: [{ text: verifyPrompt }] }] };
 
-// ✅ NEW: verify는 Groq 우선(옵션) → 실패 시 Gemini 후보 fallback
-let lastVerifyErr = null;
-let groqVerifyUsed = false;
-let groqVerifyModelUsed = null;
+      // ✅ NEW: verify는 Groq 우선(옵션) → 실패 시 Gemini 후보 fallback
+      let lastVerifyErr = null;
+      let groqVerifyUsed = false;
+      let groqVerifyModelUsed = null;
 
-const GROQ_VERIFY_ENABLE = String(process.env.GROQ_VERIFY_ENABLE || "1") !== "0";
-const GROQ_VERIFY_MODEL =
-  String(process.env.GROQ_VERIFY_MODEL || "").trim() ||
-  (typeof GROQ_ROUTER_MODEL !== "undefined" ? String(GROQ_ROUTER_MODEL) : "llama-3.3-70b-versatile");
+      const GROQ_VERIFY_ENABLE = String(process.env.GROQ_VERIFY_ENABLE || "1") !== "0";
+      const GROQ_VERIFY_MODEL =
+        String(process.env.GROQ_VERIFY_MODEL || "").trim() ||
+        (typeof GROQ_ROUTER_MODEL !== "undefined" ? String(GROQ_ROUTER_MODEL) : "llama-3.3-70b-versatile");
 
-const __getGroqKeyForVerify = async () => {
-  // 0) body override 우선 (테스트/운영 전환 + 사용자별 키 없이도 즉시 호출 가능)
-  try {
-    const kBody = String(req?.body?.groq_api_key || req?.body?.groq_key || "").trim();
-    if (kBody) return kBody;
-  } catch (_) {}
+      const __getGroqKeyForVerify = async () => {
+        // 0) body override 우선 (테스트/운영 전환 + 사용자별 키 없이도 즉시 호출 가능)
+        try {
+          const kBody = String(req?.body?.groq_api_key || req?.body?.groq_key || "").trim();
+          if (kBody) return kBody;
+        } catch (_) { }
 
-  // 0.5) request cache (같은 요청 내에서 여러 번 호출될 수 있으니 1회만 resolve)
-  try {
-    if (req && Object.prototype.hasOwnProperty.call(req, "_groq_verify_key_cache")) {
-      return String(req._groq_verify_key_cache || "").trim();
-    }
-  } catch (_) {}
+        // 0.5) request cache (같은 요청 내에서 여러 번 호출될 수 있으니 1회만 resolve)
+        try {
+          if (req && Object.prototype.hasOwnProperty.call(req, "_groq_verify_key_cache")) {
+            return String(req._groq_verify_key_cache || "").trim();
+          }
+        } catch (_) { }
 
-  // 1) user_secrets 우선 (router/preprocess와 동일 정책)
-  try {
-    const kUser = await __getUserGroqKey(req);
-    const kk = String(kUser || "").trim();
-    if (kk) {
-      try { req._groq_verify_key_cache = kk; } catch (_) {}
-      return kk;
-    }
-  } catch (_) {}
+        // 1) user_secrets 우선 (router/preprocess와 동일 정책)
+        try {
+          const kUser = await __getUserGroqKey(req);
+          const kk = String(kUser || "").trim();
+          if (kk) {
+            try { req._groq_verify_key_cache = kk; } catch (_) { }
+            return kk;
+          }
+        } catch (_) { }
 
-  // 2) (옵션) env fallback
-  try {
-    const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
-    if (__allowEnvFallback) {
-      const envKey = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
-      if (envKey) return envKey;
-    }
-  } catch (_) {}
+        // 2) (옵션) env fallback
+        try {
+          const __allowEnvFallback = String(process.env.GROQ_ALLOW_ENV_FALLBACK || "0") === "1";
+          if (__allowEnvFallback) {
+            const envKey = String(process.env.GROQ_API_KEY || process.env.GROQ_KEY || "").trim();
+            if (envKey) return envKey;
+          }
+        } catch (_) { }
 
-  // 3) 레거시: handler-scope 변수 fallback (있으면 사용)
-  try {
-    if (typeof groq_api_key !== "undefined" && String(groq_api_key || "").trim()) return String(groq_api_key).trim();
-  } catch (_) {}
-  try {
-    if (typeof groq_key !== "undefined" && String(groq_key || "").trim()) return String(groq_key).trim();
-  } catch (_) {}
+        // 3) 레거시: handler-scope 변수 fallback (있으면 사용)
+        try {
+          if (typeof groq_api_key !== "undefined" && String(groq_api_key || "").trim()) return String(groq_api_key).trim();
+        } catch (_) { }
+        try {
+          if (typeof groq_key !== "undefined" && String(groq_key || "").trim()) return String(groq_key).trim();
+        } catch (_) { }
 
-  return "";
-};
-
-const __fetchGroqVerify = async ({ model, prompt, timeoutMs }) => {
-  const key = await __getGroqKeyForVerify();
-  if (!key) throw Object.assign(new Error("GROQ_KEY_MISSING_FOR_VERIFY"), { code: "GROQ_KEY_MISSING_FOR_VERIFY" });
-
-  const url = `${String(GROQ_API_BASE || "https://api.groq.com/openai/v1").replace(/\/+$/, "")}/chat/completions`;
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 12000));
-
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.2,
-        max_tokens: 4096,
-      }),
-    });
-
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const msg = json?.error?.message || `GROQ_HTTP_${res.status}`;
-      throw Object.assign(new Error(msg), { response: { status: res.status, data: json } });
-    }
-
-    const content = json?.choices?.[0]?.message?.content;
-    if (!content || !String(content).trim()) throw new Error("GROQ_VERIFY_EMPTY");
-    return String(content);
-  } finally {
-    clearTimeout(t);
-  }
-};
-
-// 1) Groq 우선 시도
-if (GROQ_VERIFY_ENABLE) {
-  const t_groq_verify = Date.now();
-  try {
-    verify = await __fetchGroqVerify({
-      model: GROQ_VERIFY_MODEL,
-      prompt: verifyPrompt,
-      timeoutMs: parseInt(process.env.GROQ_VERIFY_TIMEOUT_MS || "12000", 10),
-    });
-    groqVerifyUsed = true;
-    groqVerifyModelUsed = GROQ_VERIFY_MODEL;
-
-    const ms = Date.now() - t_groq_verify;
-    if (partial_scores && typeof partial_scores === "object") {
-      partial_scores.groq_verify = { used: true, model: groqVerifyModelUsed, ms };
-    }
-  } catch (e) {
-    const ms = Date.now() - t_groq_verify;
-    if (partial_scores && typeof partial_scores === "object") {
-      partial_scores.groq_verify = { used: false, model: GROQ_VERIFY_MODEL, ms, err: String(e?.message || e) };
-    }
-    lastVerifyErr = e;
-    // Groq 실패 시 Gemini로 fallback
-  }
-}
-
-// 2) Groq로 성공 못 했으면 Gemini 후보로 fallback
-if (!groqVerifyUsed) {
-  // 1순위: verifyModel, 2순위: env verify, 3순위: env verify-lite
-const verifyModelCandidates = [
-  verifyModel,
-  GEMINI_VERIFY_MODEL,
-  GEMINI_VERIFY_LITE_MODEL,
-].filter((v, i, a) => v && a.indexOf(v) === i);
-
-  const t_verify = Date.now();
-  try {
-    for (const m of verifyModelCandidates) {
-      try {
-        verify = await fetchGeminiSmart({
-          userId: logUserId,
-          keyHint: gemini_key,
-          model: m,
-          payload: verifyPayload,
-          opts: { label: `verify:${m}`, minChars: 20 },
-        });
-        verifyModelUsed = m; // ✅ 실제 성공 모델 기록
-        break;
-      } catch (e) {
-        if (
-          e?.code === "INVALID_GEMINI_KEY" ||
-          e?.code === "GEMINI_KEY_EXHAUSTED" ||
-          e?.code === "GEMINI_KEY_MISSING" ||
-          e?.code === "GEMINI_RATE_LIMIT"
-        ) throw e;
-
-        const status = e?.response?.status;
-        if (status === 429) throw e; // ✅ 쿼터 소진은 즉시 상위로
-        lastVerifyErr = e;
-        // 다음 후보 모델로 계속 진행
-      }
-    }
-  } finally {
-    const ms_verify = Date.now() - t_verify;
-    recordTime(geminiTimes, "verify_ms", ms_verify);
-    recordMetric(geminiMetrics, "verify", ms_verify);
-  }
-}
-
-verifyRawJson = ""; // ✅ reset (declared at handler-scope)
-verifyRawJsonSanitized = ""; // ✅ reset (pretty JSON for logs / response)
-
-// ✅ 끝까지 실패했으면 기존 정책대로: verifyMeta 없이 외부엔진 기반으로만 진행
-if (!verify || !String(verify).trim()) {
-  verifyMeta = null;
-  __irrelevant_urls = [];
-  verifyRawJson = ""; // ✅ NEW
-  verifyRawJsonSanitized = ""; // ✅ NEW
-  if (DEBUG) console.warn("⚠️ verify failed on all models:", lastVerifyErr?.message || "unknown");
-} else {
-  // ✅ JSON만 뽑아내기(코드펜스/잡문 있어도 최대한 복구)
-  try {
-    let s = String(verify || "").trim();
-
-        // 1) code-fence 제거 (json fence 포함)
-    const __FENCE3 = "`".repeat(3);
-    const fenceRe = new RegExp(`${__FENCE3}(?:json)?\\s*([\\s\\S]*?)${__FENCE3}`, "i");
-    const fence = s.match(fenceRe);
-    if (fence && fence[1]) s = String(fence[1]).trim();
-
-    // 2) 첫 { ~ 마지막 } 까지 우선 추출(기존 방식 유지 + fence 제거로 안정화)
-    const first = s.indexOf("{");
-    const last = s.lastIndexOf("}");
-    const jsonText = (first >= 0 && last > first) ? s.slice(first, last + 1) : s;
-
-    verifyRawJson = jsonText; // ✅ NEW: 코드펜스/잡문 제거된 JSON만 내려줌
-    verifyMeta = JSON.parse(jsonText);
-
-    // ✅ NEW: input.blocks 가 주어졌으면, verifyMeta.blocks 는 그 id 집합으로 "락" 걸기
-// - 모델이 멋대로 core_text를 2~8로 쪼개 5블록 만들어도 제거
-// - 텍스트는 input.blocks의 text로 강제해 downstream 정합성 유지
-try {
-  const _bf = Array.isArray(blocksForVerify) ? blocksForVerify : [];
-  if (_bf.length > 0 && verifyMeta && Array.isArray(verifyMeta.blocks)) {
-    const id2text = new Map();
-    const allowed = new Set();
-
-    for (const b of _bf) {
-      const id = Number.isFinite(Number(b?.id)) ? Number(b.id) : null;
-      if (id == null) continue;
-      allowed.add(id);
-      id2text.set(id, String(b?.text || "").trim());
-    }
-
-    verifyMeta.blocks = verifyMeta.blocks
-      .filter((vb) => allowed.has(Number(vb?.id)))
-      .map((vb) => {
-        const id = Number(vb.id);
-        const forcedText = id2text.get(id);
-        return {
-          ...vb,
-          id,
-          text: (forcedText && forcedText.length > 0) ? forcedText : String(vb?.text || "").trim(),
-        };
-      })
-      .sort((a, b) => Number(a.id) - Number(b.id));
-  }
-} catch (_) {}
-
-// ✅ (optional) normalize if helper exists
-if (typeof normalizeVerifyMeta === "function") {
-  try {
-    verifyMeta = normalizeVerifyMeta(verifyMeta, verifyEvidenceLookup);
-  } catch (_) {}
-}
-
-// ✅ scrub hallucinated URLs using external evidence pool
-try {
-  const __allowed = collectExternalEvidenceUrls(external, {
-  strictNaverWhitelist:
-    (snippet_meta && snippet_meta.is_snippet === true) ||
-    String(req.path || "") === "/api/verify-snippet",
-});
-scrubVerifyMetaUnknownUrls(verifyMeta, __allowed);
-} catch (_) {}
-
-// ✅ (moved) verify_raw finalization happens AFTER S-19 sanitize below
-// - keep this block intentionally empty to avoid referencing undeclared jsonText
-
-// ✅ NEW(S-19): verifyMeta.evidence 엔진명 정합화(실제 evidence_counts=0 엔진 제거) + engine_adjust 리셋
-try {
-  const bf = Array.isArray(partial_scores?.blocks_for_verify)
-    ? partial_scores.blocks_for_verify
-    : [];
-
-  const id2counts = new Map();
-  for (const b of bf) {
-    const id = Number.isFinite(Number(b?.id)) ? Number(b.id) : null;
-    const counts = (b?.evidence_counts && typeof b.evidence_counts === "object") ? b.evidence_counts : null;
-    if (id != null && counts) id2counts.set(id, counts);
-  }
-
-  const removed = { support: {}, conflict: {}, engine_adjust_reset: [] };
-
-  if (verifyMeta && Array.isArray(verifyMeta.blocks)) {
-    for (const vb of verifyMeta.blocks) {
-      const bid = Number.isFinite(Number(vb?.id)) ? Number(vb.id) : null;
-      const counts = (bid != null && id2counts.has(bid)) ? id2counts.get(bid) : null;
-
-      const ev = (vb?.evidence && typeof vb.evidence === "object") ? vb.evidence : null;
-      if (!counts || !ev) continue;
-
-      const s0 = Array.isArray(ev.support) ? ev.support.filter(Boolean) : [];
-      const c0 = Array.isArray(ev.conflict) ? ev.conflict.filter(Boolean) : [];
-
-      const s1 = s0.filter((name) => Number(counts[String(name)] ?? 0) > 0);
-      const c1 = c0.filter((name) => Number(counts[String(name)] ?? 0) > 0);
-
-      const s1set = new Set(s1);
-      const c1set = new Set(c1);
-
-      for (const name of s0) {
-        if (!s1set.has(name)) removed.support[name] = (removed.support[name] || 0) + 1;
-      }
-      for (const name of c0) {
-        if (!c1set.has(name)) removed.conflict[name] = (removed.conflict[name] || 0) + 1;
-      }
-
-      vb.evidence = { ...ev, support: s1, conflict: c1 };
-    }
-  }
-
-  // engine_adjust: block_evidence_count=0 엔진은 1.00으로 리셋
-  if (verifyMeta && verifyMeta.engine_adjust && typeof verifyMeta.engine_adjust === "object") {
-    const explain =
-      (partial_scores?.engine_explain && typeof partial_scores.engine_explain === "object")
-        ? partial_scores.engine_explain
-        : null;
-
-    if (explain) {
-      for (const name of Object.keys(verifyMeta.engine_adjust)) {
-        const info = explain[name];
-        const bec = (info && typeof info.block_evidence_count === "number") ? info.block_evidence_count : 0;
-        if (!(bec > 0)) {
-          verifyMeta.engine_adjust[name] = 1.0;
-          removed.engine_adjust_reset.push(name);
-        }
-      }
-    }
-  }
-
-  // ✅ finalize verify_raw + verify_raw_sanitized from FINAL (post-S-19) verifyMeta
-try {
-  if (verifyMeta && typeof verifyMeta === "object") {
-    verifyRawJson = JSON.stringify(verifyMeta);
-
-    try {
-      verifyRawJsonSanitized = JSON.stringify(verifyMeta, null, 2);
-    } catch (_) {
-      verifyRawJsonSanitized = "";
-    }
-  } else {
-    verifyRawJson = "";
-    verifyRawJsonSanitized = "";
-  }
-} catch (_) {
-  // jsonText may not exist; use typeof guard (safe even if undeclared)
-  verifyRawJson = (typeof jsonText === "string") ? jsonText : "";
-  verifyRawJsonSanitized = "";
-}
-
-if (partial_scores && typeof partial_scores === "object") {
-  partial_scores.verify_sanitize = removed;
-}
-} catch (e) {
-  if (DEBUG) console.warn("⚠️ verifyMeta sanitize error:", e?.message || e);
-}
-
-// ✅ NEW: conflict_meta 요약 (support/conflict 구조만 집계, TruthScore에는 아직 미반영)
-try {
-  if (verifyMeta && Array.isArray(verifyMeta.blocks)) {
-    const blocks = verifyMeta.blocks;
-
-    const byEngine = {};
-    let total_blocks = 0;
-    let support_blocks = 0;
-    let conflict_blocks = 0;
-
-    for (const b of blocks) {
-      if (!b) continue;
-      total_blocks += 1;
-
-      const ev = b.evidence || {};
-      const supportList = Array.isArray(ev.support) ? ev.support.filter(Boolean) : [];
-      const conflictList = Array.isArray(ev.conflict) ? ev.conflict.filter(Boolean) : [];
-
-      const hasSupport = supportList.length > 0;
-      const hasConflict = conflictList.length > 0;
-
-      if (hasSupport) support_blocks += 1;
-      if (hasConflict) conflict_blocks += 1;
-
-      const engines = new Set([...supportList, ...conflictList]);
-      for (const name of engines) {
-        if (!name) continue;
-        if (!byEngine[name]) {
-          byEngine[name] = { support: 0, conflict: 0, blocks: 0 };
-        }
-        byEngine[name].blocks += 1;
-      }
-
-      for (const name of supportList) {
-        if (!name) continue;
-        if (!byEngine[name]) {
-          byEngine[name] = { support: 0, conflict: 0, blocks: 0 };
-        }
-        byEngine[name].support += 1;
-      }
-
-      for (const name of conflictList) {
-        if (!name) continue;
-        if (!byEngine[name]) {
-          byEngine[name] = { support: 0, conflict: 0, blocks: 0 };
-        }
-        byEngine[name].conflict += 1;
-      }
-    }
-
-    const denom = support_blocks + conflict_blocks;
-    const conflict_index =
-      denom > 0 ? Math.max(0, Math.min(1, conflict_blocks / denom)) : null;
-
-    if (partial_scores && typeof partial_scores === "object") {
-      partial_scores.conflict_meta = {
-        total_blocks,
-        support_blocks,
-        conflict_blocks,
-        conflict_index,
-        by_engine: byEngine,
+        return "";
       };
-    }
-  }
-} catch (e) {
-  if (DEBUG) console.warn("⚠️ conflict_meta summarize error:", e.message || e);
-}
-} catch {
-  verifyMeta = null;
-  __irrelevant_urls = [];
-  if (DEBUG) console.warn("⚠️ verifyMeta JSON parse fail");
-}
-}
+
+      const __fetchGroqVerify = async ({ model, prompt, timeoutMs }) => {
+        const key = await __getGroqKeyForVerify();
+        if (!key) throw Object.assign(new Error("GROQ_KEY_MISSING_FOR_VERIFY"), { code: "GROQ_KEY_MISSING_FOR_VERIFY" });
+
+        const url = `${String(GROQ_API_BASE || "https://api.groq.com/openai/v1").replace(/\/+$/, "")}/chat/completions`;
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 12000));
+
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            signal: controller.signal,
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${key}`,
+            },
+            body: JSON.stringify({
+              model,
+              messages: [{ role: "user", content: prompt }],
+              temperature: 0.2,
+              max_tokens: 4096,
+            }),
+          });
+
+          const json = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            const msg = json?.error?.message || `GROQ_HTTP_${res.status}`;
+            throw Object.assign(new Error(msg), { response: { status: res.status, data: json } });
+          }
+
+          const content = json?.choices?.[0]?.message?.content;
+          if (!content || !String(content).trim()) throw new Error("GROQ_VERIFY_EMPTY");
+          return String(content);
+        } finally {
+          clearTimeout(t);
+        }
+      };
+
+      // 1) Groq 우선 시도
+      if (GROQ_VERIFY_ENABLE) {
+        const t_groq_verify = Date.now();
+        try {
+          verify = await __fetchGroqVerify({
+            model: GROQ_VERIFY_MODEL,
+            prompt: verifyPrompt,
+            timeoutMs: parseInt(process.env.GROQ_VERIFY_TIMEOUT_MS || "12000", 10),
+          });
+          groqVerifyUsed = true;
+          groqVerifyModelUsed = GROQ_VERIFY_MODEL;
+
+          const ms = Date.now() - t_groq_verify;
+          if (partial_scores && typeof partial_scores === "object") {
+            partial_scores.groq_verify = { used: true, model: groqVerifyModelUsed, ms };
+          }
+        } catch (e) {
+          const ms = Date.now() - t_groq_verify;
+          if (partial_scores && typeof partial_scores === "object") {
+            partial_scores.groq_verify = { used: false, model: GROQ_VERIFY_MODEL, ms, err: String(e?.message || e) };
+          }
+          lastVerifyErr = e;
+          // Groq 실패 시 Gemini로 fallback
+        }
+      }
+
+      // 2) Groq로 성공 못 했으면 Gemini 후보로 fallback
+      if (!groqVerifyUsed) {
+        // 1순위: verifyModel, 2순위: env verify, 3순위: env verify-lite
+        const verifyModelCandidates = [
+          verifyModel,
+          GEMINI_VERIFY_MODEL,
+          GEMINI_VERIFY_LITE_MODEL,
+        ].filter((v, i, a) => v && a.indexOf(v) === i);
+
+        const t_verify = Date.now();
+        try {
+          for (const m of verifyModelCandidates) {
+            try {
+              verify = await fetchGeminiSmart({
+                userId: logUserId,
+                keyHint: gemini_key,
+                model: m,
+                payload: verifyPayload,
+                opts: { label: `verify:${m}`, minChars: 20 },
+              });
+              verifyModelUsed = m; // ✅ 실제 성공 모델 기록
+              break;
+            } catch (e) {
+              if (
+                e?.code === "INVALID_GEMINI_KEY" ||
+                e?.code === "GEMINI_KEY_EXHAUSTED" ||
+                e?.code === "GEMINI_KEY_MISSING" ||
+                e?.code === "GEMINI_RATE_LIMIT"
+              ) throw e;
+
+              const status = e?.response?.status;
+              if (status === 429) throw e; // ✅ 쿼터 소진은 즉시 상위로
+              lastVerifyErr = e;
+              // 다음 후보 모델로 계속 진행
+            }
+          }
+        } finally {
+          const ms_verify = Date.now() - t_verify;
+          recordTime(geminiTimes, "verify_ms", ms_verify);
+          recordMetric(geminiMetrics, "verify", ms_verify);
+        }
+      }
+
+      verifyRawJson = ""; // ✅ reset (declared at handler-scope)
+      verifyRawJsonSanitized = ""; // ✅ reset (pretty JSON for logs / response)
+
+      // ✅ 끝까지 실패했으면 기존 정책대로: verifyMeta 없이 외부엔진 기반으로만 진행
+      if (!verify || !String(verify).trim()) {
+        verifyMeta = null;
+        __irrelevant_urls = [];
+        verifyRawJson = ""; // ✅ NEW
+        verifyRawJsonSanitized = ""; // ✅ NEW
+        if (DEBUG) console.warn("⚠️ verify failed on all models:", lastVerifyErr?.message || "unknown");
+      } else {
+        // ✅ JSON만 뽑아내기(코드펜스/잡문 있어도 최대한 복구)
+        try {
+          let s = String(verify || "").trim();
+
+          // 1) code-fence 제거 (json fence 포함)
+          const __FENCE3 = "`".repeat(3);
+          const fenceRe = new RegExp(`${__FENCE3}(?:json)?\\s*([\\s\\S]*?)${__FENCE3}`, "i");
+          const fence = s.match(fenceRe);
+          if (fence && fence[1]) s = String(fence[1]).trim();
+
+          // 2) 첫 { ~ 마지막 } 까지 우선 추출(기존 방식 유지 + fence 제거로 안정화)
+          const first = s.indexOf("{");
+          const last = s.lastIndexOf("}");
+          const jsonText = (first >= 0 && last > first) ? s.slice(first, last + 1) : s;
+
+          verifyRawJson = jsonText; // ✅ NEW: 코드펜스/잡문 제거된 JSON만 내려줌
+          verifyMeta = JSON.parse(jsonText);
+
+          // ✅ NEW: input.blocks 가 주어졌으면, verifyMeta.blocks 는 그 id 집합으로 "락" 걸기
+          // - 모델이 멋대로 core_text를 2~8로 쪼개 5블록 만들어도 제거
+          // - 텍스트는 input.blocks의 text로 강제해 downstream 정합성 유지
+          try {
+            const _bf = Array.isArray(blocksForVerify) ? blocksForVerify : [];
+            if (_bf.length > 0 && verifyMeta && Array.isArray(verifyMeta.blocks)) {
+              const id2text = new Map();
+              const allowed = new Set();
+
+              for (const b of _bf) {
+                const id = Number.isFinite(Number(b?.id)) ? Number(b.id) : null;
+                if (id == null) continue;
+                allowed.add(id);
+                id2text.set(id, String(b?.text || "").trim());
+              }
+
+              verifyMeta.blocks = verifyMeta.blocks
+                .filter((vb) => allowed.has(Number(vb?.id)))
+                .map((vb) => {
+                  const id = Number(vb.id);
+                  const forcedText = id2text.get(id);
+                  return {
+                    ...vb,
+                    id,
+                    text: (forcedText && forcedText.length > 0) ? forcedText : String(vb?.text || "").trim(),
+                  };
+                })
+                .sort((a, b) => Number(a.id) - Number(b.id));
+            }
+          } catch (_) { }
+
+          // ✅ (optional) normalize if helper exists
+          if (typeof normalizeVerifyMeta === "function") {
+            try {
+              verifyMeta = normalizeVerifyMeta(verifyMeta, verifyEvidenceLookup);
+            } catch (_) { }
+          }
+
+          // ✅ scrub hallucinated URLs using external evidence pool
+          try {
+            const __allowed = collectExternalEvidenceUrls(external, {
+              strictNaverWhitelist:
+                (snippet_meta && snippet_meta.is_snippet === true) ||
+                String(req.path || "") === "/api/verify-snippet",
+            });
+            scrubVerifyMetaUnknownUrls(verifyMeta, __allowed);
+          } catch (_) { }
+
+          // ✅ (moved) verify_raw finalization happens AFTER S-19 sanitize below
+          // - keep this block intentionally empty to avoid referencing undeclared jsonText
+
+          // ✅ NEW(S-19): verifyMeta.evidence 엔진명 정합화(실제 evidence_counts=0 엔진 제거) + engine_adjust 리셋
+          try {
+            const bf = Array.isArray(partial_scores?.blocks_for_verify)
+              ? partial_scores.blocks_for_verify
+              : [];
+
+            const id2counts = new Map();
+            for (const b of bf) {
+              const id = Number.isFinite(Number(b?.id)) ? Number(b.id) : null;
+              const counts = (b?.evidence_counts && typeof b.evidence_counts === "object") ? b.evidence_counts : null;
+              if (id != null && counts) id2counts.set(id, counts);
+            }
+
+            const removed = { support: {}, conflict: {}, engine_adjust_reset: [] };
+
+            if (verifyMeta && Array.isArray(verifyMeta.blocks)) {
+              for (const vb of verifyMeta.blocks) {
+                const bid = Number.isFinite(Number(vb?.id)) ? Number(vb.id) : null;
+                const counts = (bid != null && id2counts.has(bid)) ? id2counts.get(bid) : null;
+
+                const ev = (vb?.evidence && typeof vb.evidence === "object") ? vb.evidence : null;
+                if (!counts || !ev) continue;
+
+                const s0 = Array.isArray(ev.support) ? ev.support.filter(Boolean) : [];
+                const c0 = Array.isArray(ev.conflict) ? ev.conflict.filter(Boolean) : [];
+
+                const s1 = s0.filter((name) => Number(counts[String(name)] ?? 0) > 0);
+                const c1 = c0.filter((name) => Number(counts[String(name)] ?? 0) > 0);
+
+                const s1set = new Set(s1);
+                const c1set = new Set(c1);
+
+                for (const name of s0) {
+                  if (!s1set.has(name)) removed.support[name] = (removed.support[name] || 0) + 1;
+                }
+                for (const name of c0) {
+                  if (!c1set.has(name)) removed.conflict[name] = (removed.conflict[name] || 0) + 1;
+                }
+
+                vb.evidence = { ...ev, support: s1, conflict: c1 };
+              }
+            }
+
+            // engine_adjust: block_evidence_count=0 엔진은 1.00으로 리셋
+            if (verifyMeta && verifyMeta.engine_adjust && typeof verifyMeta.engine_adjust === "object") {
+              const explain =
+                (partial_scores?.engine_explain && typeof partial_scores.engine_explain === "object")
+                  ? partial_scores.engine_explain
+                  : null;
+
+              if (explain) {
+                for (const name of Object.keys(verifyMeta.engine_adjust)) {
+                  const info = explain[name];
+                  const bec = (info && typeof info.block_evidence_count === "number") ? info.block_evidence_count : 0;
+                  if (!(bec > 0)) {
+                    verifyMeta.engine_adjust[name] = 1.0;
+                    removed.engine_adjust_reset.push(name);
+                  }
+                }
+              }
+            }
+
+            // ✅ finalize verify_raw + verify_raw_sanitized from FINAL (post-S-19) verifyMeta
+            try {
+              if (verifyMeta && typeof verifyMeta === "object") {
+                verifyRawJson = JSON.stringify(verifyMeta);
+
+                try {
+                  verifyRawJsonSanitized = JSON.stringify(verifyMeta, null, 2);
+                } catch (_) {
+                  verifyRawJsonSanitized = "";
+                }
+              } else {
+                verifyRawJson = "";
+                verifyRawJsonSanitized = "";
+              }
+            } catch (_) {
+              // jsonText may not exist; use typeof guard (safe even if undeclared)
+              verifyRawJson = (typeof jsonText === "string") ? jsonText : "";
+              verifyRawJsonSanitized = "";
+            }
+
+            if (partial_scores && typeof partial_scores === "object") {
+              partial_scores.verify_sanitize = removed;
+            }
+          } catch (e) {
+            if (DEBUG) console.warn("⚠️ verifyMeta sanitize error:", e?.message || e);
+          }
+
+          // ✅ NEW: conflict_meta 요약 (support/conflict 구조만 집계, TruthScore에는 아직 미반영)
+          try {
+            if (verifyMeta && Array.isArray(verifyMeta.blocks)) {
+              const blocks = verifyMeta.blocks;
+
+              const byEngine = {};
+              let total_blocks = 0;
+              let support_blocks = 0;
+              let conflict_blocks = 0;
+
+              for (const b of blocks) {
+                if (!b) continue;
+                total_blocks += 1;
+
+                const ev = b.evidence || {};
+                const supportList = Array.isArray(ev.support) ? ev.support.filter(Boolean) : [];
+                const conflictList = Array.isArray(ev.conflict) ? ev.conflict.filter(Boolean) : [];
+
+                const hasSupport = supportList.length > 0;
+                const hasConflict = conflictList.length > 0;
+
+                if (hasSupport) support_blocks += 1;
+                if (hasConflict) conflict_blocks += 1;
+
+                const engines = new Set([...supportList, ...conflictList]);
+                for (const name of engines) {
+                  if (!name) continue;
+                  if (!byEngine[name]) {
+                    byEngine[name] = { support: 0, conflict: 0, blocks: 0 };
+                  }
+                  byEngine[name].blocks += 1;
+                }
+
+                for (const name of supportList) {
+                  if (!name) continue;
+                  if (!byEngine[name]) {
+                    byEngine[name] = { support: 0, conflict: 0, blocks: 0 };
+                  }
+                  byEngine[name].support += 1;
+                }
+
+                for (const name of conflictList) {
+                  if (!name) continue;
+                  if (!byEngine[name]) {
+                    byEngine[name] = { support: 0, conflict: 0, blocks: 0 };
+                  }
+                  byEngine[name].conflict += 1;
+                }
+              }
+
+              const denom = support_blocks + conflict_blocks;
+              const conflict_index =
+                denom > 0 ? Math.max(0, Math.min(1, conflict_blocks / denom)) : null;
+
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.conflict_meta = {
+                  total_blocks,
+                  support_blocks,
+                  conflict_blocks,
+                  conflict_index,
+                  by_engine: byEngine,
+                };
+              }
+            }
+          } catch (e) {
+            if (DEBUG) console.warn("⚠️ conflict_meta summarize error:", e.message || e);
+          }
+        } catch {
+          verifyMeta = null;
+          __irrelevant_urls = [];
+          if (DEBUG) console.warn("⚠️ verifyMeta JSON parse fail");
+        }
+      }
     } catch (e) {
       if (
-  e?.code === "INVALID_GEMINI_KEY" ||
-  e?.code === "GEMINI_KEY_EXHAUSTED" ||
-  e?.code === "GEMINI_KEY_MISSING" ||
-  e?.code === "GEMINI_RATE_LIMIT"
-) throw e;
+        e?.code === "INVALID_GEMINI_KEY" ||
+        e?.code === "GEMINI_KEY_EXHAUSTED" ||
+        e?.code === "GEMINI_KEY_MISSING" ||
+        e?.code === "GEMINI_RATE_LIMIT"
+      ) throw e;
 
       const status = e.response?.status;
 
@@ -15055,332 +15318,332 @@ try {
     const G = (() => {
       const v =
         verifyMeta &&
-        typeof verifyMeta.overall?.overall_truthscore_raw === "number"
+          typeof verifyMeta.overall?.overall_truthscore_raw === "number"
           ? verifyMeta.overall.overall_truthscore_raw
           : 0.7;
       return Math.max(0, Math.min(1, v));
     })();
 
-const enginesUsedSet = new Set(
-  Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines
-);
+    const enginesUsedSet = new Set(
+      Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines
+    );
 
-// ✅ E_eff(Effective engines): "실제로 유효 evidence가 남아있는" 엔진 개수 기반 coverage factor
-// - enginesUsedSet(호출/사용 시도) 기준이 아니라 external[engine]의 "kept evidence" 기준으로 산출
-// - klaw는 제외(법률 모드는 coverage 개념이 다름)
-const enginesUsed = Array.from(enginesUsedSet).filter((e) => e && e !== "klaw");
+    // ✅ E_eff(Effective engines): "실제로 유효 evidence가 남아있는" 엔진 개수 기반 coverage factor
+    // - enginesUsedSet(호출/사용 시도) 기준이 아니라 external[engine]의 "kept evidence" 기준으로 산출
+    // - klaw는 제외(법률 모드는 coverage 개념이 다름)
+    const enginesUsed = Array.from(enginesUsedSet).filter((e) => e && e !== "klaw");
 
-// helper: evidence-like item 판정(엔진별 스키마가 달라도 최대한 안전하게)
-function __isEvidenceLikeItem(x) {
-  // ✅ 일부 엔진/변환 단계에서 string evidence가 올 수 있음
-  if (typeof x === "string") return x.trim().length > 0;
+    // helper: evidence-like item 판정(엔진별 스키마가 달라도 최대한 안전하게)
+    function __isEvidenceLikeItem(x) {
+      // ✅ 일부 엔진/변환 단계에서 string evidence가 올 수 있음
+      if (typeof x === "string") return x.trim().length > 0;
 
-  // 함수/기타 타입 방어
-  if (!x || (typeof x !== "object")) return false;
+      // 함수/기타 타입 방어
+      if (!x || (typeof x !== "object")) return false;
 
-  // 명시적으로 버려진/제외된 것들은 제외
-  if (x.pruned === true) return false;
-  if (x.excluded === true) return false;
-  if (x.irrelevant === true) return false;
-  if (x.discarded === true) return false;
+      // 명시적으로 버려진/제외된 것들은 제외
+      if (x.pruned === true) return false;
+      if (x.excluded === true) return false;
+      if (x.irrelevant === true) return false;
+      if (x.discarded === true) return false;
 
-  // ✅ URL/DOI 대문자 필드 포함 (crossref/openalex 호환)
-  const url = String(
-    x.url || x.URL || x.link || x.source_url || x.sourceUrl || x.href || ""
-  ).trim();
+      // ✅ URL/DOI 대문자 필드 포함 (crossref/openalex 호환)
+      const url = String(
+        x.url || x.URL || x.link || x.source_url || x.sourceUrl || x.href || ""
+      ).trim();
 
-  const host = String(
-    x.host || x.source_host || x.sourceHost || x.domain || ""
-  ).trim();
+      const host = String(
+        x.host || x.source_host || x.sourceHost || x.domain || ""
+      ).trim();
 
-  const title = String(
-    x.title || x.source_title || x.name || x.display_name || x.label || ""
-  ).trim();
+      const title = String(
+        x.title || x.source_title || x.name || x.display_name || x.label || ""
+      ).trim();
 
-  const text = String(
-    x.snippet || x.summary || x.text || x.evidence_text || x.evidenceText || ""
-  ).trim();
+      const text = String(
+        x.snippet || x.summary || x.text || x.evidence_text || x.evidenceText || ""
+      ).trim();
 
-  const doi = String(
-    x.doi || x.DOI || x.doi_url || x.doiUrl || x["doi-url"] || ""
-  ).trim();
+      const doi = String(
+        x.doi || x.DOI || x.doi_url || x.doiUrl || x["doi-url"] || ""
+      ).trim();
 
-  const id = String(
-    x.id || x.paper_id || x.paperId || x.work_id || x.workId || x.openalex_id || x.openalexId || ""
-  ).trim();
+      const id = String(
+        x.id || x.paper_id || x.paperId || x.work_id || x.workId || x.openalex_id || x.openalexId || ""
+      ).trim();
 
-  // 최소 하나라도 있으면 evidence로 간주
-  return !!(url || host || title || text || doi || id);
-}
+      // 최소 하나라도 있으면 evidence로 간주
+      return !!(url || host || title || text || doi || id);
+    }
 
-// helper: external[eng]에서 "evidence 배열" 최대한 안전하게 꺼내기
-const __extractEvidenceArrayForEeff = (eng, ext) => {
-  if (!ext || typeof ext !== "object") return [];
-  const v = ext?.[eng];
+    // helper: external[eng]에서 "evidence 배열" 최대한 안전하게 꺼내기
+    const __extractEvidenceArrayForEeff = (eng, ext) => {
+      if (!ext || typeof ext !== "object") return [];
+      const v = ext?.[eng];
 
-  if (!v) return [];
+      if (!v) return [];
 
-  // 1) 이미 배열이면 그대로
-  if (Array.isArray(v)) return v;
+      // 1) 이미 배열이면 그대로
+      if (Array.isArray(v)) return v;
 
-  // 2) 흔한 래핑 형태들
-  if (Array.isArray(v?.items)) return v.items;
-  if (Array.isArray(v?.results)) return v.results;
-  if (Array.isArray(v?.data)) return v.data;
-  if (Array.isArray(v?.evidence)) return v.evidence;
-  if (Array.isArray(v?.sources)) return v.sources;
+      // 2) 흔한 래핑 형태들
+      if (Array.isArray(v?.items)) return v.items;
+      if (Array.isArray(v?.results)) return v.results;
+      if (Array.isArray(v?.data)) return v.data;
+      if (Array.isArray(v?.evidence)) return v.evidence;
+      if (Array.isArray(v?.sources)) return v.sources;
 
-  // 3) { list: [...] } 류
-  if (Array.isArray(v?.list)) return v.list;
+      // 3) { list: [...] } 류
+      if (Array.isArray(v?.list)) return v.list;
 
-  return [];
-};
+      return [];
+    };
 
-// 1) 엔진별 kept evidence 개수 계산
-const engineEvidenceCountsFinal = {};
-for (const eng of enginesUsed) {
-  const arr = __extractEvidenceArrayForEeff(eng, external);
-  const kept = Array.isArray(arr) ? arr.filter(__isEvidenceLikeItem) : [];
-  engineEvidenceCountsFinal[eng] = kept.length;
-}
+    // 1) 엔진별 kept evidence 개수 계산
+    const engineEvidenceCountsFinal = {};
+    for (const eng of enginesUsed) {
+      const arr = __extractEvidenceArrayForEeff(eng, external);
+      const kept = Array.isArray(arr) ? arr.filter(__isEvidenceLikeItem) : [];
+      engineEvidenceCountsFinal[eng] = kept.length;
+    }
 
-// 2) E_eff = kept evidence가 1개 이상인 엔진들
-const effEngines = enginesUsed.filter((eng) => (engineEvidenceCountsFinal[eng] || 0) > 0);
-const E_eff = effEngines.length;
+    // 2) E_eff = kept evidence가 1개 이상인 엔진들
+    const effEngines = enginesUsed.filter((eng) => (engineEvidenceCountsFinal[eng] || 0) > 0);
+    const E_eff = effEngines.length;
 
-// (로그) 최종 산출 근거도 남김(나중에 디버깅/어드민 UI에서 유용)
-partial_scores.engine_evidence_counts_final = engineEvidenceCountsFinal;
+    // (로그) 최종 산출 근거도 남김(나중에 디버깅/어드민 UI에서 유용)
+    partial_scores.engine_evidence_counts_final = engineEvidenceCountsFinal;
 
-// ✅ kept evidence 기준 totals_used도 evidence_digest에 같이 기록
-try {
-  if (
-    partial_scores &&
-    partial_scores.evidence_digest &&
-    typeof partial_scores.evidence_digest === "object" &&
-    engineEvidenceCountsFinal &&
-    typeof engineEvidenceCountsFinal === "object"
-  ) {
-    partial_scores.evidence_digest.totals_used = { ...engineEvidenceCountsFinal };
-  }
-} catch (_) {}
-
-// ✅ coverage factor (QV/FV에만 의미있게 적용, DV/CV는 1.0 유지)
-// ✅ coverage factor (QV/FV에만 의미있게 적용, DV/CV는 1.0 유지)
-// - 기본값은 기존과 동일
-// - ENV로 튜닝 가능:
-//   COVERAGE_EFF_GE3=1.0
-//   COVERAGE_EFF_2=0.96
-//   COVERAGE_EFF_1=0.90
-//   COVERAGE_EFF_0=0.85
-//   COVERAGE_STRONG_OFFICIAL_MIN=0.97
-const E_cov = (() => {
-  if (!(safeMode === "qv" || safeMode === "fv")) return 1.0;
-
-  const _num = (v, d) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : d;
-  };
-
-  const F_GE3 = _num(process.env.COVERAGE_EFF_GE3, 1.0);
-  const F_2   = _num(process.env.COVERAGE_EFF_2, 0.96);
-  const F_1   = _num(process.env.COVERAGE_EFF_1, 0.90);
-  const F_0   = _num(process.env.COVERAGE_EFF_0, 0.85);
-  const STRONG_MIN = _num(process.env.COVERAGE_STRONG_OFFICIAL_MIN, 0.97);
-
-  // 기본 f
-  let f = 1.0;
-  if (E_eff >= 3) f = F_GE3;
-  else if (E_eff === 2) f = F_2;
-  else if (E_eff === 1) f = F_1;
-  else f = F_0;
-
-  // ✅ 예외: 엔진이 1개여도 “강한 공식/통계/정부급” 근거면 감점 완화
-  // - naver만 보지 않고 external 전체의 kept evidence를 스캔
-  const hasStrongOfficial = (() => {
+    // ✅ kept evidence 기준 totals_used도 evidence_digest에 같이 기록
     try {
-      const isOfficialHost = (host) => {
-        const h = String(host || "").toLowerCase();
-        if (!h) return false;
-        if (h.includes("kosis.kr")) return true;
-        if (h.endsWith(".go.kr")) return true;
-        if (typeof hostLooksOfficial === "function" && hostLooksOfficial(h)) return true;
-        return false;
+      if (
+        partial_scores &&
+        partial_scores.evidence_digest &&
+        typeof partial_scores.evidence_digest === "object" &&
+        engineEvidenceCountsFinal &&
+        typeof engineEvidenceCountsFinal === "object"
+      ) {
+        partial_scores.evidence_digest.totals_used = { ...engineEvidenceCountsFinal };
+      }
+    } catch (_) { }
+
+    // ✅ coverage factor (QV/FV에만 의미있게 적용, DV/CV는 1.0 유지)
+    // ✅ coverage factor (QV/FV에만 의미있게 적용, DV/CV는 1.0 유지)
+    // - 기본값은 기존과 동일
+    // - ENV로 튜닝 가능:
+    //   COVERAGE_EFF_GE3=1.0
+    //   COVERAGE_EFF_2=0.96
+    //   COVERAGE_EFF_1=0.90
+    //   COVERAGE_EFF_0=0.85
+    //   COVERAGE_STRONG_OFFICIAL_MIN=0.97
+    const E_cov = (() => {
+      if (!(safeMode === "qv" || safeMode === "fv")) return 1.0;
+
+      const _num = (v, d) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : d;
       };
 
-      // enginesUsed는 바로 위에서 "klaw 제외"로 만든 상태(너 코드 기준)
-      for (const eng of Array.isArray(enginesUsed) ? enginesUsed : []) {
-        const arr = (typeof __extractEvidenceArrayForEeff === "function")
-          ? __extractEvidenceArrayForEeff(eng, external)
-          : (Array.isArray(external?.[eng]) ? external[eng] : []);
+      const F_GE3 = _num(process.env.COVERAGE_EFF_GE3, 1.0);
+      const F_2 = _num(process.env.COVERAGE_EFF_2, 0.96);
+      const F_1 = _num(process.env.COVERAGE_EFF_1, 0.90);
+      const F_0 = _num(process.env.COVERAGE_EFF_0, 0.85);
+      const STRONG_MIN = _num(process.env.COVERAGE_STRONG_OFFICIAL_MIN, 0.97);
 
-        if (!Array.isArray(arr) || arr.length === 0) continue;
+      // 기본 f
+      let f = 1.0;
+      if (E_eff >= 3) f = F_GE3;
+      else if (E_eff === 2) f = F_2;
+      else if (E_eff === 1) f = F_1;
+      else f = F_0;
 
-        // kept evidence만 대상으로
-        for (const x of arr) {
-          if (typeof __isEvidenceLikeItem === "function" && !__isEvidenceLikeItem(x)) continue;
+      // ✅ 예외: 엔진이 1개여도 “강한 공식/통계/정부급” 근거면 감점 완화
+      // - naver만 보지 않고 external 전체의 kept evidence를 스캔
+      const hasStrongOfficial = (() => {
+        try {
+          const isOfficialHost = (host) => {
+            const h = String(host || "").toLowerCase();
+            if (!h) return false;
+            if (h.includes("kosis.kr")) return true;
+            if (h.endsWith(".go.kr")) return true;
+            if (typeof hostLooksOfficial === "function" && hostLooksOfficial(h)) return true;
+            return false;
+          };
 
-          const host = String(x?.source_host || x?.host || x?.domain || "").toLowerCase();
+          // enginesUsed는 바로 위에서 "klaw 제외"로 만든 상태(너 코드 기준)
+          for (const eng of Array.isArray(enginesUsed) ? enginesUsed : []) {
+            const arr = (typeof __extractEvidenceArrayForEeff === "function")
+              ? __extractEvidenceArrayForEeff(eng, external)
+              : (Array.isArray(external?.[eng]) ? external[eng] : []);
 
-          // tier_weight/tier/whitelisted는 naver에 많지만, 있으면 엔진 불문하고 활용
-          const tw =
-            (typeof x?.tier_weight === "number" && Number.isFinite(x.tier_weight))
-              ? x.tier_weight
-              : null;
+            if (!Array.isArray(arr) || arr.length === 0) continue;
 
-          const tier = String(x?.tier || "").toLowerCase();
-          const wl = (x?.whitelisted === true) || !!x?.tier;
-          const inferred = x?.inferred === true;
+            // kept evidence만 대상으로
+            for (const x of arr) {
+              if (typeof __isEvidenceLikeItem === "function" && !__isEvidenceLikeItem(x)) continue;
 
-          if (tw != null && tw >= 0.95) return true;
-          if (tier === "tier1") return true;
-          if (wl && !inferred && isOfficialHost(host)) return true;
+              const host = String(x?.source_host || x?.host || x?.domain || "").toLowerCase();
 
-          if (isOfficialHost(host)) return true;
+              // tier_weight/tier/whitelisted는 naver에 많지만, 있으면 엔진 불문하고 활용
+              const tw =
+                (typeof x?.tier_weight === "number" && Number.isFinite(x.tier_weight))
+                  ? x.tier_weight
+                  : null;
+
+              const tier = String(x?.tier || "").toLowerCase();
+              const wl = (x?.whitelisted === true) || !!x?.tier;
+              const inferred = x?.inferred === true;
+
+              if (tw != null && tw >= 0.95) return true;
+              if (tier === "tier1") return true;
+              if (wl && !inferred && isOfficialHost(host)) return true;
+
+              if (isOfficialHost(host)) return true;
+            }
+          }
+
+          return false;
+        } catch (_) {
+          return false;
         }
+      })();
+
+      if (E_eff <= 1 && hasStrongOfficial) f = Math.max(f, STRONG_MIN);
+
+      // 로그로 남김(디버깅/어드민)
+      partial_scores.coverage_has_strong_official = !!hasStrongOfficial;
+
+      // 안전 클램프(과도 튜닝 방지)
+      f = Math.max(0.80, Math.min(1.0, f));
+      return f;
+    })();
+
+    // (로그용) partial_scores에 남겨두면 디버깅 편함
+    partial_scores.effective_engines_used = enginesUsed;
+    partial_scores.effective_engines = effEngines;
+    // ✅ effective_engine_item_counts는 항상 정의(예전 런타임 ReferenceError 방지)
+    // - 우선: engine_evidence_counts_final(= kept evidence 기준)
+    // - fallback: blocksForVerify evidence 합
+    const effective_engine_item_counts = (() => {
+      try {
+        const keys = Array.isArray(effEngines) ? effEngines : [];
+        const out = {};
+        for (const k of keys) out[k] = 0;
+
+        const finalCounts =
+          (partial_scores && typeof partial_scores.engine_evidence_counts_final === "object")
+            ? partial_scores.engine_evidence_counts_final
+            : null;
+
+        // 1) kept evidence 기준이 있으면 그걸 우선 사용
+        if (finalCounts) {
+          for (const k of keys) {
+            const v = finalCounts?.[k];
+            if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+          }
+          return out;
+        }
+
+        // 2) fallback: blocksForVerify evidence 합
+        if (!Array.isArray(blocksForVerify)) return out;
+
+        for (const b of blocksForVerify) {
+          const ev = b?.evidence || {};
+          for (const k of keys) {
+            const arr = ev?.[k];
+            if (Array.isArray(arr)) out[k] += arr.length;
+          }
+        }
+        return out;
+      } catch (_) {
+        return null;
       }
+    })();
 
-      return false;
-    } catch (_) {
-      return false;
+    partial_scores.effective_engine_item_counts = effective_engine_item_counts;
+    partial_scores.effective_engines_count = E_eff;
+    partial_scores.coverage_factor = E_cov;
+
+    const useGdelt = enginesUsedSet.has("gdelt");
+    const useNaver = enginesUsedSet.has("naver");
+    const useGithub = enginesUsedSet.has("github");
+
+    const R_t =
+      (safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "cv") &&
+        typeof partial_scores.recency === "number"
+        ? Math.max(0, Math.min(1, partial_scores.recency))
+        : 1.0;
+
+    // ✅ 기존 tier factor와 결합해서 최종 N 산출
+    // NOTE: year/number soft miss 패널티는 Swap-in A/B의 soft_penalty_factor로 "최종 TruthScore"에서만 반영한다.
+    //       여기(N factor)에서 다시 곱하면 이중 감점이 될 수 있음.
+    const __N_tier =
+      (safeMode === "qv" || safeMode === "fv") &&
+        useNaver &&
+        typeof partial_scores.naver_tier_factor === "number" &&
+        Number.isFinite(partial_scores.naver_tier_factor)
+        ? partial_scores.naver_tier_factor
+        : 1.0;
+
+    // ✅ naver_soft_miss는 "진단용"으로만 유지(점수에 직접 반영 X)
+    try { partial_scores.naver_soft_miss_applied_to_N = false; } catch { }
+
+    const N =
+      (safeMode === "qv" || safeMode === "fv") && useNaver
+        ? Math.max(0.85, Math.min(1.05, __N_tier))
+        : 1.0;
+
+    // DV/CV: GitHub 유효성 Vᵣ, 없으면 0.7 중립값
+    const V_r =
+      (safeMode === "dv" || safeMode === "cv") &&
+        useGithub &&
+        typeof partial_scores.validity === "number"
+        ? Math.max(0, Math.min(1, partial_scores.validity))
+        : 0.7;
+
+    // 엔진 전역 보정계수 C (0.9~1.1)
+    const C =
+      typeof engineFactor === "number" && Number.isFinite(engineFactor)
+        ? Math.max(0.9, Math.min(1.1, engineFactor))
+        : 1.0;
+
+    let hybrid;
+
+    if (safeMode === "dv" || safeMode === "cv") {
+      // DV/CV:
+      const combined = 0.7 * G + 0.3 * V_r;
+      const rawHybrid = R_t * combined * C; // DV/CV는 E_cov 적용 안 함(위에서 1.0)
+      hybrid = Math.max(0, Math.min(1, rawHybrid));
+    } else {
+      // QV/FV:
+      const rawHybrid = R_t * N * G * C * E_cov;
+      hybrid = Math.max(0, Math.min(1, rawHybrid));
     }
-  })();
 
-  if (E_eff <= 1 && hasStrongOfficial) f = Math.max(f, STRONG_MIN);
-
-  // 로그로 남김(디버깅/어드민)
-  partial_scores.coverage_has_strong_official = !!hasStrongOfficial;
-
-  // 안전 클램프(과도 튜닝 방지)
-  f = Math.max(0.80, Math.min(1.0, f));
-  return f;
-})();
-
-// (로그용) partial_scores에 남겨두면 디버깅 편함
-partial_scores.effective_engines_used = enginesUsed;
-partial_scores.effective_engines = effEngines;
-// ✅ effective_engine_item_counts는 항상 정의(예전 런타임 ReferenceError 방지)
-// - 우선: engine_evidence_counts_final(= kept evidence 기준)
-// - fallback: blocksForVerify evidence 합
-const effective_engine_item_counts = (() => {
-  try {
-    const keys = Array.isArray(effEngines) ? effEngines : [];
-    const out = {};
-    for (const k of keys) out[k] = 0;
-
-    const finalCounts =
-      (partial_scores && typeof partial_scores.engine_evidence_counts_final === "object")
-        ? partial_scores.engine_evidence_counts_final
-        : null;
-
-    // 1) kept evidence 기준이 있으면 그걸 우선 사용
-    if (finalCounts) {
-      for (const k of keys) {
-        const v = finalCounts?.[k];
-        if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
-      }
-      return out;
-    }
-
-    // 2) fallback: blocksForVerify evidence 합
-    if (!Array.isArray(blocksForVerify)) return out;
-
-    for (const b of blocksForVerify) {
-      const ev = b?.evidence || {};
-      for (const k of keys) {
-        const arr = ev?.[k];
-        if (Array.isArray(arr)) out[k] += arr.length;
-      }
-    }
-    return out;
-  } catch (_) {
-    return null;
-  }
-})();
-
-partial_scores.effective_engine_item_counts = effective_engine_item_counts;
-partial_scores.effective_engines_count = E_eff;
-partial_scores.coverage_factor = E_cov;
-
-const useGdelt = enginesUsedSet.has("gdelt");
-const useNaver = enginesUsedSet.has("naver");
-const useGithub = enginesUsedSet.has("github");
-
-const R_t =
-  (safeMode === "qv" || safeMode === "fv" || safeMode === "dv" || safeMode === "cv") &&
-  typeof partial_scores.recency === "number"
-    ? Math.max(0, Math.min(1, partial_scores.recency))
-    : 1.0;
-
-// ✅ 기존 tier factor와 결합해서 최종 N 산출
-// NOTE: year/number soft miss 패널티는 Swap-in A/B의 soft_penalty_factor로 "최종 TruthScore"에서만 반영한다.
-//       여기(N factor)에서 다시 곱하면 이중 감점이 될 수 있음.
-const __N_tier =
-  (safeMode === "qv" || safeMode === "fv") &&
-  useNaver &&
-  typeof partial_scores.naver_tier_factor === "number" &&
-  Number.isFinite(partial_scores.naver_tier_factor)
-    ? partial_scores.naver_tier_factor
-    : 1.0;
-
-// ✅ naver_soft_miss는 "진단용"으로만 유지(점수에 직접 반영 X)
-try { partial_scores.naver_soft_miss_applied_to_N = false; } catch {}
-
-const N =
-  (safeMode === "qv" || safeMode === "fv") && useNaver
-    ? Math.max(0.85, Math.min(1.05, __N_tier))
-    : 1.0;
-
-// DV/CV: GitHub 유효성 Vᵣ, 없으면 0.7 중립값
-const V_r =
-  (safeMode === "dv" || safeMode === "cv") &&
-  useGithub &&
-  typeof partial_scores.validity === "number"
-    ? Math.max(0, Math.min(1, partial_scores.validity))
-    : 0.7;
-
-// 엔진 전역 보정계수 C (0.9~1.1)
-const C =
-  typeof engineFactor === "number" && Number.isFinite(engineFactor)
-    ? Math.max(0.9, Math.min(1.1, engineFactor))
-    : 1.0;
-
-let hybrid;
-
-if (safeMode === "dv" || safeMode === "cv") {
-  // DV/CV:
-  const combined = 0.7 * G + 0.3 * V_r;
-  const rawHybrid = R_t * combined * C; // DV/CV는 E_cov 적용 안 함(위에서 1.0)
-  hybrid = Math.max(0, Math.min(1, rawHybrid));
-} else {
-  // QV/FV:
-  const rawHybrid = R_t * N * G * C * E_cov;
-  hybrid = Math.max(0, Math.min(1, rawHybrid));
-}
-
-// ✅ debug: coverage(E_cov)가 hybrid에 적용되었는지 표시
-partial_scores.coverage_applied_in_hybrid = (safeMode === "qv" || safeMode === "fv");
+    // ✅ debug: coverage(E_cov)가 hybrid에 적용되었는지 표시
+    partial_scores.coverage_applied_in_hybrid = (safeMode === "qv" || safeMode === "fv");
 
     // 최종 TruthScore (0.6 ~ 0.97 범위)
     truthscore = hybrid; // 0~1
 
-// ✅ Swap-in B (moved): soft_penalty_factor is applied later ONCE to truthscore_01
-// - 여기서는 double-penalty 방지를 위해 truthscore에 곱하지 않는다.
-// - 단, 디버그용 clamp 값만 남긴다.
-try {
-  const _isQvFv = (safeMode === "qv" || safeMode === "fv");
+    // ✅ Swap-in B (moved): soft_penalty_factor is applied later ONCE to truthscore_01
+    // - 여기서는 double-penalty 방지를 위해 truthscore에 곱하지 않는다.
+    // - 단, 디버그용 clamp 값만 남긴다.
+    try {
+      const _isQvFv = (safeMode === "qv" || safeMode === "fv");
 
-  const _spfRaw =
-    _isQvFv &&
-    typeof partial_scores?.soft_penalty_factor === "number" &&
-    Number.isFinite(partial_scores.soft_penalty_factor)
-      ? partial_scores.soft_penalty_factor
-      : 1.0;
+      const _spfRaw =
+        _isQvFv &&
+          typeof partial_scores?.soft_penalty_factor === "number" &&
+          Number.isFinite(partial_scores.soft_penalty_factor)
+          ? partial_scores.soft_penalty_factor
+          : 1.0;
 
-  const spf = Math.max(0.0, Math.min(1.0, _spfRaw));
+      const spf = Math.max(0.0, Math.min(1.0, _spfRaw));
 
-  // (debug only)
-  try { partial_scores.soft_penalty_factor_clamped = Number(spf.toFixed(6)); } catch {}
-} catch (_) {}
+      // (debug only)
+      try { partial_scores.soft_penalty_factor_clamped = Number(spf.toFixed(6)); } catch { }
+    } catch (_) { }
 
     // 요청당 경과 시간(ms)
     const elapsed = Date.now() - start;
@@ -15397,936 +15660,936 @@ try {
     // ─────────────────────────────
     // ⑥ 로그 및 DB 반영
     // ─────────────────────────────
-const enginesForWeight = Array.isArray(partial_scores.engines_used)
-  ? partial_scores.engines_used.filter((x) => x !== "klaw")
-  : engines.filter((x) => x !== "klaw");
+    const enginesForWeight = Array.isArray(partial_scores.engines_used)
+      ? partial_scores.engines_used.filter((x) => x !== "klaw")
+      : engines.filter((x) => x !== "klaw");
 
-await Promise.all(
-  enginesForWeight.map((eName) => {
-    const adjRaw =
-      typeof perEngineAdjust?.[eName] === "number" &&
-      Number.isFinite(perEngineAdjust[eName])
-        ? perEngineAdjust[eName]
-        : 1.0;
+    await Promise.all(
+      enginesForWeight.map((eName) => {
+        const adjRaw =
+          typeof perEngineAdjust?.[eName] === "number" &&
+            Number.isFinite(perEngineAdjust[eName])
+            ? perEngineAdjust[eName]
+            : 1.0;
 
-    const adj = Math.max(0.9, Math.min(1.1, adjRaw));
-    const baseForWeight =
-  (typeof truthscore_01_final === "number" && Number.isFinite(truthscore_01_final))
-    ? truthscore_01_final
-    : (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01))
-      ? truthscore_01
-      : (typeof hybrid === "number" && Number.isFinite(hybrid))
-        ? hybrid
-        : 0;
+        const adj = Math.max(0.9, Math.min(1.1, adjRaw));
+        const baseForWeight =
+          (typeof truthscore_01_final === "number" && Number.isFinite(truthscore_01_final))
+            ? truthscore_01_final
+            : (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01))
+              ? truthscore_01
+              : (typeof hybrid === "number" && Number.isFinite(hybrid))
+                ? hybrid
+                : 0;
 
-const engineTruth = Math.max(0, Math.min(1, baseForWeight * adj));
+        const engineTruth = Math.max(0, Math.min(1, baseForWeight * adj));
 
-    const engineMs =
-      typeof engineTimes[eName] === "number" && engineTimes[eName] > 0
-        ? engineTimes[eName]
-        : elapsed;
+        const engineMs =
+          typeof engineTimes[eName] === "number" && engineTimes[eName] > 0
+            ? engineTimes[eName]
+            : elapsed;
 
-    return updateWeight(eName, engineTruth, engineMs);
-  })
-);
+        return updateWeight(eName, engineTruth, engineMs);
+      })
+    );
 
 
-// ✅ Gemini 총합(ms) — 모든 Gemini 단계 완료 후 계산
-partial_scores.gemini_total_ms = Object.values(geminiTimes)
-  .filter((v) => typeof v === "number" && Number.isFinite(v))
-  .reduce((s, v) => s + v, 0);
+    // ✅ Gemini 총합(ms) — 모든 Gemini 단계 완료 후 계산
+    partial_scores.gemini_total_ms = Object.values(geminiTimes)
+      .filter((v) => typeof v === "number" && Number.isFinite(v))
+      .reduce((s, v) => s + v, 0);
 
-// ✅ gemini 단계별 타임/메트릭도 로그로 남김 (Admin UI에서 사용)
-partial_scores.gemini_times = geminiTimes;
-partial_scores.gemini_metrics = geminiMetrics;
+    // ✅ gemini 단계별 타임/메트릭도 로그로 남김 (Admin UI에서 사용)
+    partial_scores.gemini_times = geminiTimes;
+    partial_scores.gemini_metrics = geminiMetrics;
 
-const STORE_GEMINI_TEXT = process.env.STORE_GEMINI_TEXT === "true";
+    const STORE_GEMINI_TEXT = process.env.STORE_GEMINI_TEXT === "true";
 
-// 길이/메타만 남기기(가볍고 유용)
-partial_scores.flash_len = (flash || "").length;
-partial_scores.verify_len = (verify || "").length;
+    // 길이/메타만 남기기(가볍고 유용)
+    partial_scores.flash_len = (flash || "").length;
+    partial_scores.verify_len = (verify || "").length;
 
-// 원문 저장은 옵션
-if (STORE_GEMINI_TEXT) {
-  partial_scores.flash_text = maybeTruncateText(flash);
-  partial_scores.verify_text = maybeTruncateText(verify);
-}
+    // 원문 저장은 옵션
+    if (STORE_GEMINI_TEXT) {
+      partial_scores.flash_text = maybeTruncateText(flash);
+      partial_scores.verify_text = maybeTruncateText(verify);
+    }
 
     // 요약(summary) 필드: Pro 메타 요약 우선, 없으면 flash 일부라도
-const summaryText =
-  (verifyMeta && typeof verifyMeta.overall?.summary === "string" && verifyMeta.overall.summary.trim())
-    ? verifyMeta.overall.summary.trim()
-    : (flash || "").slice(0, 2000) || null;
+    const summaryText =
+      (verifyMeta && typeof verifyMeta.overall?.summary === "string" && verifyMeta.overall.summary.trim())
+        ? verifyMeta.overall.summary.trim()
+        : (flash || "").slice(0, 2000) || null;
 
-// keywords는 선택: QV/FV는 naverQuery 토큰, DV/CV는 github_queries 등
-const keywordsForLog =
-  (safeMode === "dv" || safeMode === "cv")
-    ? (Array.isArray(partial_scores.github_queries) ? partial_scores.github_queries.slice(0, 12) : null)
-    : (safeMode === "qv" || safeMode === "fv")
-     ? (() => {
-    const nq = partial_scores.engine_queries?.naver;
-    const txt = Array.isArray(nq) ? nq.join(" ") : String(nq || query);
-    return txt;
-  })()
-          .replace(/\+/g, "")
-          .split(/\s+/)
-          .filter(Boolean)
-          .slice(0, 12)
-      : null;
+    // keywords는 선택: QV/FV는 naverQuery 토큰, DV/CV는 github_queries 등
+    const keywordsForLog =
+      (safeMode === "dv" || safeMode === "cv")
+        ? (Array.isArray(partial_scores.github_queries) ? partial_scores.github_queries.slice(0, 12) : null)
+        : (safeMode === "qv" || safeMode === "fv")
+          ? (() => {
+            const nq = partial_scores.engine_queries?.naver;
+            const txt = Array.isArray(nq) ? nq.join(" ") : String(nq || query);
+            return txt;
+          })()
+            .replace(/\+/g, "")
+            .split(/\s+/)
+            .filter(Boolean)
+            .slice(0, 12)
+          : null;
 
-// snippet_meta(for snippet-FV/QV) attach snippet/question info if provided
-let snippetMeta = null;
-if (safeMode === "fv" || safeMode === "qv") {
-  // 1) preferred: snippetToVerifyBody가 넣어준 snippet_meta
-  if (snippet_meta && typeof snippet_meta === "object") {
-    const s = snippet_meta;
+    // snippet_meta(for snippet-FV/QV) attach snippet/question info if provided
+    let snippetMeta = null;
+    if (safeMode === "fv" || safeMode === "qv") {
+      // 1) preferred: snippetToVerifyBody가 넣어준 snippet_meta
+      if (snippet_meta && typeof snippet_meta === "object") {
+        const s = snippet_meta;
 
-    const hasAny =
-      !!s.is_snippet ||
-      (typeof s.input_snippet === "string" && s.input_snippet.trim()) ||
-      (typeof s.snippet_core === "string" && s.snippet_core.trim()) ||
-      (typeof s.question === "string" && s.question.trim()) ||
-      (s.snippet_id != null) ||
-      (s.snippet_hash != null);
+        const hasAny =
+          !!s.is_snippet ||
+          (typeof s.input_snippet === "string" && s.input_snippet.trim()) ||
+          (typeof s.snippet_core === "string" && s.snippet_core.trim()) ||
+          (typeof s.question === "string" && s.question.trim()) ||
+          (s.snippet_id != null) ||
+          (s.snippet_hash != null);
 
-    if (hasAny) {
-      snippetMeta = {
-        is_snippet: !!s.is_snippet,
-        input_snippet: (typeof s.input_snippet === "string" && s.input_snippet.trim()) ? s.input_snippet : null,
-        snippet_core: (typeof s.snippet_core === "string" && s.snippet_core.trim()) ? s.snippet_core : null,
-        question: (typeof s.question === "string" && s.question.trim()) ? s.question : null,
-        snippet_id: s.snippet_id ?? null,
-        snippet_hash: s.snippet_hash ?? null,
-      };
-      partial_scores.snippet_meta = snippetMeta;
+        if (hasAny) {
+          snippetMeta = {
+            is_snippet: !!s.is_snippet,
+            input_snippet: (typeof s.input_snippet === "string" && s.input_snippet.trim()) ? s.input_snippet : null,
+            snippet_core: (typeof s.snippet_core === "string" && s.snippet_core.trim()) ? s.snippet_core : null,
+            question: (typeof s.question === "string" && s.question.trim()) ? s.question : null,
+            snippet_id: s.snippet_id ?? null,
+            snippet_hash: s.snippet_hash ?? null,
+          };
+          partial_scores.snippet_meta = snippetMeta;
+        }
+      }
+
+      // 2) fallback: legacy fields (req.body.snippet/question)
+      if (!snippetMeta) {
+        const __b = (req && req.body && typeof req.body === "object") ? req.body : {};
+        const __snippet = typeof __b.snippet === "string" ? __b.snippet : null;
+        const __question = typeof __b.question === "string" ? __b.question : null;
+        const __snippetId = __b.snippet_id ?? null;
+        const __snippetHash = __b.snippet_hash ?? null;
+
+        if (__snippet || __question || __snippetId || __snippetHash) {
+          snippetMeta = {
+            snippet: __snippet,
+            question: __question,
+            snippet_id: __snippetId,
+            snippet_hash: __snippetHash,
+          };
+          partial_scores.snippet_meta = snippetMeta;
+        }
+      }
     }
-  }
 
-  // 2) fallback: legacy fields (req.body.snippet/question)
-  if (!snippetMeta) {
-    const __b = (req && req.body && typeof req.body === "object") ? req.body : {};
-    const __snippet = typeof __b.snippet === "string" ? __b.snippet : null;
-    const __question = typeof __b.question === "string" ? __b.question : null;
-    const __snippetId = __b.snippet_id ?? null;
-    const __snippetHash = __b.snippet_hash ?? null;
+    const sourcesText = safeSourcesForDB(
+      {
+        meta: { mode: safeMode, snippet_meta: snippetMeta || null },
+        external,
+        partial_scores,
+        verify_meta: verifyMeta || null,
+      },
+      20000
+    );
 
-    if (__snippet || __question || __snippetId || __snippetHash) {
-      snippetMeta = {
-        snippet: __snippet,
-        question: __question,
-        snippet_id: __snippetId,
-        snippet_hash: __snippetHash,
-      };
-      partial_scores.snippet_meta = snippetMeta;
-    }
-  }
-}
+    await supabase.from("verification_logs").insert([
+      {
+        user_id: logUserId,
+        question: query,
+        query: query,
 
-const sourcesText = safeSourcesForDB(
-  {
-    meta: { mode: safeMode, snippet_meta: snippetMeta || null },
-    external,
-    partial_scores,
-    verify_meta: verifyMeta || null,
-  },
-  20000
-);
+        truth_score: Number(truthscore),     // ??double precision
+        summary: summaryText,
 
-await supabase.from("verification_logs").insert([
-  {
-    user_id: logUserId,
-    question: query,
-    query: query,
+        cross_score: Number(G),              // ??raw(0~1)
+        adjusted_score: Number(hybrid),      // ??adjusted(0~1)
 
-    truth_score: Number(truthscore),     // ??double precision
-    summary: summaryText,
+        status: safeMode,                    // ??mode 而щ읆 ?놁쑝???ш린 ???
+        engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
+        keywords: keywordsForLog,            // ??array(text[])
+        elapsed: String(elapsed),            // ??text
 
-    cross_score: Number(G),              // ??raw(0~1)
-    adjusted_score: Number(hybrid),      // ??adjusted(0~1)
+        model_main: answerModelUsed,         // ??QV/FV ?좉? 諛섏쁺 (?먮뒗 湲곕낯 flash)
+        model_eval: verifyModelUsed,         // ???ㅼ젣 ?깃났??verify 紐⑤뜽
+        sources: sourcesText,
 
-    status: safeMode,                    // ??mode 而щ읆 ?놁쑝???ш린 ???
-    engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
-    keywords: keywordsForLog,            // ??array(text[])
-    elapsed: String(elapsed),            // ??text
+        gemini_model: verifyModelUsed,       // ???ㅼ젣 ?깃났??verify 紐⑤뜽
+        error: null,
+        created_at: new Date(),
+      },
+    ]);
 
-    model_main: answerModelUsed,         // ??QV/FV ?좉? 諛섏쁺 (?먮뒗 湲곕낯 flash)
-    model_eval: verifyModelUsed,         // ???ㅼ젣 ?깃났??verify 紐⑤뜽
-    sources: sourcesText,
+    // (A) post-hybrid safety smoothing (single source of truth)
+    // - QV/FV에만 적용(DV/CV는 별도 validity 흐름)
+    // - coverage_factor / soft_penalty_factor는 "risk 입력"으로만 사용
+    // - 기본값: 스무딩이 점수를 올리는 방향은 금지(급상승 방지)
+    // - soft_penalty_factor 곱감점은 (B)에서 1회만 수행
 
-    gemini_model: verifyModelUsed,       // ???ㅼ젣 ?깃났??verify 紐⑤뜽
-    error: null,
-    created_at: new Date(),
-  },
-]);
+    const __truthscore_01_raw = (() => {
+      // 1) Gemini/Groq verify 결과의 overall raw(가장 신뢰할 1순위)
+      const v0 = verifyMeta?.overall?.overall_truthscore_raw;
+      if (typeof v0 === "number" && Number.isFinite(v0)) return Number(v0);
 
-          // (A) post-hybrid safety smoothing (single source of truth)
-      // - QV/FV에만 적용(DV/CV는 별도 validity 흐름)
-      // - coverage_factor / soft_penalty_factor는 "risk 입력"으로만 사용
-      // - 기본값: 스무딩이 점수를 올리는 방향은 금지(급상승 방지)
-      // - soft_penalty_factor 곱감점은 (B)에서 1회만 수행
-
-      const __truthscore_01_raw = (() => {
-  // 1) Gemini/Groq verify 결과의 overall raw(가장 신뢰할 1순위)
-  const v0 = verifyMeta?.overall?.overall_truthscore_raw;
-  if (typeof v0 === "number" && Number.isFinite(v0)) return Number(v0);
-
-  // 2) 혹시 raw가 아니라 overall_truthscore로 오는 변형 대비
-  const v1 = verifyMeta?.overall?.overall_truthscore;
-  if (typeof v1 === "number" && Number.isFinite(v1)) return Number(v1);
-
-  try {
-    if (typeof truthscore_01_raw === "number" && Number.isFinite(truthscore_01_raw)) {
-      return Number(truthscore_01_raw);
-    }
-  } catch (_) {}
-
-  // 3) 서버가 직접 기록한 raw (있으면 우선)
-  const v2 = partial_scores?.truthscore_01_raw;
-  if (typeof v2 === "number" && Number.isFinite(v2)) return Number(v2);
-
-  // ✅ DV/CV: LLM stage가 스킵된 경우(verifyMeta 없음) hybrid로 폴백
-  try {
-    const m = String(safeMode || "").toLowerCase().trim();
-    if (m === "dv" || m === "cv") {
-      if (typeof hybrid === "number" && Number.isFinite(hybrid)) return Number(hybrid);
-
-      const h2 = partial_scores?.hybrid;
-      if (typeof h2 === "number" && Number.isFinite(h2)) return Number(h2);
-    }
-  } catch (_) {}
-
-  return 0;
-})();
-
-var truthscore_01 = __truthscore_01_raw; // ✅ smoothing에서 참조/대입할 변수 생성 (TDZ 방지)
+      // 2) 혹시 raw가 아니라 overall_truthscore로 오는 변형 대비
+      const v1 = verifyMeta?.overall?.overall_truthscore;
+      if (typeof v1 === "number" && Number.isFinite(v1)) return Number(v1);
 
       try {
-        const __m0 = String(safeMode || "").toLowerCase();
-        if (__m0 === "qv" || __m0 === "fv") {
-          const __clamp01_ts = (x) =>
-            Math.max(0, Math.min(1, Number.isFinite(x) ? x : 0));
-          const __num_ts = (v, d) =>
-            Number.isFinite(Number(v)) ? Number(v) : d;
-
-          // inputs (risk-only)
-          const coverage01 = __clamp01_ts(__num_ts(partial_scores?.coverage_factor, 1.0));
-          const conflict01 = __clamp01_ts(
-            __num_ts(partial_scores?.conflict_meta?.conflict_index, 0.0)
-          );
-          const softPenalty01 = __clamp01_ts(
-            __num_ts(partial_scores?.soft_penalty_factor, 1.0)
-          );
-          const Eeff =
-            Number.isFinite(partial_scores?.effective_engines_count)
-              ? Math.max(0, Math.min(10, Math.trunc(partial_scores.effective_engines_count)))
-              : null;
-
-          // keep compat logs (optional)
-          try {
-            partial_scores.coverage_factor_raw = coverage01;
-            partial_scores.coverage_factor_used_in_smoothing = coverage01; // risk-only
-          } catch (_) {}
-
-          // env knobs
-          const TS_ENABLED =
-            String(process.env.TRUTH_SMOOTH_ENABLED ?? "true").toLowerCase() !== "false";
-          const TS_TARGET = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_TARGET, 0.5));
-          const TS_STRENGTH = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_STRENGTH, 0.55));
-
-          const W_CONFLICT = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_CONFLICT, 0.55));
-          const W_COV = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_COV, 0.30));
-          const W_SOFT = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_SOFT, 0.15));
-          const W_EEFF = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_EEFF, 0.10));
-
-          const MAX_ALPHA = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_MAX_ALPHA, 0.60));
-
-          if (TS_ENABLED) {
-            const weakEff =
-              Eeff !== null && Eeff <= 1 ? 1.0 : Eeff !== null && Eeff === 2 ? 0.5 : 0.0;
-
-            const risk = __clamp01_ts(
-              W_CONFLICT * conflict01 +
-                W_COV * (1 - coverage01) +
-                W_SOFT * (1 - softPenalty01) +
-                W_EEFF * weakEff
-            );
-
-            const alpha = Math.min(MAX_ALPHA, __clamp01_ts(TS_STRENGTH * risk));
-
-            const before = __clamp01_ts(truthscore_01);
-            const blended = __clamp01_ts((1 - alpha) * before + alpha * TS_TARGET);
-
-            // 기본: 스무딩이 점수를 올리지 않게(급상승 방지)
-            const allowIncrease =
-              String(process.env.TRUTH_SMOOTH_ALLOW_INCREASE ?? "false").toLowerCase() === "true";
-            const after = allowIncrease ? blended : Math.min(before, blended);
-
-            truthscore_01 = Number(after.toFixed(4));
-
-            partial_scores.truthscore_smoothing = {
-              applied: true,
-              version: "A-v3",
-              raw: Number(__truthscore_01_raw.toFixed(4)),
-              before,
-              after: truthscore_01,
-              target: TS_TARGET,
-              strength: TS_STRENGTH,
-              max_alpha: MAX_ALPHA,
-              allow_increase: allowIncrease,
-              weights: {
-                conflict: W_CONFLICT,
-                coverage: W_COV,
-                soft: W_SOFT,
-                E_eff: W_EEFF,
-              },
-              inputs: {
-                coverage_factor: coverage01,
-                conflict_index: conflict01,
-                soft_penalty_factor: softPenalty01,
-                effective_engines_count: Eeff,
-              },
-              risk,
-              alpha,
-              note:
-                "risk-only smoothing; default forbids increasing score (anti-spike). soft_penalty_factor is applied once in (B).",
-            };
-          } else {
-            partial_scores.truthscore_smoothing = { applied: false, disabled: true };
-          }
+        if (typeof truthscore_01_raw === "number" && Number.isFinite(truthscore_01_raw)) {
+          return Number(truthscore_01_raw);
         }
-      } catch (_) {
+      } catch (_) { }
+
+      // 3) 서버가 직접 기록한 raw (있으면 우선)
+      const v2 = partial_scores?.truthscore_01_raw;
+      if (typeof v2 === "number" && Number.isFinite(v2)) return Number(v2);
+
+      // ✅ DV/CV: LLM stage가 스킵된 경우(verifyMeta 없음) hybrid로 폴백
+      try {
+        const m = String(safeMode || "").toLowerCase().trim();
+        if (m === "dv" || m === "cv") {
+          if (typeof hybrid === "number" && Number.isFinite(hybrid)) return Number(hybrid);
+
+          const h2 = partial_scores?.hybrid;
+          if (typeof h2 === "number" && Number.isFinite(h2)) return Number(h2);
+        }
+      } catch (_) { }
+
+      return 0;
+    })();
+
+    var truthscore_01 = __truthscore_01_raw; // ✅ smoothing에서 참조/대입할 변수 생성 (TDZ 방지)
+
+    try {
+      const __m0 = String(safeMode || "").toLowerCase();
+      if (__m0 === "qv" || __m0 === "fv") {
+        const __clamp01_ts = (x) =>
+          Math.max(0, Math.min(1, Number.isFinite(x) ? x : 0));
+        const __num_ts = (v, d) =>
+          Number.isFinite(Number(v)) ? Number(v) : d;
+
+        // inputs (risk-only)
+        const coverage01 = __clamp01_ts(__num_ts(partial_scores?.coverage_factor, 1.0));
+        const conflict01 = __clamp01_ts(
+          __num_ts(partial_scores?.conflict_meta?.conflict_index, 0.0)
+        );
+        const softPenalty01 = __clamp01_ts(
+          __num_ts(partial_scores?.soft_penalty_factor, 1.0)
+        );
+        const Eeff =
+          Number.isFinite(partial_scores?.effective_engines_count)
+            ? Math.max(0, Math.min(10, Math.trunc(partial_scores.effective_engines_count)))
+            : null;
+
+        // keep compat logs (optional)
         try {
-          partial_scores.truthscore_smoothing = { applied: false, error: true };
-        } catch {}
-        truthscore_01 = __truthscore_01_raw;
-      }
+          partial_scores.coverage_factor_raw = coverage01;
+          partial_scores.coverage_factor_used_in_smoothing = coverage01; // risk-only
+        } catch (_) { }
 
-      // (B) apply soft_penalty_factor to final TruthScore (QV/FV only) - single multiplicative pass
-      let softPenaltyFactor = 1.0;
-      let softPenaltyApplied = false;
-      let softPenaltiesOverview = null;
+        // env knobs
+        const TS_ENABLED =
+          String(process.env.TRUTH_SMOOTH_ENABLED ?? "true").toLowerCase() !== "false";
+        const TS_TARGET = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_TARGET, 0.5));
+        const TS_STRENGTH = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_STRENGTH, 0.55));
 
-      var truthscore_01_final =
-       (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01))
-    ? truthscore_01
-    : (typeof __truthscore_01_raw === "number" && Number.isFinite(__truthscore_01_raw))
-      ? __truthscore_01_raw
-      : 0;
+        const W_CONFLICT = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_CONFLICT, 0.55));
+        const W_COV = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_COV, 0.30));
+        const W_SOFT = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_SOFT, 0.15));
+        const W_EEFF = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_W_EEFF, 0.10));
 
-            try {
-        if (safeMode === "qv" || safeMode === "fv") {
-          const ps =
-            (partial_scores && typeof partial_scores === "object") ? partial_scores : {};
+        const MAX_ALPHA = __clamp01_ts(__num_ts(process.env.TRUTH_SMOOTH_MAX_ALPHA, 0.60));
 
-          // soft penalty factor
-          const spf =
-            (ps && typeof ps.soft_penalty_factor === "number" && Number.isFinite(ps.soft_penalty_factor))
-              ? Math.max(0.0, Math.min(1.0, ps.soft_penalty_factor))
-              : 1.0;
+        if (TS_ENABLED) {
+          const weakEff =
+            Eeff !== null && Eeff <= 1 ? 1.0 : Eeff !== null && Eeff === 2 ? 0.5 : 0.0;
 
-          softPenaltyFactor = spf;
+          const risk = __clamp01_ts(
+            W_CONFLICT * conflict01 +
+            W_COV * (1 - coverage01) +
+            W_SOFT * (1 - softPenalty01) +
+            W_EEFF * weakEff
+          );
 
-          softPenaltiesOverview =
-            (ps && typeof ps.soft_penalties_overview === "object")
-              ? ps.soft_penalties_overview
-              : null;
+          const alpha = Math.min(MAX_ALPHA, __clamp01_ts(TS_STRENGTH * risk));
 
-          // 1) apply soft penalty (기존 동작 유지)
-          if (
-            spf < 0.999999 &&
-            typeof truthscore_01_final === "number" &&
-            Number.isFinite(truthscore_01_final)
-          ) {
-            const before01 = truthscore_01_final;
-            const after01 = Math.max(0.0, Math.min(1.0, before01 * spf));
+          const before = __clamp01_ts(truthscore_01);
+          const blended = __clamp01_ts((1 - alpha) * before + alpha * TS_TARGET);
 
-            truthscore_01_final = Number(after01.toFixed(4));
+          // 기본: 스무딩이 점수를 올리지 않게(급상승 방지)
+          const allowIncrease =
+            String(process.env.TRUTH_SMOOTH_ALLOW_INCREASE ?? "false").toLowerCase() === "true";
+          const after = allowIncrease ? blended : Math.min(before, blended);
 
-            softPenaltyApplied = {
-              factor: spf,
-              before_01: Number(before01.toFixed(4)),
-              after_01: truthscore_01_final,
-            };
+          truthscore_01 = Number(after.toFixed(4));
 
-            ps.truthscore_01_pre_soft = Number(before01.toFixed(4));
-            ps.soft_penalty_applied = softPenaltyApplied;
-          } else {
-            ps.soft_penalty_applied = false;
-          }
-
-                    // 2) NOTE: additional smoothing removed (handled in (A) only)
+          partial_scores.truthscore_smoothing = {
+            applied: true,
+            version: "A-v3",
+            raw: Number(__truthscore_01_raw.toFixed(4)),
+            before,
+            after: truthscore_01,
+            target: TS_TARGET,
+            strength: TS_STRENGTH,
+            max_alpha: MAX_ALPHA,
+            allow_increase: allowIncrease,
+            weights: {
+              conflict: W_CONFLICT,
+              coverage: W_COV,
+              soft: W_SOFT,
+              E_eff: W_EEFF,
+            },
+            inputs: {
+              coverage_factor: coverage01,
+              conflict_index: conflict01,
+              soft_penalty_factor: softPenalty01,
+              effective_engines_count: Eeff,
+            },
+            risk,
+            alpha,
+            note:
+              "risk-only smoothing; default forbids increasing score (anti-spike). soft_penalty_factor is applied once in (B).",
+          };
         } else {
-          try { partial_scores.soft_penalty_applied = false; } catch {}
-          try { partial_scores.truthscore_smoothing = false; } catch {}
+          partial_scores.truthscore_smoothing = { applied: false, disabled: true };
         }
-      } catch (_) {
-        try { partial_scores.soft_penalty_applied = false; } catch {}
-        try { partial_scores.truthscore_smoothing = false; } catch {}
       }
+    } catch (_) {
+      try {
+        partial_scores.truthscore_smoothing = { applied: false, error: true };
+      } catch { }
+      truthscore_01 = __truthscore_01_raw;
+    }
 
-      const truthscore_pct_final = Math.round(truthscore_01_final * 10000) / 100; // 2 decimals
-      const truthscore_text_final = `${truthscore_pct_final.toFixed(2)}%`;
+    // (B) apply soft_penalty_factor to final TruthScore (QV/FV only) - single multiplicative pass
+    let softPenaltyFactor = 1.0;
+    let softPenaltyApplied = false;
+    let softPenaltiesOverview = null;
 
-      // compat aliases (아래에서 truthscore_pct/text 참조가 남아있어도 안전)
-      const truthscore_pct = truthscore_pct_final;
-      const truthscore_text = truthscore_text_final;
-      const normalizedPartial = partial_scores;
-      const payload = {
-       mode: safeMode,
-       truthscore: truthscore_text_final,
-       truthscore_pct: truthscore_pct_final,
-       truthscore_01: truthscore_01_final,
-       elapsed,
+    var truthscore_01_final =
+      (typeof truthscore_01 === "number" && Number.isFinite(truthscore_01))
+        ? truthscore_01
+        : (typeof __truthscore_01_raw === "number" && Number.isFinite(__truthscore_01_raw))
+          ? __truthscore_01_raw
+          : 0;
 
-  // ??S-15: engines_used ?먮룞 ?곗텧(紐낆떆 ?몄텧)
-  engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
-    engines_requested:
-    (partial_scores &&
-      typeof partial_scores === "object" &&
-      Array.isArray(partial_scores.engines_requested) &&
-      partial_scores.engines_requested.length > 0)
-      ? partial_scores.engines_requested
-      : (Array.isArray(engines) ? engines : []),
-    engines_used: (
-    (Array.isArray(partial_scores.engines_used) && partial_scores.engines_used.length > 0)
-      ? partial_scores.engines_used
-      : (
-          (Array.isArray(partial_scores.engines_used_pre) && partial_scores.engines_used_pre.length > 0)
-            ? partial_scores.engines_used_pre
-            : (Array.isArray(engines) ? engines : [])
-        )
-  ),
+    try {
+      if (safeMode === "qv" || safeMode === "fv") {
+        const ps =
+          (partial_scores && typeof partial_scores === "object") ? partial_scores : {};
 
-  engines_excluded: (
-    (Array.isArray(partial_scores.engines_excluded) && partial_scores.engines_excluded.length > 0)
-      ? partial_scores.engines_excluded
-      : (
-          (Array.isArray(partial_scores.engines_requested) && partial_scores.engines_requested.length > 0)
-            ? partial_scores.engines_requested.filter(x => x && !(
+        // soft penalty factor
+        const spf =
+          (ps && typeof ps.soft_penalty_factor === "number" && Number.isFinite(ps.soft_penalty_factor))
+            ? Math.max(0.0, Math.min(1.0, ps.soft_penalty_factor))
+            : 1.0;
+
+        softPenaltyFactor = spf;
+
+        softPenaltiesOverview =
+          (ps && typeof ps.soft_penalties_overview === "object")
+            ? ps.soft_penalties_overview
+            : null;
+
+        // 1) apply soft penalty (기존 동작 유지)
+        if (
+          spf < 0.999999 &&
+          typeof truthscore_01_final === "number" &&
+          Number.isFinite(truthscore_01_final)
+        ) {
+          const before01 = truthscore_01_final;
+          const after01 = Math.max(0.0, Math.min(1.0, before01 * spf));
+
+          truthscore_01_final = Number(after01.toFixed(4));
+
+          softPenaltyApplied = {
+            factor: spf,
+            before_01: Number(before01.toFixed(4)),
+            after_01: truthscore_01_final,
+          };
+
+          ps.truthscore_01_pre_soft = Number(before01.toFixed(4));
+          ps.soft_penalty_applied = softPenaltyApplied;
+        } else {
+          ps.soft_penalty_applied = false;
+        }
+
+        // 2) NOTE: additional smoothing removed (handled in (A) only)
+      } else {
+        try { partial_scores.soft_penalty_applied = false; } catch { }
+        try { partial_scores.truthscore_smoothing = false; } catch { }
+      }
+    } catch (_) {
+      try { partial_scores.soft_penalty_applied = false; } catch { }
+      try { partial_scores.truthscore_smoothing = false; } catch { }
+    }
+
+    const truthscore_pct_final = Math.round(truthscore_01_final * 10000) / 100; // 2 decimals
+    const truthscore_text_final = `${truthscore_pct_final.toFixed(2)}%`;
+
+    // compat aliases (아래에서 truthscore_pct/text 참조가 남아있어도 안전)
+    const truthscore_pct = truthscore_pct_final;
+    const truthscore_text = truthscore_text_final;
+    const normalizedPartial = partial_scores;
+    const payload = {
+      mode: safeMode,
+      truthscore: truthscore_text_final,
+      truthscore_pct: truthscore_pct_final,
+      truthscore_01: truthscore_01_final,
+      elapsed,
+
+      // ??S-15: engines_used ?먮룞 ?곗텧(紐낆떆 ?몄텧)
+      engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
+      engines_requested:
+        (partial_scores &&
+          typeof partial_scores === "object" &&
+          Array.isArray(partial_scores.engines_requested) &&
+          partial_scores.engines_requested.length > 0)
+          ? partial_scores.engines_requested
+          : (Array.isArray(engines) ? engines : []),
+      engines_used: (
+        (Array.isArray(partial_scores.engines_used) && partial_scores.engines_used.length > 0)
+          ? partial_scores.engines_used
+          : (
+            (Array.isArray(partial_scores.engines_used_pre) && partial_scores.engines_used_pre.length > 0)
+              ? partial_scores.engines_used_pre
+              : (Array.isArray(engines) ? engines : [])
+          )
+      ),
+
+      engines_excluded: (
+        (Array.isArray(partial_scores.engines_excluded) && partial_scores.engines_excluded.length > 0)
+          ? partial_scores.engines_excluded
+          : (
+            (Array.isArray(partial_scores.engines_requested) && partial_scores.engines_requested.length > 0)
+              ? partial_scores.engines_requested.filter(x => x && !(
                 (
                   (Array.isArray(partial_scores.engines_used) && partial_scores.engines_used.length > 0)
                     ? partial_scores.engines_used
                     : (
-                        (Array.isArray(partial_scores.engines_used_pre) && partial_scores.engines_used_pre.length > 0)
-                          ? partial_scores.engines_used_pre
-                          : (Array.isArray(engines) ? engines : [])
-                      )
+                      (Array.isArray(partial_scores.engines_used_pre) && partial_scores.engines_used_pre.length > 0)
+                        ? partial_scores.engines_used_pre
+                        : (Array.isArray(engines) ? engines : [])
+                    )
                 ).includes(x)
               ))
-            : (partial_scores.engines_excluded_pre && typeof partial_scores.engines_excluded_pre === "object"
+              : (partial_scores.engines_excluded_pre && typeof partial_scores.engines_excluded_pre === "object"
                 ? Object.keys(partial_scores.engines_excluded_pre)
                 : [])
-        )
-  ),
+          )
+      ),
 
-  partial_scores: normalizedPartial,
+      partial_scores: normalizedPartial,
 
-  flash_summary: flash,
-verify_raw: verifyRawJson,
-verify_raw_sanitized:
-  (typeof verifyRawJsonSanitized === "string" && verifyRawJsonSanitized.trim())
-    ? verifyRawJsonSanitized
-    : null,
-gemini_verify_model: verifyModelUsed,
-  engine_times: engineTimes,
-  engine_metrics: engineMetrics,
-};
-
-// snippet_meta를 최종 payload top-level에도 노출
-if (snippetMeta) {
-  payload.snippet_meta = snippetMeta;
-}
-
-// ✅ diagnostics: 점수가 이렇게 나온 이유를 한 번에 보기 위한 요약 정보
-//   - effective_engines / coverage_factor / conflict_meta
-//   - numeric_evidence_match_pre / numeric_evidence_match
-try {
-  const ps = partial_scores || {};
-
-  const effEngines = Array.isArray(ps.effective_engines)
-    ? ps.effective_engines
-    : [];
-  const effCount =
-    typeof ps.effective_engines_count === "number"
-      ? ps.effective_engines_count
-      : effEngines.length;
-
-  const coverage =
-    typeof ps.coverage_factor === "number" ? ps.coverage_factor : null;
-
-  const conflictMeta =
-    ps.conflict_meta && typeof ps.conflict_meta === "object"
-      ? ps.conflict_meta
-      : null;
-
-  const numericPre =
-    ps.numeric_evidence_match_pre &&
-    typeof ps.numeric_evidence_match_pre === "object"
-      ? ps.numeric_evidence_match_pre
-      : null;
-
-  const numericFinal =
-    ps.numeric_evidence_match &&
-    typeof ps.numeric_evidence_match === "object"
-      ? ps.numeric_evidence_match
-      : null;
-
-    const softPenaltyFactor =
-    (typeof ps.soft_penalty_factor === "number" && Number.isFinite(ps.soft_penalty_factor))
-      ? ps.soft_penalty_factor
-      : null;
-
-   // ⭐ 핵심: false도 그대로 노출해야 함 (기존 로직은 false → null로 바꿔버림)
-  const softPenaltyApplied =
-    Object.prototype.hasOwnProperty.call(ps, "soft_penalty_applied")
-      ? ps.soft_penalty_applied
-      : null;
-
-  const softPenaltiesOverview =
-    (ps.soft_penalties_overview && typeof ps.soft_penalties_overview === "object")
-      ? ps.soft_penalties_overview
-      : null;
-
-  payload.diagnostics = {
-    effective_engines: effEngines,
-    effective_engines_count: effCount,
-    coverage_factor: coverage,
-    conflict_meta: conflictMeta,
-    numeric_evidence_match_pre: numericPre,
-    numeric_evidence_match: numericFinal,
-
-    // ✅ Swap-in C: expose soft-penalty summary
-    soft_penalty_factor: softPenaltyFactor,
-    soft_penalty_applied: softPenaltyApplied,
-    soft_penalties_overview: softPenaltiesOverview,
-  };
-
-} catch {
-  // diagnostics 구성 중 에러는 무시 (응답 자체에는 영향 주지 않음)
-}
-
-// ✅ verdict_label & verdict_detail: truthscore_01 + conflict_meta 기반 요약 라벨
-try {
-  // 0~1 구간 점수
-  const t01 =
-    typeof payload.truthscore_01 === "number"
-      ? payload.truthscore_01
-      : typeof truthscore === "number"
-        ? Number(truthscore.toFixed(4))
-        : null;
-
-  const diag = payload.diagnostics || {};
-  const effEngines = Array.isArray(diag.effective_engines)
-    ? diag.effective_engines
-    : [];
-  const effCount =
-    typeof diag.effective_engines_count === "number"
-      ? diag.effective_engines_count
-      : effEngines.length;
-
-  // conflict_index는 diagnostics.conflict_meta 또는 partial_scores.conflict_meta에서 가져옴
-  let cMeta = null;
-  if (diag.conflict_meta && typeof diag.conflict_meta === "object") {
-    cMeta = diag.conflict_meta;
-  } else if (
-    partial_scores &&
-    typeof partial_scores.conflict_meta === "object"
-  ) {
-    cMeta = partial_scores.conflict_meta;
-  }
-
-  const cIndex =
-    cMeta && typeof cMeta.conflict_index === "number"
-      ? cMeta.conflict_index
-      : null;
-
-  let vLabel = null;
-
-  if (t01 != null) {
-    // 매우 높은 점수 + 충돌 없음/약함 → likely_true
-    if (t01 >= 0.75 && (cIndex == null || cIndex <= 0.2)) {
-      vLabel = "likely_true";
-    }
-    // 매우 낮은 점수 + 충돌 강함 → likely_false_conflict
-    else if (t01 <= 0.25 && cIndex != null && cIndex >= 0.5) {
-      vLabel = "likely_false_conflict";
-    }
-    // 매우 낮은 점수 + 명시적 conflict는 없지만 사실상 거짓에 가까움
-    else if (t01 <= 0.25) {
-      vLabel = "likely_false";
-    }
-    // 중간 이하 점수지만 conflict_index가 거의 1에 가까움 → conflict 쪽으로 해석
-    else if (t01 < 0.5 && cIndex != null && cIndex >= 0.9) {
-      vLabel = "likely_false_conflict";
-    }
-    // 점수는 중간 이상인데 conflict도 큰 편 → 혼재/논쟁적
-    else if (t01 >= 0.5 && cIndex != null && cIndex >= 0.6) {
-      vLabel = "controversial_or_mixed";
-    }
-    // 그 외 애매한 구간 → borderline_uncertain
-    else {
-      vLabel = "borderline_uncertain";
-    }
-  }
-
-  if (vLabel) {
-    payload.verdict_label = vLabel;
-    payload.verdict_detail = {
-      mode: safeMode,
-      truthscore_01: t01,
-      conflict_index: cIndex,
-      effective_engines: effEngines,
-      effective_engines_count: effCount,
+      flash_summary: flash,
+      verify_raw: verifyRawJson,
+      verify_raw_sanitized:
+        (typeof verifyRawJsonSanitized === "string" && verifyRawJsonSanitized.trim())
+          ? verifyRawJsonSanitized
+          : null,
+      gemini_verify_model: verifyModelUsed,
+      engine_times: engineTimes,
+      engine_metrics: engineMetrics,
     };
 
-    let vMessage = null;
-    if (vLabel === "likely_true") {
-      vMessage = "대체로 사실일 가능성이 높습니다.";
-    } else if (vLabel === "likely_false_conflict") {
-      vMessage =
-        "사실이 아닐 가능성이 높고, 검색된 근거들과 상충합니다.";
-    } else if (vLabel === "likely_false") {
-      vMessage = "사실이 아닐 가능성이 높습니다.";
-    } else if (vLabel === "borderline_uncertain") {
-      vMessage =
-        "근거가 충분하지 않아 불확실하거나 추가 검증이 필요합니다.";
-    } else if (vLabel === "controversial_or_mixed") {
-      vMessage =
-        "서로 다른 방향의 근거가 섞여 있어 해석에 주의가 필요합니다.";
+    // snippet_meta를 최종 payload top-level에도 노출
+    if (snippetMeta) {
+      payload.snippet_meta = snippetMeta;
     }
 
-    if (vMessage) {
-  let msg = vMessage;
+    // ✅ diagnostics: 점수가 이렇게 나온 이유를 한 번에 보기 위한 요약 정보
+    //   - effective_engines / coverage_factor / conflict_meta
+    //   - numeric_evidence_match_pre / numeric_evidence_match
+    try {
+      const ps = partial_scores || {};
 
-  // ✅ Swap-in D: QV/FV에서 soft_penalty가 적용되었으면 이유 힌트 1줄 추가
-  try {
-    if (safeMode === "qv" || safeMode === "fv") {
-      const spf =
+      const effEngines = Array.isArray(ps.effective_engines)
+        ? ps.effective_engines
+        : [];
+      const effCount =
+        typeof ps.effective_engines_count === "number"
+          ? ps.effective_engines_count
+          : effEngines.length;
+
+      const coverage =
+        typeof ps.coverage_factor === "number" ? ps.coverage_factor : null;
+
+      const conflictMeta =
+        ps.conflict_meta && typeof ps.conflict_meta === "object"
+          ? ps.conflict_meta
+          : null;
+
+      const numericPre =
+        ps.numeric_evidence_match_pre &&
+          typeof ps.numeric_evidence_match_pre === "object"
+          ? ps.numeric_evidence_match_pre
+          : null;
+
+      const numericFinal =
+        ps.numeric_evidence_match &&
+          typeof ps.numeric_evidence_match === "object"
+          ? ps.numeric_evidence_match
+          : null;
+
+      const softPenaltyFactor =
+        (typeof ps.soft_penalty_factor === "number" && Number.isFinite(ps.soft_penalty_factor))
+          ? ps.soft_penalty_factor
+          : null;
+
+      // ⭐ 핵심: false도 그대로 노출해야 함 (기존 로직은 false → null로 바꿔버림)
+      const softPenaltyApplied =
+        Object.prototype.hasOwnProperty.call(ps, "soft_penalty_applied")
+          ? ps.soft_penalty_applied
+          : null;
+
+      const softPenaltiesOverview =
+        (ps.soft_penalties_overview && typeof ps.soft_penalties_overview === "object")
+          ? ps.soft_penalties_overview
+          : null;
+
+      payload.diagnostics = {
+        effective_engines: effEngines,
+        effective_engines_count: effCount,
+        coverage_factor: coverage,
+        conflict_meta: conflictMeta,
+        numeric_evidence_match_pre: numericPre,
+        numeric_evidence_match: numericFinal,
+
+        // ✅ Swap-in C: expose soft-penalty summary
+        soft_penalty_factor: softPenaltyFactor,
+        soft_penalty_applied: softPenaltyApplied,
+        soft_penalties_overview: softPenaltiesOverview,
+      };
+
+    } catch {
+      // diagnostics 구성 중 에러는 무시 (응답 자체에는 영향 주지 않음)
+    }
+
+    // ✅ verdict_label & verdict_detail: truthscore_01 + conflict_meta 기반 요약 라벨
+    try {
+      // 0~1 구간 점수
+      const t01 =
+        typeof payload.truthscore_01 === "number"
+          ? payload.truthscore_01
+          : typeof truthscore === "number"
+            ? Number(truthscore.toFixed(4))
+            : null;
+
+      const diag = payload.diagnostics || {};
+      const effEngines = Array.isArray(diag.effective_engines)
+        ? diag.effective_engines
+        : [];
+      const effCount =
+        typeof diag.effective_engines_count === "number"
+          ? diag.effective_engines_count
+          : effEngines.length;
+
+      // conflict_index는 diagnostics.conflict_meta 또는 partial_scores.conflict_meta에서 가져옴
+      let cMeta = null;
+      if (diag.conflict_meta && typeof diag.conflict_meta === "object") {
+        cMeta = diag.conflict_meta;
+      } else if (
         partial_scores &&
-        typeof partial_scores.soft_penalty_factor === "number" &&
-        Number.isFinite(partial_scores.soft_penalty_factor)
-          ? partial_scores.soft_penalty_factor
-          : 1.0;
+        typeof partial_scores.conflict_meta === "object"
+      ) {
+        cMeta = partial_scores.conflict_meta;
+      }
 
-      const ov = partial_scores && typeof partial_scores.soft_penalties_overview === "object"
-        ? partial_scores.soft_penalties_overview
-        : null;
+      const cIndex =
+        cMeta && typeof cMeta.conflict_index === "number"
+          ? cMeta.conflict_index
+          : null;
 
-      const yearMiss = ov && typeof ov.year_miss === "number" ? ov.year_miss : 0;
-      const numMiss  = ov && typeof ov.num_miss === "number" ? ov.num_miss : 0;
+      let vLabel = null;
 
-      if (spf < 0.999999 && (yearMiss > 0 || numMiss > 0)) {
-        const bits = [];
-        if (yearMiss > 0) bits.push(`연도 불일치 ${yearMiss}건`);
-        if (numMiss > 0) bits.push(`숫자 불일치 ${numMiss}건`);
+      if (t01 != null) {
+        // 매우 높은 점수 + 충돌 없음/약함 → likely_true
+        if (t01 >= 0.75 && (cIndex == null || cIndex <= 0.2)) {
+          vLabel = "likely_true";
+        }
+        // 매우 낮은 점수 + 충돌 강함 → likely_false_conflict
+        else if (t01 <= 0.25 && cIndex != null && cIndex >= 0.5) {
+          vLabel = "likely_false_conflict";
+        }
+        // 매우 낮은 점수 + 명시적 conflict는 없지만 사실상 거짓에 가까움
+        else if (t01 <= 0.25) {
+          vLabel = "likely_false";
+        }
+        // 중간 이하 점수지만 conflict_index가 거의 1에 가까움 → conflict 쪽으로 해석
+        else if (t01 < 0.5 && cIndex != null && cIndex >= 0.9) {
+          vLabel = "likely_false_conflict";
+        }
+        // 점수는 중간 이상인데 conflict도 큰 편 → 혼재/논쟁적
+        else if (t01 >= 0.5 && cIndex != null && cIndex >= 0.6) {
+          vLabel = "controversial_or_mixed";
+        }
+        // 그 외 애매한 구간 → borderline_uncertain
+        else {
+          vLabel = "borderline_uncertain";
+        }
+      }
 
-        msg += ` (참고: 일부 근거에서 ${bits.join(", ")}로 감점이 적용될 수 있습니다.)`;
+      if (vLabel) {
+        payload.verdict_label = vLabel;
+        payload.verdict_detail = {
+          mode: safeMode,
+          truthscore_01: t01,
+          conflict_index: cIndex,
+          effective_engines: effEngines,
+          effective_engines_count: effCount,
+        };
+
+        let vMessage = null;
+        if (vLabel === "likely_true") {
+          vMessage = "대체로 사실일 가능성이 높습니다.";
+        } else if (vLabel === "likely_false_conflict") {
+          vMessage =
+            "사실이 아닐 가능성이 높고, 검색된 근거들과 상충합니다.";
+        } else if (vLabel === "likely_false") {
+          vMessage = "사실이 아닐 가능성이 높습니다.";
+        } else if (vLabel === "borderline_uncertain") {
+          vMessage =
+            "근거가 충분하지 않아 불확실하거나 추가 검증이 필요합니다.";
+        } else if (vLabel === "controversial_or_mixed") {
+          vMessage =
+            "서로 다른 방향의 근거가 섞여 있어 해석에 주의가 필요합니다.";
+        }
+
+        if (vMessage) {
+          let msg = vMessage;
+
+          // ✅ Swap-in D: QV/FV에서 soft_penalty가 적용되었으면 이유 힌트 1줄 추가
+          try {
+            if (safeMode === "qv" || safeMode === "fv") {
+              const spf =
+                partial_scores &&
+                  typeof partial_scores.soft_penalty_factor === "number" &&
+                  Number.isFinite(partial_scores.soft_penalty_factor)
+                  ? partial_scores.soft_penalty_factor
+                  : 1.0;
+
+              const ov = partial_scores && typeof partial_scores.soft_penalties_overview === "object"
+                ? partial_scores.soft_penalties_overview
+                : null;
+
+              const yearMiss = ov && typeof ov.year_miss === "number" ? ov.year_miss : 0;
+              const numMiss = ov && typeof ov.num_miss === "number" ? ov.num_miss : 0;
+
+              if (spf < 0.999999 && (yearMiss > 0 || numMiss > 0)) {
+                const bits = [];
+                if (yearMiss > 0) bits.push(`연도 불일치 ${yearMiss}건`);
+                if (numMiss > 0) bits.push(`숫자 불일치 ${numMiss}건`);
+
+                msg += ` (참고: 일부 근거에서 ${bits.join(", ")}로 감점이 적용될 수 있습니다.)`;
+              }
+            }
+          } catch (_) { }
+
+          payload.verdict_message_ko = msg;
+          // ✅ S-17b: 응답 직전 router_plan 재부착
+          // - 최종 safeMode 반영 (stale 방지)
+          try {
+            if (__ps && typeof __ps === "object") {
+              __ps.router_plan = __buildRouterPlanPublicFinal({
+                safeMode,
+                rawMode,
+                routerPlan: __routerPlan,
+                runLvExtra: __runLvExtra,
+              });
+            }
+          } catch (_) { }
+        }
+      }
+    } catch {
+      // verdict 계산 실패해도 전체 응답은 그대로 유지
+    }
+
+    // ✅ (필수) QV/FV는 최종 LLM(flash/verify 또는 groq_verify)이 반드시 있어야 함
+    // - DV/CV는 GitHub 근거 수집만으로도 응답 가능(최종 LLM 출력이 없을 수 있음) → LLM_SKIPPED 가드 제외
+    // - 기존은 500을 냈는데, 프론트/로그 안정 위해 200 + code 로 통일
+    const NEED_LLM = (safeMode === "qv" || safeMode === "fv");
+
+    if (NEED_LLM) {
+      const gemMs = Number(payload?.partial_scores?.gemini_total_ms || 0);
+      const flLen = String(flash || "").trim().length;
+      const vrLen = String(verify || "").trim().length;
+
+      // ✅ Groq verify가 있었는지도 같이 본다 (Gemini total=0이어도 Groq만 쓴 케이스는 정상)
+      const groqVerifyUsed = !!payload?.partial_scores?.groq_verify?.used;
+      const groqVerifyMs = Number(payload?.partial_scores?.groq_verify?.ms || 0);
+
+      const hasAnyLlmSignal =
+        (gemMs > 0) ||
+        (flLen > 0) ||
+        (vrLen > 0) ||
+        (groqVerifyUsed) ||
+        (groqVerifyMs > 0);
+
+      if (!hasAnyLlmSignal) {
+        // ✅ 500 대신 200 + 에러코드 (번역/기타 엔드포인트 정책과 통일)
+        return res.status(200).json({
+          success: false,
+          code: "LLM_SKIPPED",
+          message:
+            "LLM stage was skipped unexpectedly (gemini_total_ms=0, flash/verify empty, groq_verify unused). Check key resolution and skip/early-return logic.",
+          diag: {
+            mode: safeMode,
+            engines_requested: payload?.partial_scores?.engines_requested ?? null,
+            engines_used_pre: payload?.partial_scores?.engines_used_pre ?? null,
+            gemini_total_ms: gemMs,
+            flash_len: flLen,
+            verify_len: vrLen,
+            groq_verify: payload?.partial_scores?.groq_verify ?? null,
+            // 키링 상태/쿨다운은 여기서 직접 접근 안 하고,
+            // partial_scores에 이미 남아있는 값들만 안전하게 내려준다.
+            gemini_times: payload?.partial_scores?.gemini_times ?? null,
+            gemini_metrics: payload?.partial_scores?.gemini_metrics ?? null,
+          },
+          timestamp: new Date().toISOString(),
+        });
       }
     }
-  } catch (_) {}
 
-  payload.verdict_message_ko = msg;
-// ✅ S-17b: 응답 직전 router_plan 재부착
-// - 최종 safeMode 반영 (stale 방지)
-try {
-  if (__ps && typeof __ps === "object") {
-    __ps.router_plan = __buildRouterPlanPublicFinal({
-      safeMode,
-      rawMode,
-      routerPlan: __routerPlan,
-      runLvExtra: __runLvExtra,
-    });
-  }
-} catch (_) {}
-}
-  }
-} catch {
-  // verdict 계산 실패해도 전체 응답은 그대로 유지
-}
+    // ✅ debug: effective config & whitelist meta (Render env: DEBUG_EFFECTIVE_CONFIG=1)
+    if (process.env.DEBUG_EFFECTIVE_CONFIG === "1") {
+      const wl = loadNaverWhitelist();
+      const wlHasKosis =
+        !!wl &&
+        Object.values(wl.tiers || {}).some(
+          (t) => Array.isArray(t?.domains) && t.domains.includes("kosis.kr")
+        );
 
-// ✅ (필수) QV/FV는 최종 LLM(flash/verify 또는 groq_verify)이 반드시 있어야 함
-// - DV/CV는 GitHub 근거 수집만으로도 응답 가능(최종 LLM 출력이 없을 수 있음) → LLM_SKIPPED 가드 제외
-// - 기존은 500을 냈는데, 프론트/로그 안정 위해 200 + code 로 통일
-const NEED_LLM = (safeMode === "qv" || safeMode === "fv");
+      payload.effective_config = {
+        NAVER_RELEVANCE_MIN,
+        BLOCK_EVIDENCE_TOPK,
+        BLOCK_NAVER_EVIDENCE_TOPK,
 
-if (NEED_LLM) {
-  const gemMs = Number(payload?.partial_scores?.gemini_total_ms || 0);
-  const flLen = String(flash || "").trim().length;
-  const vrLen = String(verify || "").trim().length;
+        // (패치) 숫자 블록 발췌
+        NAVER_NUMERIC_FETCH,
+        NAVER_FETCH_TIMEOUT_MS,
+        EVIDENCE_EXCERPT_CHARS,
+        NAVER_NUMERIC_FETCH_MAX,
 
-  // ✅ Groq verify가 있었는지도 같이 본다 (Gemini total=0이어도 Groq만 쓴 케이스는 정상)
-  const groqVerifyUsed = !!payload?.partial_scores?.groq_verify?.used;
-  const groqVerifyMs = Number(payload?.partial_scores?.groq_verify?.ms || 0);
+        whitelist_version: wl?.version || null,
+        whitelist_lastUpdate: wl?.lastUpdate || null,
+        whitelist_has_kosis: wlHasKosis,
+      };
+    }
 
-  const hasAnyLlmSignal =
-    (gemMs > 0) ||
-    (flLen > 0) ||
-    (vrLen > 0) ||
-    (groqVerifyUsed) ||
-    (groqVerifyMs > 0);
+    // 🔹 DV/CV 모드에서는 GitHub 검색 결과도 같이 내려줌
+    if (safeMode === "dv" || safeMode === "cv") {
+      payload.github_repos = external.github ?? [];
+    }
 
-  if (!hasAnyLlmSignal) {
-    // ✅ 500 대신 200 + 에러코드 (번역/기타 엔드포인트 정책과 통일)
-    return res.status(200).json({
-      success: false,
-      code: "LLM_SKIPPED",
-      message:
-        "LLM stage was skipped unexpectedly (gemini_total_ms=0, flash/verify empty, groq_verify unused). Check key resolution and skip/early-return logic.",
-      diag: {
-        mode: safeMode,
-        engines_requested: payload?.partial_scores?.engines_requested ?? null,
-        engines_used_pre: payload?.partial_scores?.engines_used_pre ?? null,
-        gemini_total_ms: gemMs,
-        flash_len: flLen,
-        verify_len: vrLen,
-        groq_verify: payload?.partial_scores?.groq_verify ?? null,
-        // 키링 상태/쿨다운은 여기서 직접 접근 안 하고,
-        // partial_scores에 이미 남아있는 값들만 안전하게 내려준다.
-        gemini_times: payload?.partial_scores?.gemini_times ?? null,
-        gemini_metrics: payload?.partial_scores?.gemini_metrics ?? null,
-      },
-      timestamp: new Date().toISOString(),
-    });
-  }
-}
+    // ✅ S-17: cache set (only QV/FV)
+    if (safeMode === "qv" || safeMode === "fv") {
+      payload.cached = false;
+      if (__cacheKey && (safeMode === "qv" || safeMode === "fv")) {
+        verifyCacheSet(__cacheKey, payload);
+      }
+    }
 
-// ✅ debug: effective config & whitelist meta (Render env: DEBUG_EFFECTIVE_CONFIG=1)
-if (process.env.DEBUG_EFFECTIVE_CONFIG === "1") {
-  const wl = loadNaverWhitelist();
-  const wlHasKosis =
-    !!wl &&
-    Object.values(wl.tiers || {}).some(
-      (t) => Array.isArray(t?.domains) && t.domains.includes("kosis.kr")
-    );
+    // 🔹 QV/FV 모드에서는 Naver 결과도 같이 내려줌
+    //    - external.naver "풀"이 아니라, blocksForVerify에 실제로 들어간 naver evidence만 내려서 UI 노이즈를 줄임
+    //    + verify 단계에서 나온 irrelevant_urls가 있으면 응답에서만 prune (추가 호출 없음)
+    if (safeMode === "qv" || safeMode === "fv") {
+      // blocksForVerify에 실제로 들어간 naver evidence만 모음
+      const __naverEvidenceUsed =
+        (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
+          ? blocksForVerify.flatMap(b => (Array.isArray(b?.evidence?.naver) ? b.evidence.naver : []))
+          : [];
 
-    payload.effective_config = {
-    NAVER_RELEVANCE_MIN,
-    BLOCK_EVIDENCE_TOPK,
-    BLOCK_NAVER_EVIDENCE_TOPK,
+      // 혹시 dedupeByLink가 없다면(드물지만) 대비해서 로컬 dedupe
+      const __deduped = (typeof dedupeByLink === "function")
+        ? dedupeByLink(__naverEvidenceUsed)
+        : (() => {
+          const seen = new Set();
+          const out = [];
+          for (const r of (__naverEvidenceUsed || [])) {
+            const u = String(r?.link || r?.source_url || r?.url || "").trim();
+            const k = u || JSON.stringify([r?.title || "", r?.source_host || "", r?.naver_type || ""]);
+            if (seen.has(k)) continue;
+            seen.add(k);
+            out.push(r);
+          }
+          return out;
+        })();
 
-    // (패치) 숫자 블록 발췌
-    NAVER_NUMERIC_FETCH,
-    NAVER_FETCH_TIMEOUT_MS,
-    EVIDENCE_EXCERPT_CHARS,
-    NAVER_NUMERIC_FETCH_MAX,
+      const __irSet = new Set(
+        (Array.isArray(__irrelevant_urls) ? __irrelevant_urls : [])
+          .map(u => String(u || "").trim())
+          .filter(Boolean)
+      );
 
-    whitelist_version: wl?.version || null,
-    whitelist_lastUpdate: wl?.lastUpdate || null,
-    whitelist_has_kosis: wlHasKosis,
-  };
-}
-
-// 🔹 DV/CV 모드에서는 GitHub 검색 결과도 같이 내려줌
-if (safeMode === "dv" || safeMode === "cv") {
-  payload.github_repos = external.github ?? [];
-}
-
-// ✅ S-17: cache set (only QV/FV)
-if (safeMode === "qv" || safeMode === "fv") {
-  payload.cached = false;
-  if (__cacheKey && (safeMode === "qv" || safeMode === "fv")) {
-  verifyCacheSet(__cacheKey, payload);
-}
-}
-
-// 🔹 QV/FV 모드에서는 Naver 결과도 같이 내려줌
-//    - external.naver "풀"이 아니라, blocksForVerify에 실제로 들어간 naver evidence만 내려서 UI 노이즈를 줄임
-//    + verify 단계에서 나온 irrelevant_urls가 있으면 응답에서만 prune (추가 호출 없음)
-if (safeMode === "qv" || safeMode === "fv") {
-  // blocksForVerify에 실제로 들어간 naver evidence만 모음
-  const __naverEvidenceUsed =
-    (typeof blocksForVerify !== "undefined" && Array.isArray(blocksForVerify))
-      ? blocksForVerify.flatMap(b => (Array.isArray(b?.evidence?.naver) ? b.evidence.naver : []))
-      : [];
-
-  // 혹시 dedupeByLink가 없다면(드물지만) 대비해서 로컬 dedupe
-  const __deduped = (typeof dedupeByLink === "function")
-    ? dedupeByLink(__naverEvidenceUsed)
-    : (() => {
-        const seen = new Set();
-        const out = [];
-        for (const r of (__naverEvidenceUsed || [])) {
+      payload.naver_results = (__irSet.size > 0)
+        ? __deduped.filter(r => {
           const u = String(r?.link || r?.source_url || r?.url || "").trim();
-          const k = u || JSON.stringify([r?.title || "", r?.source_host || "", r?.naver_type || ""]);
-          if (seen.has(k)) continue;
-          seen.add(k);
-          out.push(r);
-        }
-        return out;
-      })();
+          return u ? !__irSet.has(u) : true;
+        })
+        : __deduped;
 
-  const __irSet = new Set(
-    (Array.isArray(__irrelevant_urls) ? __irrelevant_urls : [])
-      .map(u => String(u || "").trim())
-      .filter(Boolean)
-  );
-
-  payload.naver_results = (__irSet.size > 0)
-    ? __deduped.filter(r => {
-        const u = String(r?.link || r?.source_url || r?.url || "").trim();
-        return u ? !__irSet.has(u) : true;
-      })
-    : __deduped;
-
-  if (__irSet.size > 0) {
-    payload.partial_scores = { ...(payload.partial_scores || {}), irrelevant_urls: Array.from(__irSet) };
-  }
-}
+      if (__irSet.size > 0) {
+        payload.partial_scores = { ...(payload.partial_scores || {}), irrelevant_urls: Array.from(__irSet) };
+      }
+    }
 
     return res.json(buildSuccess(payload));
-    } catch (e) {
-  console.error("❌ Verify Error:", e.message);
+  } catch (e) {
+    console.error("❌ Verify Error:", e.message);
 
-  try {
-    const fallbackUserId = logUserId || process.env.DEFAULT_USER_ID;
-    if (fallbackUserId) {
-      await supabase.from("verification_logs").insert([
-  {
-    user_id: logUserId || process.env.DEFAULT_USER_ID, // logUserId 없으면 DEFAULT 필요
-    question: query || null,
-    query: query || null,
+    try {
+      const fallbackUserId = logUserId || process.env.DEFAULT_USER_ID;
+      if (fallbackUserId) {
+        await supabase.from("verification_logs").insert([
+          {
+            user_id: logUserId || process.env.DEFAULT_USER_ID, // logUserId 없으면 DEFAULT 필요
+            question: query || null,
+            query: query || null,
 
-    truth_score: null,
-    summary: null,
-    cross_score: null,
-    adjusted_score: null,
+            truth_score: null,
+            summary: null,
+            cross_score: null,
+            adjusted_score: null,
 
-    status: safeMode || null,
-    engines: engines || null,
-    keywords: null,
-    elapsed: null,
+            status: safeMode || null,
+            engines: engines || null,
+            keywords: null,
+            elapsed: null,
 
-    model_main: "gemini-2.5-flash",
-    model_eval: verifyModelUsed || verifyModel || null,
-    sources: null,
+            model_main: "gemini-2.5-flash",
+            model_eval: verifyModelUsed || verifyModel || null,
+            sources: null,
 
-    gemini_model: verifyModelUsed || verifyModel || null,
-    error: e.message,
-    created_at: new Date(),
-  },
-]);
- }
-  } catch (logErr) {
-    console.error("❌ verification_logs insert failed:", logErr.message);
-  }
-
-// ✅ Admin 대시보드용 에러 기록 (early-return 전에 먼저 기록)
-try {
-  pushAdminError({
-    type: "verify",
-    code: e?.code || null,
-    message: e?.message || String(e),
-  });
-} catch (_) {}
-
-// ✅ Gemini rate limit (429) — 기존 정책 유지(200 + success:false)
-if (e?.code === "GEMINI_RATE_LIMIT") {
-  try {
-    const ms = Number(e?.detail?.retry_after_ms);
-    if (Number.isFinite(ms) && ms > 0) {
-      // HTTP Retry-After는 초 단위가 일반적
-      const sec = Math.max(1, Math.ceil(ms / 1000));
-      res.set("Retry-After", String(sec));
-      // 디버그/클라 편의용(선택)
-      res.set("X-Retry-After-Ms", String(Math.ceil(ms)));
+            gemini_model: verifyModelUsed || verifyModel || null,
+            error: e.message,
+            created_at: new Date(),
+          },
+        ]);
+      }
+    } catch (logErr) {
+      console.error("❌ verification_logs insert failed:", logErr.message);
     }
-  } catch (_) {}
 
-  // 캐시 방지(선택이지만 권장)
-  try { res.set("Cache-Control", "no-store"); } catch (_) {}
+    // ✅ Admin 대시보드용 에러 기록 (early-return 전에 먼저 기록)
+    try {
+      pushAdminError({
+        type: "verify",
+        code: e?.code || null,
+        message: e?.message || String(e),
+      });
+    } catch (_) { }
 
-  return res.status(429).json({
-    success: false,
-    code: "GEMINI_RATE_LIMIT",
-    message: "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.",
-    timestamp: new Date().toISOString(),
-    detail: e?.detail ?? e?.message ?? null,
-  });
-}
+    // ✅ Gemini rate limit (429) — 기존 정책 유지(200 + success:false)
+    if (e?.code === "GEMINI_RATE_LIMIT") {
+      try {
+        const ms = Number(e?.detail?.retry_after_ms);
+        if (Number.isFinite(ms) && ms > 0) {
+          // HTTP Retry-After는 초 단위가 일반적
+          const sec = Math.max(1, Math.ceil(ms / 1000));
+          res.set("Retry-After", String(sec));
+          // 디버그/클라 편의용(선택)
+          res.set("X-Retry-After-Ms", String(Math.ceil(ms)));
+        }
+      } catch (_) { }
 
-// ✅ Gemini 키링 모두 소진(쿼터/인증 등)도 코드 유지해서 그대로 반환
-if (e?.code === "GEMINI_KEY_EXHAUSTED") {
-  const st = typeof e?.httpStatus === "number" ? e.httpStatus : 200;
-  return res.status(st).json(
-    buildError(
-      "GEMINI_KEY_EXHAUSTED",
-      "Gemini 키를 사용할 수 없습니다. (쿼터/인증/키링 상태 확인)",
-      e?.detail ?? e?.message
-    )
-  );
-}
+      // 캐시 방지(선택이지만 권장)
+      try { res.set("Cache-Control", "no-store"); } catch (_) { }
 
-// ✅ Gemini key missing => 401
-if (e?.code === "GEMINI_KEY_MISSING") {
-  return res.status(401).json(
-    buildError(
-      "GEMINI_KEY_MISSING",
-      "Gemini API 키가 없습니다. (앱 설정 저장/로그인 vault 또는 요청 body에 gemini_key 필요)",
-      e?.detail ?? e?.message
-    )
-  );
-}
+      return res.status(429).json({
+        success: false,
+        code: "GEMINI_RATE_LIMIT",
+        message: "Gemini 요청이 일시적으로 과도합니다(429). 잠시 후 재시도해 주세요.",
+        timestamp: new Date().toISOString(),
+        detail: e?.detail ?? e?.message ?? null,
+      });
+    }
 
-// ✅ Gemini invalid/missing key safety-net (code가 안 붙는 케이스)
-{
-  const rawMsg =
-    e?.response?.data?.error?.message ||
-    e?.response?.data?.message ||
-    e?.message ||
-    "";
-  const s = String(rawMsg);
+    // ✅ Gemini 키링 모두 소진(쿼터/인증 등)도 코드 유지해서 그대로 반환
+    if (e?.code === "GEMINI_KEY_EXHAUSTED") {
+      const st = typeof e?.httpStatus === "number" ? e.httpStatus : 200;
+      return res.status(st).json(
+        buildError(
+          "GEMINI_KEY_EXHAUSTED",
+          "Gemini 키를 사용할 수 없습니다. (쿼터/인증/키링 상태 확인)",
+          e?.detail ?? e?.message
+        )
+      );
+    }
 
-  const isMissing =
-    /api key.*missing|missing api key|no api key|api_key_missing/i.test(s);
-  const isInvalid =
-    /API key not valid|API_KEY_INVALID|invalid api key/i.test(s);
+    // ✅ Gemini key missing => 401
+    if (e?.code === "GEMINI_KEY_MISSING") {
+      return res.status(401).json(
+        buildError(
+          "GEMINI_KEY_MISSING",
+          "Gemini API 키가 없습니다. (앱 설정 저장/로그인 vault 또는 요청 body에 gemini_key 필요)",
+          e?.detail ?? e?.message
+        )
+      );
+    }
 
-  if (isMissing) {
-    return res.status(401).json(
-      buildError(
-        "GEMINI_KEY_MISSING",
-        "Gemini API 키가 없습니다. (앱 설정 저장/로그인 vault 또는 요청 body에 gemini_key 필요)",
-        e?.detail ?? rawMsg
-      )
-    );
-  }
+    // ✅ Gemini invalid/missing key safety-net (code가 안 붙는 케이스)
+    {
+      const rawMsg =
+        e?.response?.data?.error?.message ||
+        e?.response?.data?.message ||
+        e?.message ||
+        "";
+      const s = String(rawMsg);
 
-  if (isInvalid) {
-    return res.status(401).json(
-      buildError(
-        "INVALID_GEMINI_KEY",
-        "Gemini API 키가 유효하지 않습니다. 키를 다시 저장/교체하세요.",
-        e?.detail ?? rawMsg
-      )
-    );
-  }
-}
+      const isMissing =
+        /api key.*missing|missing api key|no api key|api_key_missing/i.test(s);
+      const isInvalid =
+        /API key not valid|API_KEY_INVALID|invalid api key/i.test(s);
 
-// ✅ httpStatus/publicMessage/detail 있으면 그대로 반환 (최상위 catch)
-// - httpStatus는 number/string 모두 허용
-const passStatus =
-  typeof e?.httpStatus === "number"
-    ? e.httpStatus
-    : (typeof e?.httpStatus === "string" && /^\d+$/.test(e.httpStatus) ? Number(e.httpStatus) : null);
+      if (isMissing) {
+        return res.status(401).json(
+          buildError(
+            "GEMINI_KEY_MISSING",
+            "Gemini API 키가 없습니다. (앱 설정 저장/로그인 vault 또는 요청 body에 gemini_key 필요)",
+            e?.detail ?? rawMsg
+          )
+        );
+      }
 
-if (Number.isFinite(passStatus) && (e?._fatal || e?.publicMessage || e?.detail)) {
-  return res.status(passStatus).json(
-    buildError(
-      e.code || "FATAL_ERROR",
-      e.publicMessage || "요청을 처리할 수 없습니다.",
-      e.detail ?? e.message
-    )
-  );
-}
+      if (isInvalid) {
+        return res.status(401).json(
+          buildError(
+            "INVALID_GEMINI_KEY",
+            "Gemini API 키가 유효하지 않습니다. 키를 다시 저장/교체하세요.",
+            e?.detail ?? rawMsg
+          )
+        );
+      }
+    }
 
-// 기본 처리: 가능한 status를 반영하되, 메시지는 과도하게 노출하지 않음
-const status =
-  (Number.isFinite(passStatus) && passStatus) ||
-  (typeof e?.status === "number" ? e.status : undefined) ||
-  (typeof e?.response?.status === "number" ? e.response.status : undefined) ||
-  500;
+    // ✅ httpStatus/publicMessage/detail 있으면 그대로 반환 (최상위 catch)
+    // - httpStatus는 number/string 모두 허용
+    const passStatus =
+      typeof e?.httpStatus === "number"
+        ? e.httpStatus
+        : (typeof e?.httpStatus === "string" && /^\d+$/.test(e.httpStatus) ? Number(e.httpStatus) : null);
 
-return res.status(status).json(buildError("INTERNAL_SERVER_ERROR", "서버 내부 오류 발생", e?.message));
+    if (Number.isFinite(passStatus) && (e?._fatal || e?.publicMessage || e?.detail)) {
+      return res.status(passStatus).json(
+        buildError(
+          e.code || "FATAL_ERROR",
+          e.publicMessage || "요청을 처리할 수 없습니다.",
+          e.detail ?? e.message
+        )
+      );
+    }
+
+    // 기본 처리: 가능한 status를 반영하되, 메시지는 과도하게 노출하지 않음
+    const status =
+      (Number.isFinite(passStatus) && passStatus) ||
+      (typeof e?.status === "number" ? e.status : undefined) ||
+      (typeof e?.response?.status === "number" ? e.response.status : undefined) ||
+      500;
+
+    return res.status(status).json(buildError("INTERNAL_SERVER_ERROR", "서버 내부 오류 발생", e?.message));
   }
 };
 
@@ -16396,14 +16659,14 @@ async function requireAdminAccess(req, res, next) {
         const au = await getSupabaseAuthUser(req); // Bearer 토큰으로 supabase.auth.getUser()
         const aemail = String(au?.email || "").trim().toLowerCase();
         if (aemail && emails.includes(aemail)) return next();
-      } catch (_) {}
+      } catch (_) { }
     }
 
     // 3) 로컬/개발 편의: 운영이 아니면 설정 없을 때 통과
     if (!isProd && !adminTok && !diagTok && !devTok && (ADMIN_EMAILS || []).length === 0) {
       return next();
     }
-  } catch (_) {}
+  } catch (_) { }
 
   return res.status(403).json({
     success: false,
@@ -16490,7 +16753,7 @@ app.post(
   verifyRateLimit,
   guardProdKeyUuid,
   requireVerifyAuth,
-  rejectLvOnVerify,
+  rejectDeprecatedModesOnVerify,
   enforceVerifyPayloadLimits,
   verifyCoreHandler
 );
@@ -16503,65 +16766,34 @@ app.post(
   guardProdKeyUuid,
   requireVerifyAuth,
   snippetToVerifyBody,
-  rejectLvOnVerify,
+  rejectDeprecatedModesOnVerify,
   verifyCoreHandler
 );
 
-// ✅ /api/verify에서는 lv 금지 (LV는 /api/lv 전용)
-function rejectLvOnVerify(req, res, next) {
-  const m = String(req.body?.mode || "").trim().toLowerCase();
-  if (m === "lv") {
+// ✅ /api/verify 계열에서 deprecated mode(lv/cv) 거부
+function rejectDeprecatedModesOnVerify(req, res, next) {
+  const m = String(req.body?.mode ?? req.body?.safeMode ?? "").trim().toLowerCase();
+  if (m === "lv" || m === "cv") {
     return res
       .status(400)
-      .json(buildError("LV_ENDPOINT_REQUIRED", "LV 모드는 /api/lv 엔드포인트를 사용하세요."));
+      .json(buildError("INVALID_MODE", `지원하지 않는 모드입니다: ${m}`));
   }
   return next();
 }
 
-// ✅ LV endpoint (keeps existing LV logic inside verifyCoreHandler)
-function forceLvMode(req, _res, next) {
-  const b = (req.body && typeof req.body === "object") ? req.body : {};
-
-  // query가 없으면 question/prompt도 받아주기
-  const q0 =
-    (typeof b.query === "string" && b.query.trim()) ||
-    (typeof b.question === "string" && b.question.trim()) ||
-    (typeof b.prompt === "string" && b.prompt.trim()) ||
-    "";
-
-  const cleaned = {};
-  const put = (k, v) => {
-    if (v === undefined || v === null) return;
-    if (typeof v === "string" && v.trim() === "") return;
-    cleaned[k] = v;
-  };
-
-  // ✅ LV는 이 필드만 통과(나머지는 drop)
-  put("query", String(q0).slice(0, VERIFY_MAX_QUERY_CHARS || 5000));
-  put("rawQuery", b.rawQuery);
-
-  put("user_id", b.user_id);
-  put("user_email", b.user_email);
-  put("user_name", b.user_name);
-  put("key_uuid", b.key_uuid);
-
-  put("klaw_key", b.klaw_key);
-  put("gemini_key", b.gemini_key);
-  put("gemini_model", b.gemini_model);
-  put("debug", b.debug);
-
-  cleaned.mode = "lv";
-  req.body = cleaned;
-  return next();
-}
-
-app.post("/api/lv",
+// ✅ (Deprecated) LV endpoint: 유지하되 항상 410로 안내
+app.post(
+  "/api/lv",
+  blockDevRoutesInProd,
   verifyRateLimit,
-  forceLvMode,
-  enforceVerifyPayloadLimits,
-  requireVerifyAuth,
   guardProdKeyUuid,
-  verifyCoreHandler
+  requireVerifyAuth,
+  enforceVerifyPayloadLimits,
+  (req, res) => {
+    return res
+      .status(410)
+      .json(buildError("ENDPOINT_DEPRECATED", "/api/lv 엔드포인트는 폐기되었습니다. /api/verify 를 사용하세요."));
+  }
 );
 
 // ✅ 번역 테스트 라우트 (간단형, 백호환용)
@@ -16569,18 +16801,18 @@ app.post("/api/translate", async (req, res) => {
   try {
     const { user_id, text, targetLang, deepl_key, gemini_key } = req.body;
     // ✅ docs/analyze도 verify처럼 "로그/키링용 userId"를 만든다
-const auth_user = await getSupabaseAuthUser(req);
-const bearer_token = getBearerToken(req);
+    const auth_user = await getSupabaseAuthUser(req);
+    const bearer_token = getBearerToken(req);
 
-const logUserId = await resolveLogUserId({
-  user_id: user_id ?? null,
-  user_email: null,
-  user_name: null,
-  auth_user,
-  bearer_token,
-});
+    const logUserId = await resolveLogUserId({
+      user_id: user_id ?? null,
+      user_email: null,
+      user_name: null,
+      auth_user,
+      bearer_token,
+    });
 
-const userId = logUserId; // ✅ /api/translate: keyring/vault lookup용
+    const userId = logUserId; // ✅ /api/translate: keyring/vault lookup용
 
     // 1) 필수값 검증
     if (!text || !text.trim()) {
@@ -16594,46 +16826,46 @@ const userId = logUserId; // ✅ /api/translate: keyring/vault lookup용
     }
 
     let deeplKeyFinal = (deepl_key || "").toString().trim() || null;
-let geminiKeyFinal = (gemini_key || "").toString().trim() || null;
+    let geminiKeyFinal = (gemini_key || "").toString().trim() || null;
 
-// ✅ userId가 있을 때만 DB에서 vault/keyring 상태를 확인
-let geminiKeysCount = 0;
+    // ✅ userId가 있을 때만 DB에서 vault/keyring 상태를 확인
+    let geminiKeysCount = 0;
 
-if (userId) {
-  const row = await loadUserSecretsRow(userId);
-  const s = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
+    if (userId) {
+      const row = await loadUserSecretsRow(userId);
+      const s = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
 
-  // DeepL 키가 body에 없으면 vault에서
-  if (!deeplKeyFinal) {
-    const v = decryptIntegrationsSecrets(s);
-    deeplKeyFinal = (v.deepl_key || "").toString().trim() || null;
-  }
+      // DeepL 키가 body에 없으면 vault에서
+      if (!deeplKeyFinal) {
+        const v = decryptIntegrationsSecrets(s);
+        deeplKeyFinal = (v.deepl_key || "").toString().trim() || null;
+      }
 
-  // ✅ keyring에 실제 Gemini 키가 “존재”할 때만 keyring 사용 가능
-  geminiKeysCount = (s?.gemini?.keyring?.keys || []).length;
-}
+      // ✅ keyring에 실제 Gemini 키가 “존재”할 때만 keyring 사용 가능
+      geminiKeysCount = (s?.gemini?.keyring?.keys || []).length;
+    }
 
-// ✅ Gemini 사용 가능 조건을 “userId 존재”가 아니라 “(body gemini_key) 또는 (keyring keysCount>0)”로 엄격화
-const canUseGemini = !!geminiKeyFinal || geminiKeysCount > 0;
+    // ✅ Gemini 사용 가능 조건을 “userId 존재”가 아니라 “(body gemini_key) 또는 (keyring keysCount>0)”로 엄격화
+    const canUseGemini = !!geminiKeyFinal || geminiKeysCount > 0;
 
-// ✅ 최소 하나 필요(DeepL or Gemini)
-if (!deeplKeyFinal && !canUseGemini) {
-  return sendError(
-    res,
-    400,
-    "VALIDATION_ERROR",
-    "deepl_key 또는 gemini_key(또는 DB keyring에 Gemini 키 저장)가 필요합니다.",
-    { userId: userId || null, geminiKeysCount }
-  );
-}
+    // ✅ 최소 하나 필요(DeepL or Gemini)
+    if (!deeplKeyFinal && !canUseGemini) {
+      return sendError(
+        res,
+        400,
+        "VALIDATION_ERROR",
+        "deepl_key 또는 gemini_key(또는 DB keyring에 Gemini 키 저장)가 필요합니다.",
+        { userId: userId || null, geminiKeysCount }
+      );
+    }
 
-// 4) 간단 번역: DeepL 우선, 실패/none이면 Gemini로 fallback (keyring 가능)
-let result = null;
+    // 4) 간단 번역: DeepL 우선, 실패/none이면 Gemini로 fallback (keyring 가능)
+    let result = null;
 
-const tgt = targetLang ? String(targetLang).toUpperCase() : null;
+    const tgt = targetLang ? String(targetLang).toUpperCase() : null;
 
-const geminiTranslate = async () => {
-  const prompt = `
+    const geminiTranslate = async () => {
+      const prompt = `
 You are a professional translator.
 Translate the following text into ${tgt || "EN"}.
 Return ONLY the translated text (no quotes, no markdown).
@@ -16642,108 +16874,108 @@ TEXT:
 ${text}
   `.trim();
 
-  const out = await fetchGeminiSmart({
-    userId: userId,                  // ✅ keyring 사용 가능
-    keyHint: geminiKeyFinal ?? null,  // ✅ body 키가 있으면 hint 1회, 없으면 keyring
-    model: "gemini-2.5-flash",
-    payload: { contents: [{ parts: [{ text: prompt }] }] },
-    opts: { label: "translate:simple" },
-  });
+      const out = await fetchGeminiSmart({
+        userId: userId,                  // ✅ keyring 사용 가능
+        keyHint: geminiKeyFinal ?? null,  // ✅ body 키가 있으면 hint 1회, 없으면 keyring
+        model: "gemini-2.5-flash",
+        payload: { contents: [{ parts: [{ text: prompt }] }] },
+        opts: { label: "translate:simple" },
+      });
 
-  return { text: (out || "").trim(), engine: "gemini", target: tgt };
-};
-
-if (deeplKeyFinal) {
-  // DeepL 우선
-  let deeplErr = null;
-
-  try {
-    result = await translateText(
-      text,
-      tgt || null,
-      deeplKeyFinal ?? null,
-      geminiKeyFinal ?? null
-    );
-  } catch (e) {
-    deeplErr = e;
-    // DeepL이 throw면 일단 "none + 원문"으로 두고, 아래에서 Gemini fallback(가능할 때만)
-    result = { text: String(text ?? "").trim(), engine: "none", target: tgt };
-  }
-
-  // ✅ DeepL 호출 직후(DeepL 결과를 받은 다음)에:
-try {
-  console.log("ℹ️ /api/translate DeepL-after:", {
-    engine: String(result?.engine || ""),
-    status: result?.meta?.status ?? null,
-    base: result?.meta?.base ?? null,
-    error: result?.error ?? null,
-    deeplErr: deeplErr ? (deeplErr.message || String(deeplErr)) : null,
-  });
-} catch {}
-
-  const _in = String(text ?? "").trim();
-
-  // result가 string이거나, {text}/{translated}/{translation} 형태여도 안전하게 읽기
-  const _out0 =
-    typeof result === "string"
-      ? String(result).trim()
-      : String(result?.text ?? result?.translated ?? result?.translation ?? "").trim();
-
-  const _eng0 =
-    typeof result === "object" && result
-      ? String(result?.engine ?? "").toLowerCase()
-      : "";
-
-  const _looksNone0 = (_eng0 === "none" || !_out0 || _out0 === _in);
-
-  // ✅ DeepL이 none/원문이면: "Gemini 사용 가능(canUseGemini)할 때만" fallback
-  if (_looksNone0 && canUseGemini) {
-    result = await geminiTranslate();
-  }
-
-  // 최종 결과 재평가
-  const _out1 =
-    typeof result === "string"
-      ? String(result).trim()
-      : String(result?.text ?? result?.translated ?? result?.translation ?? "").trim();
-
-  const _eng1 =
-    typeof result === "object" && result
-      ? String(result?.engine ?? "").toLowerCase()
-      : "";
-
-  const _looksNone1 = (_eng1 === "none" || !_out1 || _out1 === _in);
-
-  // ✅ 최종도 none/원문이면 성공으로 보내지 말고 에러 처리
-  if (_looksNone1) {
-    const e = new Error("TRANSLATION_NO_ENGINE_EXECUTED");
-    e.code = "TRANSLATION_NO_ENGINE_EXECUTED";
-    e.detail = {
-      deepl_failed: !!deeplErr,
-      deepl_err: deeplErr ? (deeplErr.message || String(deeplErr)) : null,
-      has_deepl: !!deeplKeyFinal,
-      can_use_gemini: !!canUseGemini,
+      return { text: (out || "").trim(), engine: "gemini", target: tgt };
     };
-    throw e;
-  }
 
-  // ✅ 응답에서 result.text를 쓰니까: 결과를 반드시 {text, engine, target}로 정규화
-  if (typeof result === "string") {
-    result = { text: _out1, engine: "deepl", target: tgt };
-  } else if (!result || typeof result !== "object") {
-    result = { text: _out1, engine: "deepl", target: tgt };
-  } else {
-    if (result.text == null) result.text = _out1;
-    if (!result.engine) result.engine = "deepl";
-    if (!result.target) result.target = tgt;
-  }
+    if (deeplKeyFinal) {
+      // DeepL 우선
+      let deeplErr = null;
 
-} else {
-  // DeepL 없으면 Gemini
-  result = await geminiTranslate();
-}
-  
-        // 5) 최종 응답 (표준 포맷: buildSuccess 사용)
+      try {
+        result = await translateText(
+          text,
+          tgt || null,
+          deeplKeyFinal ?? null,
+          geminiKeyFinal ?? null
+        );
+      } catch (e) {
+        deeplErr = e;
+        // DeepL이 throw면 일단 "none + 원문"으로 두고, 아래에서 Gemini fallback(가능할 때만)
+        result = { text: String(text ?? "").trim(), engine: "none", target: tgt };
+      }
+
+      // ✅ DeepL 호출 직후(DeepL 결과를 받은 다음)에:
+      try {
+        console.log("ℹ️ /api/translate DeepL-after:", {
+          engine: String(result?.engine || ""),
+          status: result?.meta?.status ?? null,
+          base: result?.meta?.base ?? null,
+          error: result?.error ?? null,
+          deeplErr: deeplErr ? (deeplErr.message || String(deeplErr)) : null,
+        });
+      } catch { }
+
+      const _in = String(text ?? "").trim();
+
+      // result가 string이거나, {text}/{translated}/{translation} 형태여도 안전하게 읽기
+      const _out0 =
+        typeof result === "string"
+          ? String(result).trim()
+          : String(result?.text ?? result?.translated ?? result?.translation ?? "").trim();
+
+      const _eng0 =
+        typeof result === "object" && result
+          ? String(result?.engine ?? "").toLowerCase()
+          : "";
+
+      const _looksNone0 = (_eng0 === "none" || !_out0 || _out0 === _in);
+
+      // ✅ DeepL이 none/원문이면: "Gemini 사용 가능(canUseGemini)할 때만" fallback
+      if (_looksNone0 && canUseGemini) {
+        result = await geminiTranslate();
+      }
+
+      // 최종 결과 재평가
+      const _out1 =
+        typeof result === "string"
+          ? String(result).trim()
+          : String(result?.text ?? result?.translated ?? result?.translation ?? "").trim();
+
+      const _eng1 =
+        typeof result === "object" && result
+          ? String(result?.engine ?? "").toLowerCase()
+          : "";
+
+      const _looksNone1 = (_eng1 === "none" || !_out1 || _out1 === _in);
+
+      // ✅ 최종도 none/원문이면 성공으로 보내지 말고 에러 처리
+      if (_looksNone1) {
+        const e = new Error("TRANSLATION_NO_ENGINE_EXECUTED");
+        e.code = "TRANSLATION_NO_ENGINE_EXECUTED";
+        e.detail = {
+          deepl_failed: !!deeplErr,
+          deepl_err: deeplErr ? (deeplErr.message || String(deeplErr)) : null,
+          has_deepl: !!deeplKeyFinal,
+          can_use_gemini: !!canUseGemini,
+        };
+        throw e;
+      }
+
+      // ✅ 응답에서 result.text를 쓰니까: 결과를 반드시 {text, engine, target}로 정규화
+      if (typeof result === "string") {
+        result = { text: _out1, engine: "deepl", target: tgt };
+      } else if (!result || typeof result !== "object") {
+        result = { text: _out1, engine: "deepl", target: tgt };
+      } else {
+        if (result.text == null) result.text = _out1;
+        if (!result.engine) result.engine = "deepl";
+        if (!result.target) result.target = tgt;
+      }
+
+    } else {
+      // DeepL 없으면 Gemini
+      result = await geminiTranslate();
+    }
+
+    // 5) 최종 응답 (표준 포맷: buildSuccess 사용)
     return res.json(
       buildSuccess({
         translated: result.text,
@@ -16755,7 +16987,7 @@ try {
     console.error("❌ /api/translate Error:", e.message);
     console.error("❌ /api/translate stack:", e?.stack || e);
 
-        // ✅ 번역 에러도 verification_logs 에 남겨두기 (mode = 'translate')
+    // ✅ 번역 에러도 verification_logs 에 남겨두기 (mode = 'translate')
     try {
       const b = getJsonBody(req);
       const textRaw =
@@ -16902,58 +17134,58 @@ app.post("/api/docs/analyze", async (req, res) => {
 
     const {
       user_id,
-  mode,
-  task,
-  text,
-  chunk_index,
-  total_chunks,
-  page_range,
-  source_lang,
-  target_lang,
-  deepl_key,
-  gemini_key,
-} = req.body;
+      mode,
+      task,
+      text,
+      chunk_index,
+      total_chunks,
+      page_range,
+      source_lang,
+      target_lang,
+      deepl_key,
+      gemini_key,
+    } = req.body;
 
-        // ✅ docs/analyze: Supabase Bearer로 userId(키링용) 해석
+    // ✅ docs/analyze: Supabase Bearer로 userId(키링용) 해석
     const auth_user = await getSupabaseAuthUser(req);
     const bearer_token = getBearerToken(req);
 
     const logUserId = await resolveLogUserId({
-  user_id: user_id ?? null,
-  user_email: null,
-  user_name: null,
-  auth_user,
-  bearer_token,
-});
+      user_id: user_id ?? null,
+      user_email: null,
+      user_name: null,
+      auth_user,
+      bearer_token,
+    });
 
-const userId = logUserId; // ✅ docs/analyze: keyring/vault 용 userId (1회 resolve 결과)
+    const userId = logUserId; // ✅ docs/analyze: keyring/vault 용 userId (1회 resolve 결과)
 
     // ✅ body gemini_key는 "힌트(1회)" 용도. 없으면 DB keyring 사용
-let geminiKeyFinal = (gemini_key || "").toString().trim() || null;
-let deeplKeyFinal = (deepl_key || "").toString().trim() || null;
+    let geminiKeyFinal = (gemini_key || "").toString().trim() || null;
+    let deeplKeyFinal = (deepl_key || "").toString().trim() || null;
 
-let geminiKeysCount = 0;
+    let geminiKeysCount = 0;
 
-if (logUserId) {
-  const row = await loadUserSecretsRow(logUserId);
-  const s = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
+    if (logUserId) {
+      const row = await loadUserSecretsRow(logUserId);
+      const s = _ensureIntegrationsSecretsShape(_ensureGeminiSecretsShape(row.secrets));
 
-  if (!deeplKeyFinal) {
-    const v = decryptIntegrationsSecrets(s);
-    deeplKeyFinal = (v.deepl_key || "").toString().trim() || null;
-  }
+      if (!deeplKeyFinal) {
+        const v = decryptIntegrationsSecrets(s);
+        deeplKeyFinal = (v.deepl_key || "").toString().trim() || null;
+      }
 
-  geminiKeysCount = (s?.gemini?.keyring?.keys || []).length;
-}
+      geminiKeysCount = (s?.gemini?.keyring?.keys || []).length;
+    }
 
     const canUseGemini = !!geminiKeyFinal || geminiKeysCount > 0;
     console.log("ℹ️ /api/docs/analyze key-state:", {
-    userId: userId || null,
-    has_deepl: !!deeplKeyFinal,
-    deepl_len: deeplKeyFinal ? String(deeplKeyFinal).length : 0,
-    geminiKeysCount,
-    has_gemini_body: !!geminiKeyFinal,
-    canUseGemini,
+      userId: userId || null,
+      has_deepl: !!deeplKeyFinal,
+      deepl_len: deeplKeyFinal ? String(deeplKeyFinal).length : 0,
+      geminiKeysCount,
+      has_gemini_body: !!geminiKeyFinal,
+      canUseGemini,
     });
 
     const safeMode = (mode || "chunk").toString().toLowerCase();
@@ -17034,17 +17266,17 @@ if (logUserId) {
     let translateResult = null;
 
     // ✅ (핵심) translateResult에 최종 번역 결과를 반드시 저장 (응답에서 사용)
-translateResult = {
-  text: String(tr?.text ?? tr?.translated ?? tr?.translation ?? "").trim(),
-  engine: String(tr?.engine ?? "none"),
-  targetLang:
-    (String(tr?.targetLang ?? tr?.target ?? __docTgtLang).trim().toUpperCase() || __docTgtLang),
-};
+    translateResult = {
+      text: String(tr?.text ?? tr?.translated ?? tr?.translation ?? "").trim(),
+      engine: String(tr?.engine ?? "none"),
+      targetLang:
+        (String(tr?.targetLang ?? tr?.target ?? __docTgtLang).trim().toUpperCase() || __docTgtLang),
+    };
 
     // ─────────────────────────────
     // 1) 요약 (Gemini 2.5 Flash)
     // ─────────────────────────────
-        if (wantsSummary && canUseGemini) {
+    if (wantsSummary && canUseGemini) {
       const modeLabel =
         safeMode === "chunk" ? "부분(chunk) 요약" : "최종 요약";
 
@@ -17076,7 +17308,7 @@ translateResult = {
 ${safeText}
       `.trim();
 
-         const summaryText = await fetchGeminiSmart({
+      const summaryText = await fetchGeminiSmart({
         userId: logUserId,
         keyHint: geminiKeyFinal ?? null,
         model: "gemini-2.5-flash",
@@ -17085,19 +17317,19 @@ ${safeText}
       summaryResult = (summaryText || "").trim();
     }
 
-// 2) 번역 (DeepL 우선 → none/원문이면 Gemini fallback)
-let tr = null;
+    // 2) 번역 (DeepL 우선 → none/원문이면 Gemini fallback)
+    let tr = null;
 
-// docs/analyze용 타겟 언어(normalize)
-const __docTgtLang = (() => {
-  const raw =
-    (req.body?.target_lang ?? req.body?.targetLang ?? "EN");
-  return String(raw).trim().toUpperCase() || "EN";
-})();
+    // docs/analyze용 타겟 언어(normalize)
+    const __docTgtLang = (() => {
+      const raw =
+        (req.body?.target_lang ?? req.body?.targetLang ?? "EN");
+      return String(raw).trim().toUpperCase() || "EN";
+    })();
 
-// Gemini 번역 헬퍼
-const __geminiTranslateDoc = async (srcText) => {
-  const prompt = `
+    // Gemini 번역 헬퍼
+    const __geminiTranslateDoc = async (srcText) => {
+      const prompt = `
 You are a professional translator.
 Translate the following text into ${__docTgtLang}.
 Return ONLY the translated text (no quotes, no markdown).
@@ -17106,112 +17338,112 @@ TEXT:
 ${srcText}
   `.trim();
 
-  const out = await fetchGeminiSmart({
-    userId,
-    keyHint: geminiKeyFinal ?? null,  // body에 있으면 힌트, 없으면 keyring
-    model: "gemini-2.5-flash",
-    payload: { contents: [{ parts: [{ text: prompt }] }] },
-    opts: { label: "docs:translate" },
-  });
+      const out = await fetchGeminiSmart({
+        userId,
+        keyHint: geminiKeyFinal ?? null,  // body에 있으면 힌트, 없으면 keyring
+        model: "gemini-2.5-flash",
+        payload: { contents: [{ parts: [{ text: prompt }] }] },
+        opts: { label: "docs:translate" },
+      });
 
-  return {
-    text: (out || "").trim(),
-    engine: "gemini",
-    targetLang: __docTgtLang,
-  };
-};
-
-if (wantsTranslate) {
-  const _in = String(safeText ?? text ?? "").trim();
-
-  // 1) DeepL 먼저 시도
-  if (deeplKeyFinal) {
-    try {
-      tr = await translateText(
-  safeText,
-  __docTgtLang,
-  deeplKeyFinal ?? null,
-  geminiKeyFinal ?? null
-  
-);
-    } catch (e) {
-      // DeepL이 예외 던지면 "none + 원문"으로 두고 아래에서 평가
-      tr = {
-        text: _in,
-        engine: "none",
+      return {
+        text: (out || "").trim(),
+        engine: "gemini",
         targetLang: __docTgtLang,
-        error: `DEEPL_EXCEPTION:${e?.message || String(e)}`,
       };
+    };
+
+    if (wantsTranslate) {
+      const _in = String(safeText ?? text ?? "").trim();
+
+      // 1) DeepL 먼저 시도
+      if (deeplKeyFinal) {
+        try {
+          tr = await translateText(
+            safeText,
+            __docTgtLang,
+            deeplKeyFinal ?? null,
+            geminiKeyFinal ?? null
+
+          );
+        } catch (e) {
+          // DeepL이 예외 던지면 "none + 원문"으로 두고 아래에서 평가
+          tr = {
+            text: _in,
+            engine: "none",
+            targetLang: __docTgtLang,
+            error: `DEEPL_EXCEPTION:${e?.message || String(e)}`,
+          };
+        }
+        // ✅ (핵심) translateResult에 최종 번역 결과를 반드시 저장 (응답에서 사용)
+        translateResult = {
+          text: String(tr?.text ?? tr?.translated ?? tr?.translation ?? "").trim(),
+          engine: String(tr?.engine ?? "none"),
+          targetLang: (String(tr?.targetLang ?? tr?.target ?? __docTgtLang).trim().toUpperCase() || __docTgtLang),
+        };
+      }
+
+      // 2) DeepL 결과 평가
+      const _out0 =
+        typeof tr === "string"
+          ? String(tr).trim()
+          : String(tr?.text ?? tr?.translated ?? tr?.translation ?? "").trim();
+
+      const _eng0 =
+        typeof tr === "object" && tr
+          ? String(tr?.engine ?? "").toLowerCase()
+          : "";
+
+      const _looksNone0 = (_eng0 === "none" || !_out0 || _out0 === _in);
+
+      // 3) none/원문 + Gemini 사용 가능하면 fallback
+      if (_looksNone0 && canUseGemini) {
+        tr = await __geminiTranslateDoc(safeText);
+      }
+
+      // 4) 최종 평가
+      const _out1 =
+        typeof tr === "string"
+          ? String(tr).trim()
+          : String(tr?.text ?? tr?.translated ?? tr?.translation ?? "").trim();
+
+      const _eng1 =
+        typeof tr === "object" && tr
+          ? String(tr?.engine ?? "").toLowerCase()
+          : "";
+
+      const _looksNone1 = (_eng1 === "none" || !_out1 || _out1 === _in);
+
+      if (_looksNone1) {
+        const e = new Error("TRANSLATION_NO_ENGINE_EXECUTED");
+        e.code = "TRANSLATION_NO_ENGINE_EXECUTED";
+        e.detail = {
+          has_deepl: !!deeplKeyFinal,
+          can_use_gemini: !!canUseGemini,
+          target: __docTgtLang,
+        };
+        throw e;
+      }
+
+      // 5) tr 정규화 (응답에서 tr.text / tr.engine / tr.targetLang 쓰기 편하게)
+      if (typeof tr === "string") {
+        tr = {
+          text: _out1,
+          engine: deeplKeyFinal ? "deepl" : "gemini",
+          targetLang: __docTgtLang,
+        };
+      } else if (!tr || typeof tr !== "object") {
+        tr = {
+          text: _out1,
+          engine: deeplKeyFinal ? "deepl" : "gemini",
+          targetLang: __docTgtLang,
+        };
+      } else {
+        if (tr.text == null) tr.text = _out1;
+        if (!tr.engine) tr.engine = deeplKeyFinal ? "deepl" : "gemini";
+        if (!tr.targetLang) tr.targetLang = __docTgtLang;
+      }
     }
-    // ✅ (핵심) translateResult에 최종 번역 결과를 반드시 저장 (응답에서 사용)
-translateResult = {
-  text: String(tr?.text ?? tr?.translated ?? tr?.translation ?? "").trim(),
-  engine: String(tr?.engine ?? "none"),
-  targetLang: (String(tr?.targetLang ?? tr?.target ?? __docTgtLang).trim().toUpperCase() || __docTgtLang),
-};
-  }
-
-  // 2) DeepL 결과 평가
-  const _out0 =
-    typeof tr === "string"
-      ? String(tr).trim()
-      : String(tr?.text ?? tr?.translated ?? tr?.translation ?? "").trim();
-
-  const _eng0 =
-    typeof tr === "object" && tr
-      ? String(tr?.engine ?? "").toLowerCase()
-      : "";
-
-  const _looksNone0 = (_eng0 === "none" || !_out0 || _out0 === _in);
-
-  // 3) none/원문 + Gemini 사용 가능하면 fallback
-  if (_looksNone0 && canUseGemini) {
-    tr = await __geminiTranslateDoc(safeText);
-  }
-
-  // 4) 최종 평가
-  const _out1 =
-    typeof tr === "string"
-      ? String(tr).trim()
-      : String(tr?.text ?? tr?.translated ?? tr?.translation ?? "").trim();
-
-  const _eng1 =
-    typeof tr === "object" && tr
-      ? String(tr?.engine ?? "").toLowerCase()
-      : "";
-
-  const _looksNone1 = (_eng1 === "none" || !_out1 || _out1 === _in);
-
-  if (_looksNone1) {
-    const e = new Error("TRANSLATION_NO_ENGINE_EXECUTED");
-    e.code = "TRANSLATION_NO_ENGINE_EXECUTED";
-    e.detail = {
-      has_deepl: !!deeplKeyFinal,
-      can_use_gemini: !!canUseGemini,
-      target: __docTgtLang,
-    };
-    throw e;
-  }
-
-  // 5) tr 정규화 (응답에서 tr.text / tr.engine / tr.targetLang 쓰기 편하게)
-  if (typeof tr === "string") {
-    tr = {
-      text: _out1,
-      engine: deeplKeyFinal ? "deepl" : "gemini",
-      targetLang: __docTgtLang,
-    };
-  } else if (!tr || typeof tr !== "object") {
-    tr = {
-      text: _out1,
-      engine: deeplKeyFinal ? "deepl" : "gemini",
-      targetLang: __docTgtLang,
-    };
-  } else {
-    if (tr.text == null) tr.text = _out1;
-    if (!tr.engine) tr.engine = deeplKeyFinal ? "deepl" : "gemini";
-    if (!tr.targetLang) tr.targetLang = __docTgtLang;
-  }
-}
 
     // ─────────────────────────────
     // 3) 응답 페이로드 구성
@@ -17219,20 +17451,20 @@ translateResult = {
     const payload =
       safeMode === "chunk"
         ? {
-            mode: "doc-chunk",
-            chunk_index: chunk_index ?? null,
-            total_chunks: total_chunks ?? null,
-            page_range: page_range || null,
-            summary: summaryResult,
-            translation: translateResult,
-            used_chars: safeText.length,
-          }
+          mode: "doc-chunk",
+          chunk_index: chunk_index ?? null,
+          total_chunks: total_chunks ?? null,
+          page_range: page_range || null,
+          summary: summaryResult,
+          translation: translateResult,
+          used_chars: safeText.length,
+        }
         : {
-            mode: "doc-final",
-            summary: summaryResult,
-            translation: translateResult,
-            used_chars: safeText.length,
-          };
+          mode: "doc-final",
+          summary: summaryResult,
+          translation: translateResult,
+          used_chars: safeText.length,
+        };
 
     return res.json(buildSuccess(payload));
   } catch (e) {
@@ -17464,35 +17696,35 @@ app.get("/admin/ui", ensureAuthOrAdminToken, async (req, res) => {
 
     // ✅ 최근 요청(verification_logs)에서 engine_metrics 읽기
     const { data: recentLogsRaw, error: logsErr } = await supabase
-  .from("verification_logs")
-  .select("created_at, question, truth_score, cross_score, adjusted_score, status, engines, keywords, elapsed, model_main, model_eval, sources, gemini_model, error")
-  .order("created_at", { ascending: false })
-  .limit(10);
+      .from("verification_logs")
+      .select("created_at, question, truth_score, cross_score, adjusted_score, status, engines, keywords, elapsed, model_main, model_eval, sources, gemini_model, error")
+      .order("created_at", { ascending: false })
+      .limit(10);
 
-const recentLogs = (recentLogsRaw || []).map((r) => {
-  let src = r.sources;
-  if (typeof src === "string") {
-    try { src = JSON.parse(src); } catch { src = {}; }
-  }
-  if (!src || typeof src !== "object") src = {};
+    const recentLogs = (recentLogsRaw || []).map((r) => {
+      let src = r.sources;
+      if (typeof src === "string") {
+        try { src = JSON.parse(src); } catch { src = {}; }
+      }
+      if (!src || typeof src !== "object") src = {};
 
-  const ps = (src && typeof src.partial_scores === "object") ? src.partial_scores : {};
+      const ps = (src && typeof src.partial_scores === "object") ? src.partial_scores : {};
 
-  // (기존 EJS 호환용으로 query/mode 같은 키를 억지로 만들어 주고 싶으면)
-  return {
-    ...r,
-    query: r.question,              // ✅ 기존 template이 r.query를 쓰면 깨져서
-    mode: r.status,                // ✅ 기존 template이 r.mode를 쓰면 깨져서
-    partial_scores_obj: ps,         // ✅ 기존 로직 유지
-    sources_obj: src,
-  };
-});
+      // (기존 EJS 호환용으로 query/mode 같은 키를 억지로 만들어 주고 싶으면)
+      return {
+        ...r,
+        query: r.question,              // ✅ 기존 template이 r.query를 쓰면 깨져서
+        mode: r.status,                // ✅ 기존 template이 r.mode를 쓰면 깨져서
+        partial_scores_obj: ps,         // ✅ 기존 로직 유지
+        sources_obj: src,
+      };
+    });
 
     const lastRequest = recentLogs[0] || null;
     const em = lastRequest?.partial_scores_obj?.engine_metrics || {};
     const et = lastRequest?.partial_scores_obj?.engine_times || {};
-const gm = lastRequest?.partial_scores_obj?.gemini_metrics || {};
-const gt = lastRequest?.partial_scores_obj?.gemini_times || {};
+    const gm = lastRequest?.partial_scores_obj?.gemini_metrics || {};
+    const gt = lastRequest?.partial_scores_obj?.gemini_times || {};
 
     const lastEngineMetricsRows = Object.entries(em).map(([engine, m]) => ({
       engine,
@@ -17507,7 +17739,7 @@ const gt = lastRequest?.partial_scores_obj?.gemini_times || {};
       ms,
     }));
 
-   return res.render("admin-dashboard", {
+    return res.render("admin-dashboard", {
       user: req.user || null,
       region: REGION,
       httpTimeoutMs: HTTP_TIMEOUT_MS,
@@ -17522,9 +17754,9 @@ const gt = lastRequest?.partial_scores_obj?.gemini_times || {};
       // ✅ EJS에서 쓰는 원본 객체(네가 만든 EJS 기준)
       lastEngineMetrics: em,
       lastEngineTimes: et,
- 
- lastGeminiMetrics: gm,
-  lastGeminiTimes: gt,
+
+      lastGeminiMetrics: gm,
+      lastGeminiTimes: gt,
 
       // (선택) rows가 필요하면 유지
       lastEngineMetricsRows,
@@ -17575,7 +17807,7 @@ app.get("/health", async (req, res) => {
   let enc_diag = null;
 
   if (diag) {
-    try { pac = await getPacificResetInfoCached(); } catch {}
+    try { pac = await getPacificResetInfoCached(); } catch { }
     try { enc_diag = getEncKeyDiagInfo(); } catch (e) {
       enc_diag = {
         ok: false,
@@ -17827,7 +18059,7 @@ app.use((err, req, res, next) => {
     );
   }
 
-    // ✅ Gemini rate-limit 백스톱: status/headers를 전역에서 보장
+  // ✅ Gemini rate-limit 백스톱: status/headers를 전역에서 보장
   const statusBase = err?.httpStatus || err?.status || 500;
   const status = err?.code === "GEMINI_RATE_LIMIT" ? 429 : statusBase;
 
@@ -17836,8 +18068,8 @@ app.use((err, req, res, next) => {
     const ms = Number(err?.detail?.retry_after_ms);
     if (Number.isFinite(ms) && ms > 0) {
       const sec = Math.max(1, Math.ceil(ms / 1000));
-      try { res.set("Retry-After", String(sec)); } catch {}
-      try { res.set("X-Retry-After-Ms", String(Math.ceil(ms))); } catch {}
+      try { res.set("Retry-After", String(sec)); } catch { }
+      try { res.set("X-Retry-After-Ms", String(Math.ceil(ms))); } catch { }
     }
   }
 

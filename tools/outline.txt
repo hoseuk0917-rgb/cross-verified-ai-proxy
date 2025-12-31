@@ -1,0 +1,411 @@
+﻿     6: function __printFatal(tag, err) {
+    61: function _normTargetLang(t) {
+    67: function _deeplBaseForKey(key) {
+   180: function sleep(ms) {
+   211: function isRetryable(err) {
+   259: function maskToken(t) {
+   265: function redactText(input) {
+   296: function redactAny(x, depth = 0) {
+   324: function installConsoleRedactor() {
+   358: app.use(express.json({ limit: "10mb" }));
+   359: app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+   378: function pickDatabaseUrl() {
+   444: function _isPgTerminationError(err) {
+   477: function _createPgPool() {
+   534: function _attachRememberedListeners(pool) {
+   545: function _withTimeout(promise, timeoutMs, label = "timeout") {
+   699: function _isPgSessionTransientError(err) {
+   724: function _buildSessionStore() {
+   812: app.use(
+  1031: function resolveEngineSetFromFields(topicFields, options = {}) {
+  1127: app.use(cors(corsOptions));
+  1133: function redactUrl(u) {
+  1157: app.use(
+  1176: app.use((err, req, res, next) => {
+  1197: app.post(
+  1335: function getBasePath(req) {
+  1340: function shouldSkipMorgan(req) {
+  1360: app.use(
+  1371: function buildSuccess(data) {
+  1379: function buildError(code, message, detail = null) {
+  1406: function hash16(s) {
+  1419: function makeVerifyCacheKey({ mode, query, rawQuery, user_answer, answerText, key_uuid }) {
+  1433: function verifyCacheGet(key) {
+  1440: const ttl = (() => {
+  1451: function verifyCacheSet(key, payload) {
+  1466: function makeFixedWindowLimiter({ windowMs, max, keyFn, name }) {
+  1532: function enforceVerifyPayloadLimits(req, res, next) {
+  1595: function isAdminOverride(req) {
+  1601: function guardProdKeyUuid(req, res, next) {
+  1623: function ensureAuthOrAdminToken(req, res, next) {
+  1641: function requireAdminToken(req, res, next) {
+  1650: function blockDevRoutesInProd(req, res, next) {
+  1661: function maybeTruncateText(s) {
+  1669: function safeSourcesForDB(obj, maxLen = 20000) {
+  1732: function safeVerifyInputForGemini(input, maxLen) {
+  1735: const tryStr = (obj) => {
+  1744: const cutStr = (v, n) => {
+  1751: const pickUrl = (x) => {
+  1775: const hostFromUrl = (u) => {
+  1779: const tierScore = (t) => {
+  1860: const buildSlimExternal = (ext) => {
+  1868: const ordered = (() => {
+  1886: const slimItem = (engine, x) => {
+  2063: function _fetchWithTimeout(url, options = {}) {
+  2110: function _sha256_16(buf) {
+  2118: function _parseEncKeyRaw(raw) {
+  2145: function _collectEncKeyCandidates() {
+  2228: function _getEncKey() {
+  2234: function encryptSecret(plaintext) {
+  2252: function decryptSecret(enc) {
+  2310: function getEncKeyDiagInfo() {
+  2321: const sha16 = (buf) => {
+  2329: const parseKey = (raw) => {
+  2498: function _ensureGeminiSecretsShape(secrets) {
+  2535: function _ensureIntegrationsSecretsShape(secrets) {
+  2553: function _setEncOrClear(obj, field, value) {
+  2563: function _getDec(obj, field) {
+  2569: function applyIntegrationsSecretPatch(secrets, patch = {}) {
+  2584: function decryptIntegrationsSecrets(secrets) {
+  2600: function _rotateKeyId(keys, currentId) {
+  2607: function _geminiHttpStatus(e) {
+  2611: function _isGeminiRateLimit(e) {
+  2615: function _isGeminiAuthKeyInvalid(e) {
+  2624: function _parseGeminiRetryAfterMs(e) {
+  2667: function pickGeminiKeyCandidate(secrets) {
+  2744: function getGeminiGlobalCooldownMs(secrets) {
+  3019: function getBearerToken(req) {
+  3026: function getJsonBody(req) {
+  3037: function getClientIp(req) {
+  3075: function markAdminRequest(kind, extra = {}) {
+  3093: function pushAdminError(entry) {
+  3111: function getNaverWhitelistStatus() {
+  3139: function _getClientKey(req, scope) {
+  3153: function makeRateLimiter(scope, maxPerWindow) {
+  3218: function isUuid(v) {
+  3304: function expDecay(days) {
+  3308: function parseGdeltSeenDate(seen) {
+  3324: function calcRecencyScore(gdeltArticles = []) {
+  3339: function clamp01(x) {
+  3344: function expDecayDays(days, tauDays = 90) {
+  3348: function parseNaverPubDate(pubDate) {
+  3354: function scoreFromDateMs(tMs, tauDays = 90) {
+  3363: function calcNewsRecencyScore(gdeltArticles = [], naverItems = []) {
+  3390: function extractPaperYear(x) {
+  3405: function calcPaperRecencyScore(papers = []) {
+  3424: function calcGithubRecencyScore(repos = []) {
+  3439: function calcCompositeRecency({ mode, gdelt = [], naver = [], crossref = [], openalex = [], github = [] }) {
+  3485: function sendError(res, httpStatus, code, message, detail = null) {
+  3515: function __isAdminMailConfigured() {
+  3601: function __looksLikeInvalidGrant(err) {
+  3661: app.use(passport.initialize());
+  3662: app.use(passport.session());
+  3664: function ensureAuth(req, res, next) {
+  3683: function isDiagAuthorized(req) {
+  3688: function requireDiag(req, res, next) {
+  3715: app.use(blockDevRoutesInProd);
+  3719: app.post("/api/dev/seed-secrets", (req, res) =>
+  3723: app.post("/api/dev/seed-secrets", async (req, res) => {
+  3801: const _dedupeKeysByPlain = (arr) => {
+  3887: app.post("/api/settings/save", async (req, res) => {
+  3908: const body0 = (() => {
+  4050: const _dedupeKeysByPlain = (arr) => {
+  4144: app.get("/api/settings/gemini/status", async (req, res) => {
+  4222: app.get("/api/settings/groq/status", async (req, res) => {
+  4364: app.get(
+  4368: app.get(
+  4376: app.get("/auth/failure", (_, res) =>
+  4395: function loadAgencyDomainMap() {
+  4468: function __normalizeWhitelistJson(json) {
+  4506: function __summarizeTierCounts(wl) {
+  4518: function __diffWhitelist(oldWl, newWl) {
+  4550: function __isWhitelistMailConfigured() {
+  4784: function _stripWww(host) {
+  4788: function _hostFromUrlish(urlish) {
+  4801: function hostLooksOfficial(host) {
+  4815: function _hostMatchesDomain(host, domain) {
+  4827: function __isEvidenceCountable(ev) {
+  4837: function __calcEngineEvidenceCounts(blocksForVerify) {
+  4858: function __getEffectiveEngines(enginesRequested, counts) {
+  4867: function loadNaverWhitelist() {
+  4989: function getNaverWhitelistMeta() {
+  5046: function _applyBiasPenalty(host, baseWeight, wl) {
+  5079: function resolveNaverTier(urlOrHost) {
+  5138: function uniqStrings(arr, max = 50) {
+  5152: function dedupeByLink(items = []) {
+  5165: function __resolveEnginesRequestedFromReq({ req, partial_scores, engines, safeMode }) {
+  5221: function computeEnginesUsed({ enginesRequested, partial_scores, engineMetrics }) {
+  5228: const hasQuery = (eng) => {
+  5235: const callsOf = (eng) => {
+  5240: const resultsOf = (eng) => {
+  5264: function engineQueriesPresent(q) {
+  5326: function ensureMetric(engineMetrics, name) {
+  5333: function recordTime(timesObj, name, ms) {
+  5338: function recordMetric(metricsObj, name, ms) {
+  5375: function sanitizeNaverQuery(q) {
+  5382: function normalizeNaverToken(t) {
+  5423: const requiredHits = (() => {
+  5679: const __minChars = (() => {
+  5687: const __timeout = (() => {
+  5696: const __maxrecords = (() => {
+  5722: function sanitizeGithubQuery(q, userText = "") {
+  5739: function buildGithubDebugInput({ mode, query, rawQuery, user_answer, answerText, ghUserText }) {
+  5758: function isBigCuratedListRepo(r) {
+  5823: const __hasGithubQualifiers = (s) => {
+  5838: const __normalizeGithubRepoQuery = (qq) => {
+  5872: const run = async (pageNo, opts = {}) => {
+  5998: function isRelevantGithubRepo(r) {
+  6039: function isRelevantGithubRepoDV(r) {
+  6046: function extractGeminiText(data) {
+  6052: function geminiErrMessage(e) {
+  6065: function getGeminiTimeoutMs(model, opts = {}) {
+  6095: function getGeminiMemoryCooldownMs() {
+  6101: function bumpGeminiMemoryCooldown(raMs) {
+  6295: const _mergedErrMsg = (e) => {
+  6302: const _isInvalidKey = (e) => {
+  6310: const _isOverloaded = (e) => {
+  6316: const _parseRetryAfterMs = (e) => {
+  6345: const _note429 = (raMs) => {
+  6351: const _throwOverloaded200 = (e, modelUsed) => {
+  6369: const _maybeLiteModel = (m) => {
+  6671: function calcValidityScore(gitItems = []) {
+  6812: const __setDbg = (k, v) => {
+  6818: const __parseQueriesJson = (text) => {
+  7115: function normalizeKoreanQuestion(raw) {
+  7120: function splitIntoTwoParts(text) {
+  7142: function clipBlockText(s, max = 260) {
+  7148: function buildNaverAndQuery(baseKo) {
+  7155: function normSpace(s) {
+  7159: function limitChars(s, n) {
+  7165: function fallbackNaverQueryFromText(seed) {
+  7185: function topArr(arr, k) {
+  7213: function normalizeNumToken(s) {
+  7226: function extractQuantNumberTokens(text) {
+  7284: function hasNumberLike(text) {
+  7301: function hasStrongNumberLike(text) {
+  7323: function hostFromUrl(u = "") {
+  7327: function isTrustedNumericEvidenceItem(x) {
+  7346: function extractYearTokens(text) {
+  7354: function countTokenHits(tokens, hayText) {
+  7384: function isSafeExternalHttpUrl(u) {
+  7407: function stripHtmlToText(html) {
+  7417: function makeNumberTokens(blockText) {
+  7424: function extractExcerptContainingNumbers(pageText, blockText, maxChars = 700) {
+  7461: const __URL_FETCH_TIMEOUT_MS = (() => {
+  7466: const __URL_FETCH_MAX_BYTES = (() => {
+  7472: const __URL_FETCH_MAX_REDIRECTS = (() => {
+  7477: function __isSafePublicHost(h0) {
+  7619: function isTimeSensitiveText(text) {
+  7632: function extractKeywords(text, max = 12) {
+  7661: function keywordHitRatio(haystack, keywords) {
+  7675: function pickTopNaverEvidenceForVerify({
+  7708: const __getHostFromUrl = (u = "") => {
+  7723: const __hitCount = (haystack, keywords) => {
+  7735: const __minHits = (kwLen) => {
+  8181: const __extractJsonText = (s) => {
+  8187: function __cleanAcademicQuery(s) {
+  8206: const __normalizeParsed = (parsedObj, meta) => {
+  8230: const __normDomains0 = (raw) => {
+  8259: const __inferDomains0 = () => {
+  8362: const __normPreferredDomains0 = (pd) => {
+  8384: const __extractHostFromText0 = (t) => {
+  8402: const __loadAgencyDomainMap0 = () => {
+  8459: const __pushDomains = (v) => {
+  8542: const __year = (() => {
+  8547: const __cleanNaverQ = (s) => {
+  8561: const __dedupeNaver = (arr) => {
+  8575: const __mkYearNaverQ = (seed) => {
+  8607: const __isOfficialHostPattern0 = (h) => {
+  8612: const __getNaverWhitelistHostSet0 = () => {
+  8638: const pushHost = (v) => {
+  8697: const __isAllowedPreferredHost0 = (h) => {
+  8721: const __pickPreferredHosts0 = () => {
+  8739: const __makePreferredDomainSiteQueries0 = (seedText) => {
+  8759: const __applyNaverDomainPolicy0 = (naverArrIn, seedForSite) => {
+  8760: const __stripSiteTokens0 = (q) => {
+  8802: const __normalizePreRouterPlan = (rpRaw) => {
+  9029: const __getGroqKeyForPre = async () => {
+  9061: const uid = (() => {
+  9105: const __fetchGroqPre = async ({ model, promptText, timeoutMs }) => {
+  9118: const __buildBody = ({ withJsonMode }) => {
+  9214: const __tryGroqPreOnce = async ({ model, tag }) => {
+  9384: const __isNumericQ = (s) => {
+  9417: const __cleanNaverSeed = (s) => {
+  9428: const makeBlock = (id, txt) => {
+  9442: const __year = (() => {
+  9447: const __dedupeQ = (arr) => {
+  9462: const __stripSiteToken0 = (v) => {
+  9471: const __stripSiteArr0 = (arrIn) => {
+  9542: const __mkYearQ = (seed) => {
+  9581: const preferred_domains_fallback = (() => {
+  9593: const __normPD = (pd) => {
+  9615: const __extractHostFromText = (t) => {
+  9666: const __pushDomains = (val) => {
+  9804: function getEngineGlobalCRange() {
+  9832: function computeEngineCorrectionFactor(engines = [], statsMap = {}) {
+  9870: function snippetToVerifyBody(req, res, next) {
+  9941: function extractJsonObjectFromText(raw) {
+  9997: function normalizeUrlKey(u) {
+ 10017: function collectExternalEvidenceUrls(external, opts) {
+ 10059: function scrubUnknownUrlsInText(text, allowedUrls) {
+ 10074: function scrubVerifyMetaUnknownUrls(verifyMeta, allowedUrls) {
+ 10106: function normalizeEnginesRequested(engines_requested, engine_metrics) {
+ 10121: const verifyCoreHandler = async (req, res) => {
+ 10124: const addLog = (step, msg) => {
+ 10289: const __URL_FETCH_TIMEOUT_MS = (() => {
+ 10294: const __URL_FETCH_MAX_BYTES = (() => {
+ 10300: const __URL_FETCH_MAX_REDIRECTS = (() => {
+ 10305: function __isSafePublicHost(h0) {
+ 10691: function __buildRouterPlanPublicFinal({ safeMode, rawMode, routerPlan, runLvExtra }) {
+ 10734: function __looksLegalLike(s) {
+ 10895: const callVerifyLLM = async (payload, opts = {}) => {
+ 11046: function __uniqStrings(arr, maxN = 0) {
+ 11065: function __loadAgencyDomainMapCached() {
+ 11075: function __expandNaverQueries(baseQueries, seedInfo = {}) {
+ 11100: const __uniq = (arr, max = 50) => {
+ 11120: const __isOfficialPatternHost = (h) => {
+ 11132: const __isWhitelistedHost = (h) => {
+ 11156: const __push = (host, weight, displayOnly) => {
+ 11256: const __collectPreferredCandidates = () => {
+ 11259: const __pushHost = (h) => {
+ 11380: const preferredCandidates = (() => {
+ 11388: const __pickPinnedHost = (q, idx = 0, usedSet = null) => {
+ 11473: const __makePinnedSiteQuery = (host, q) => {
+ 11554: const __maybeBuildAnd = (s) => {
+ 11567: const __capStr = (s, n) => {
+ 11580: const __siteKey = (q0) => {
+ 11596: const __siteHostOnly = (q0) => {
+ 11608: const __trustedSiteKeySet = (() => {
+ 11622: const __trustedSiteHostSet = (() => {
+ 11653: const __finalizeOne = (q0) => {
+ 11787: function _looksLegalishText(s) {
+ 11828: const __needGeminiKey = (() => {
+ 12308: const __makeBlock = (id, txt) => {
+ 12318: const __year = (() => {
+ 12323: const __dedupeQ = (arr) => {
+ 12337: const __cleanSeed = (s) => {
+ 12369: const __mkYearQ = (seed) => {
+ 12426: const __filterObjKeys = (obj) => {
+ 12544: const __pdInfo2 = (() => {
+ 12556: const __extractHostFromText2 = (t) => {
+ 12594: const __normPreferredDomains2 = (pd) => {
+ 12619: const site_seeds = (() => {
+ 12623: const __tail = (() => {
+ 12663: const __cleanNaverQ2 = (s) => {
+ 12672: const __dedupeNaver2 = (arr) => {
+ 12686: const makeBlock = (id, txt) => {
+ 12690: const __stripSiteTokensNaverQ2 = (arrIn) => {
+ 12708: const __seedNoSite2 = (() => {
+ 12768: const __maxBlocksNormal = (() => {
+ 12772: const __maxBlocksSnippet = (() => {
+ 12825: const __capNum = (v, d) => {
+ 12872: const __capConsume = (name) => {
+ 12900: const __hasStrongOfficialEvidence = (arr) => {
+ 12904: const isOfficialHost = (host) => {
+ 12940: const __tryEarlyStop = (where, packs = {}) => {
+ 12968: const runOrEmpty = async (name, fn, q) => {
+ 13061: const __ensureGdeltGlobal = async (why = "single", ctx = {}) => {
+ 13380: const __toArr = (v) => {
+ 13395: const __extractHostsFromText = (txt) => {
+ 13426: const __getAgencyDomainMap = () => {
+ 13443: const __fromAgencyMap = (() => {
+ 13456: const pushHost = (h) => {
+ 13461: const feedDomains = (v) => {
+ 13472: const __hayHasName = (hayL, name0) => {
+ 13528: const __isAllowedPreferredHostMerged = (h0) => {
+ 14037: const _trim = (s, n) => {
+ 14080: const _topK = (arr, k) => {
+ 14096: const blockCounts = (() => {
+ 14113: const __pickTitleAny = (x) => {
+ 14123: const __pickLinkAny = (x) => {
+ 14169: const __pickDateAny = (x) => {
+ 14186: const __hostFrom = (u) => {
+ 14198: const __digestTop = (arr, K, engine) => {
+ 14201: const __sanitizeUrl = (v) => {
+ 14427: function pushGithubRepos(repos) {
+ 14498: const looksObviouslyNonCode = (q) => {
+ 14715: const __cleanGithubSearchQuery = (s) => {
+ 14761: const __uniqCI = (arr, cap = 10) => {
+ 14776: const __expandGithubQueries = (arr0) => {
+ 14778: const __mergeTextUniq = (parts) => {
+ 14986: const githubRepoBlob = (r) => {
+ 14996: const isRelevantGithubRepoDV = (r) => {
+ 15040: const __stripRepoSearchNoise = (s) => {
+ 15052: const __rewriteOwnerRepoForRepoSearch = (s) => {
+ 15175: const needExpressRateLimit = (() => {
+ 15440: const _trim = (s, n) => {
+ 15448: const _pickHost = (it) => {
+ 15460: const _pickStars = (it) => {
+ 15683: const effMode = (() => {
+ 15740: const __getHostFromUrl = (u = "") => {
+ 16168: const cleanEvidenceText = (raw = "") => {
+ 16179: const extractNumericTokens = (text = "") => {
+ 16209: const numericPassForEvidence = (claimTokens, evidenceText) => {
+ 16374: const __canonUrlKey = (u0) => {
+ 16419: const __keyOf = (x) => {
+ 16424: const __clamp01 = (v) => {
+ 16436: const __accPenalty = (p, flags, keyRaw, opts) => {
+ 16467: const evs = (() => {
+ 16491: const evs = (() => {
+ 16705: const __countBlockEvidence = (engineKey) => {
+ 16722: const __collectBlockSoftMeta = (engineKey) => {
+ 16884: const enginesForCorrection = (() => {
+ 17026: const __getGroqKeyForVerify = async () => {
+ 17070: const __fetchGroqVerify = async ({ model, prompt, timeoutMs }) => {
+ 17079: const temperature = (() => {
+ 17084: const max_tokens = (() => {
+ 17130: const __tryGroqVerifyOnce = async ({ model, tag }) => {
+ 17597: const G = (() => {
+ 17616: function __isEvidenceLikeItem(x) {
+ 17659: const __extractEvidenceArrayForEeff = (eng, ext) => {
+ 17718: const E_cov = (() => {
+ 17721: const _num = (v, d) => {
+ 17741: const hasStrongOfficial = (() => {
+ 17743: const isOfficialHost = (host) => {
+ 17806: const effective_engine_item_counts = (() => {
+ 18060: const enginesForWeight = (() => {
+ 18088: const __baseRawForWeight = (() => {
+ 18102: const __spfForWeight = (() => {
+ 18305: const __truthscore_01_raw = (() => {
+ 19310: function __extractReqEmail(req) {
+ 19383: app.get("/api/admin/whitelist-status", requireAdminAccess, (req, res) => {
+ 19418: app.post("/api/admin/whitelist/update", requireDiag, async (req, res) => {
+ 19441: app.get("/api/admin/whitelist/update/last", requireDiag, (req, res) => {
+ 19453: app.post(
+ 19465: app.post(
+ 19477: function rejectLvOnVerify(req, res, next) {
+ 19488: function forceLvMode(req, _res, next) {
+ 19499: const put = (k, v) => {
+ 19524: app.post("/api/lv",
+ 19534: function forceUvMode(req, _res, next) {
+ 19550: const put = (k, v) => {
+ 19579: app.post("/api/uv",
+ 19589: app.post("/api/translate", async (req, res) => {
+ 19656: const geminiTranslate = async () => {
+ 19890: app.post("/api/docs/upload", async (req, res) => {
+ 19928: app.post("/api/docs/analyze", async (req, res) => {
+ 20122: const __docTgtLang = (() => {
+ 20129: const __geminiTranslateDoc = async (srcText) => {
+ 20283: app.get("/api/jobs/:jobId", async (req, res) => {
+ 20300: app.get("/admin/dashboard", ensureAuthOrAdminToken, async (req, res) => {
+ 20312: app.get("/admin/engine-stats", ensureAuthOrAdminToken, async (req, res) => {
+ 20346: app.post("/admin/engine-stats/override", ensureAuthOrAdminToken, express.urlencoded({ extended: true }), async (req, res) => {
+ 20446: app.get("/admin/naver-whitelist", ensureAuthOrAdminToken, async (req, res) => {
+ 20455: app.get("/admin/naver-test-domain", ensureAuthOrAdminToken, (req, res) => {
+ 20478: app.get("/admin/ui", ensureAuthOrAdminToken, async (req, res) => {
+ 20505: const recentLogs = (recentLogsRaw || []).map((r) => {
+ 20582: app.get("/api/test-db", requireDiag, async (_, res) => {
+ 20611: app.get("/api/health", async (req, res) => {
+ 20646: app.get("/", (_, res) => {
+ 20657: app.get("/api/test-session", requireDiag, async (req, res) => {
+ 20710: app.get("/api/admin/status", (req, res) => {
+ 20750: app.get("/api/admin/whitelist/status", requireDiag, (req, res) => {
+ 20759: app.get("/api/check-whitelist", requireDiag, (req, res) => {
+ 20774: app.get("/api/admin/errors/recent", requireDiag, (req, res) => {
+ 20794: app.get("/api/health", (req, res) => {
+ 20806: app.use("/api", (req, res, next) => {
+ 20834: app.use((err, req, res, next) => {
+ 20917: function _parsePort(v, fallback = 3000) {
+ 20925: app.get("/health", (req, res) => {
+ 20932: function toPseudoEmail(uid) {
+ 20939: function _startServer(port, attempt = 0) {

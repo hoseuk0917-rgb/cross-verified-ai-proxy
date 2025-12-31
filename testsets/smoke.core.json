@@ -1,0 +1,79 @@
+{
+  "cases": [
+    {
+      "id": "qv_01_population_kr_2025",
+      "name": "QV 통계(인구)",
+      "endpoint": "/api/verify",
+      "body": { "query": "2025년 한국 인구는?", "mode": "qv" }
+    },
+    {
+      "id": "qv_02_budget",
+      "name": "QV 숫자/예산",
+      "endpoint": "/api/verify",
+      "body": { "query": "2025년 대한민국 정부 예산 총액은?", "mode": "qv" }
+    },
+    {
+      "id": "fv_01_recent_policy",
+      "name": "FV 정책/발표성 문장",
+      "endpoint": "/api/verify-snippet",
+      "body": { "query": "정부는 2025년에 X 정책을 시행했다.", "mode": "fv" }
+    },
+    {
+      "id": "fv_02_company_claim",
+      "name": "FV 기업 주장 문장",
+      "endpoint": "/api/verify-snippet",
+      "body": { "query": "A사는 2025년 매출이 2배 증가했다고 발표했다.", "mode": "fv" }
+    },
+    {
+      "id": "dv_01_trust_proxy",
+      "name": "DV trust proxy/req.ip",
+      "endpoint": "/api/verify",
+      "body": { "query": "server.js에서 express-rate-limit trust proxy 설정 문제 진단", "mode": "dv" }
+    },
+    {
+      "id": "dv_02_session_oauth",
+      "name": "DV OAuth refresh token invalid_grant 원인/조치",
+      "endpoint": "/api/verify",
+      "body": { "query": "Gmail OAuth invalid_grant(리프레시 토큰 만료) 복구 절차와 주의점", "mode": "dv" }
+    },
+    {
+      "id": "cv_01_architecture",
+      "name": "CV 아키텍처 설계",
+      "endpoint": "/api/verify",
+      "body": { "query": "Node.js 서버에서 글로벌 쿨다운+동시성 제한 설계를 어떻게 잡는게 좋을까?", "mode": "cv" }
+    },
+    {
+      "id": "cv_02_security",
+      "name": "CV 보안/운영 리스크",
+      "endpoint": "/api/verify",
+      "body": { "query": "URL 안전 fetch(SSRF/redirect/size 제한) 구현 체크리스트와 코드 구조", "mode": "cv" }
+    },
+    {
+      "id": "dv_03_long_input",
+      "name": "DV 긴 입력(난이도 승격 유도)",
+      "endpoint": "/api/verify",
+      "body": {
+        "query": "Render 배포 환경에서 Gemini 429가 반복될 때 키회전이 오히려 폭증시키는지, 글로벌 쿨다운/백오프/동시성 제한을 어디에 넣어야 하는지 server.js 관점에서 설계하고 구현 포인트를 제시해줘.",
+        "mode": "dv"
+      }
+    },
+    {
+      "id": "qv_03_kosis",
+      "name": "QV KOSIS 접근(네이버/공식근거 유도)",
+      "endpoint": "/api/verify",
+      "body": { "query": "KOSIS에서 제공하는 장래인구추계(중위) 2025년 총인구는?", "mode": "qv" }
+    },
+    {
+      "id": "dv_04_debugging_steps",
+      "name": "DV 디버깅(실행 커맨드 중심)",
+      "endpoint": "/api/verify",
+      "body": { "query": "Node/Express에서 X-Forwarded-For 신뢰 경로를 검증하는 실전 CMD/PowerShell 디버깅 단계", "mode": "dv" }
+    },
+    {
+      "id": "cv_03_refactor_plan",
+      "name": "CV 리팩터링 플랜(전처리 one-shot)",
+      "endpoint": "/api/verify",
+      "body": { "query": "Groq 전처리 one-shot(plan+claims+queries+answer_draft)로 기존 router를 대체하는 리팩터링 순서", "mode": "cv" }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "PRE_DEFAULT":  { "provider": "groq", "pool": ["llama-3.1-8b-instant", "compound-mini"] },
+  "PRE_COMPLEX":  { "provider": "groq", "pool": ["llama-3.3-70b-versatile", "llama-4-scout-17b-16e-instruct"] },
+  "PRE_DEV":      { "provider": "groq", "pool": ["gpt-oss-120b", "llama-3.3-70b-versatile"] },
+
+  "POST_DEFAULT": { "provider": "groq", "pool": ["llama-3.3-70b-versatile", "gpt-oss-20b"] },
+  "POST_HARD":    { "provider": "groq", "pool": ["gpt-oss-120b", "llama-3.3-70b-versatile"] },
+
+  "FALLBACK_GEMINI": { "provider": "gemini", "model": "gemini-2.0-flash", "max_per_request": 1 }
+}

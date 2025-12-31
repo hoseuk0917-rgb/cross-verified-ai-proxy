@@ -1,0 +1,34 @@
+{"name":"health_api","endpoint":"/api/health","method":"GET","expect":{"http_any_of":[200,404]}}
+{"name":"admin_status_public","endpoint":"/api/admin/status","method":"GET","expect":{"http":200}}
+
+{"name":"verify_auto_general_no_mode","endpoint":"/api/verify","method":"POST","body":{"query":"2025년 한국 인구는?"},"expect":{"http":200,"success":true,"mode_any_of":["qv","fv","dv","cv"],"path_exists":["data.engines_requested","data.partial_scores"]}}
+
+{"name":"verify_qv_korean_stat","endpoint":"/api/verify","method":"POST","body":{"query":"2025년 한국 인구는?","mode":"qv"},"expect":{"http":200,"success":true,"mode":"qv","engines_used_min":1,"truthscore_min":0.15,"path_exists":["data.partial_scores.qvfv_pre"]}}
+
+{"name":"verify_qv_english_fact","endpoint":"/api/verify","method":"POST","body":{"query":"What is the capital of Australia?","mode":"qv"},"expect":{"http":200,"success":true,"mode":"qv","engines_used_min":1,"truthscore_min":0.10,"path_exists":["data.partial_scores.qvfv_pre"]}}
+
+{"name":"verify_fv_claim_check","endpoint":"/api/verify","method":"POST","body":{"query":"Claim: The Great Wall of China is visible from space with the naked eye.","mode":"fv"},"expect":{"http":200,"success":true,"mode":"fv","engines_used_min":1,"truthscore_min":0.05,"path_exists":["data.partial_scores.qvfv_pre"]}}
+
+{"name":"verify_snippet_forced_fv","endpoint":"/api/verify-snippet","method":"POST","body":{"snippet":"Korea's population in 2025 is 52 million.","mode":"qv"},"expect":{"http":200,"success":true,"mode":"fv"}}
+
+{"name":"verify_lv_rejected_on_verify","endpoint":"/api/verify","method":"POST","body":{"query":"테스트","mode":"lv"},"expect":{"http":400,"error_code":"LV_ENDPOINT_REQUIRED"}}
+
+{"name":"verify_dv_github_explicit","endpoint":"/api/verify","method":"POST","body":{"query":"server.js에서 express-rate-limit trust proxy 설정 문제 진단","mode":"dv"},"expect":{"http":200,"success":true,"mode":"dv","expect_if":[{"if":{"path":"data.mode","eq":"dv"},"then":{"engines_used_any":["github"]}}]}}
+
+{"name":"verify_cv_github_explicit","endpoint":"/api/verify","method":"POST","body":{"query":"Express/Node에서 trust proxy를 잘못 설정하면 express-rate-limit에서 어떤 문제가 나나? server.js 기준으로 확인","mode":"cv"},"expect":{"http":200,"success":true,"mode":"cv","expect_if":[{"if":{"path":"data.mode","eq":"cv"},"then":{"engines_used_any":["github"]}}]}}
+
+{"name":"verify_auto_code_like_should_route_or_handle","endpoint":"/api/verify","method":"POST","body":{"query":"TypeError: Cannot read properties of undefined (reading 'ip')\n at rateLimitMiddleware (server.js:1234)\n 해결: express-rate-limit + trust proxy 관련","safeMode":"auto"},"expect":{"http":200,"success":true,"mode_any_of":["qv","dv","cv","fv"],"expect_if":[{"if":{"path":"data.mode","in":["dv","cv"]},"then":{"engines_used_any":["github"]}}]}}
+
+{"name":"verify_long_text_should_not_crash","endpoint":"/api/verify","method":"POST","timeout_ms":180000,"body":{"query":"아래 글을 검증 관점에서 핵심 주장만 추려줘. 그리고 각 주장에 필요한 근거 키워드를 제안해줘.\n\n[TEXT]\n"+"이 문서는 테스트용 긴 텍스트입니다. ".repeat(250)+"\n[/TEXT]\n","mode":"qv"},"expect":{"http":200,"success":true,"mode":"qv","path_exists":["data.partial_scores.qvfv_pre"]}}
+
+{"name":"verify_with_snippet_meta_flag_diag","endpoint":"/api/verify","method":"POST","body":{"query":"스니펫 플래그가 들어오면 진단 필드에 is_snippet가 찍히는지 확인","mode":"qv","snippet_meta":{"is_snippet":true,"input_type":"shared_text"}},"expect":{"http":200,"success":true,"mode_any_of":["qv","fv","dv","cv"],"path_exists":["data.partial_scores.router_plan"],"expect_if":[{"if":{"path":"data.partial_scores.router_plan.is_snippet","eq":true},"then":{"success":true}}]}}
+
+{"name":"auth_missing_should_fail","endpoint":"/api/verify","method":"POST","no_auth":true,"body":{"query":"2025년 한국 인구는?","mode":"qv"},"expect":{"http_any_of":[401,403]}}
+
+{"name":"whitelist_status_no_token_should_403","endpoint":"/api/admin/whitelist-status","method":"GET","expect":{"http_any_of":[401,403]}}
+
+{"name":"whitelist_status_with_diag_token_should_200_or_403","endpoint":"/api/admin/whitelist-status","method":"GET","skip_if_env_missing":["DIAG_ADMIN_TOKEN"],"headers":{"X-Admin-Token":"$ENV:DIAG_ADMIN_TOKEN"},"expect":{"http":200}}
+
+{"name":"whitelist_update_no_token_hidden","endpoint":"/api/admin/whitelist/update?force=1","method":"POST","expect":{"http_any_of":[404,401,403]}}
+
+{"name":"whitelist_update_with_diag_token","endpoint":"/api/admin/whitelist/update?force=1","method":"POST","skip_if_env_missing":["DIAG_ADMIN_TOKEN"],"headers":{"X-Admin-Token":"$ENV:DIAG_ADMIN_TOKEN"},"expect":{"http_any_of":[200,404]}}

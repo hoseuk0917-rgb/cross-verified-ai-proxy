@@ -1,1 +1,0 @@
-{"success":false,"code":"GEMINI_KEY_EXHAUSTED","message":"Gemini 키를 사용할 수 없습니다. (쿼터/인증/키링 상태 확인)","timestamp":"2025-12-10T13:41:52.551Z","detail":{"keysCount":1,"pt_date":"2025-12-10","next_reset_utc":"2025-12-11T08:00:00.000Z","last_error":"Request failed with status code 429"}}

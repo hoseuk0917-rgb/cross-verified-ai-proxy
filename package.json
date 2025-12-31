@@ -6,8 +6,10 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "cross-env NODE_ENV=development nodemon server.js",
-    "test": "echo \"No tests configured\""
+    "dev": "cross-env NODE_ENV=development nodemon --ignore config/naver_whitelist.json server.js",
+    "smoke": "node tools/run-testset.mjs testsets/smoke.core.json",
+    "smoke:full": "node tools/run-testset.mjs testsets/smoke.full.json",
+    "test": "node --test"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.80.0",
@@ -29,6 +31,8 @@
     "xml2js": "^0.6.2"
   },
   "devDependencies": {
+    "acorn": "^8.15.0",
+    "acorn-walk": "^8.3.4",
     "cross-env": "^7.0.3",
     "nodemon": "^3.1.10"
   },
@@ -40,7 +44,6 @@
   },
   "keywords": [
     "Cross-Verified-AI",
-    "Gemini-2.5",
     "Render",
     "Supabase",
     "Google-OAuth",

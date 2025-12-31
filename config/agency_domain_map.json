@@ -1,0 +1,112 @@
+{
+  "meta": {
+    "version": "2025-12-26",
+    "note": "Minimal agency->domain seeds. Used only for preferred site pinning."
+  },
+  "agencies": [
+    {
+      "keys": [ "\ud1b5\uacc4\uccad", "kostat", "statistics korea" ],
+      "domains": [ "kostat.go.kr", "stat.go.kr", "kosis.kr" ]
+    },
+    {
+      "keys": [ "KOSIS", "\uad6d\uac00\ud1b5\uacc4\ud3ec\ud138", "korean statistical information service" ],
+      "domains": [ "kosis.kr" ]
+    },
+    {
+      "keys": [ "\ud589\uc815\uc548\uc804\ubd80", "mois", "ministry of the interior and safety" ],
+      "domains": [ "mois.go.kr" ]
+    },
+    {
+      "keys": [ "\uad6d\ud1a0\uad50\ud1b5\ubd80", "molit", "ministry of land, infrastructure and transport" ],
+      "domains": [ "molit.go.kr" ]
+    },
+    {
+      "keys": [ "\uad6d\ud1a0\uad50\ud1b5\uacfc\ud559\uae30\uc220\uc9c4\ud765\uc6d0", "kaia", "kaia.re.kr" ],
+      "domains": [ "kaia.re.kr" ]
+    },
+    {
+      "keys": [ "\uc0b0\uc5c5\ud1b5\uc0c1\uc790\uc6d0\ubd80", "motie", "ministry of trade, industry and energy" ],
+      "domains": [ "motie.go.kr" ]
+    },
+    {
+      "keys": [ "\uacfc\ud559\uae30\uc220\uc815\ubcf4\ud1b5\uc2e0\ubd80", "msit", "ministry of science and ict" ],
+      "domains": [ "msit.go.kr" ]
+    },
+    {
+      "keys": [ "\uae30\ud68d\uc7ac\uc815\ubd80", "mof", "ministry of economy and finance" ],
+      "domains": [ "moef.go.kr" ]
+    },
+    {
+      "keys": [ "\uace0\uc6a9\ub178\ub3d9\ubd80", "moel", "ministry of employment and labor" ],
+      "domains": [ "moel.go.kr" ]
+    },
+    {
+      "keys": [ "\uad50\uc721\ubd80", "moe", "ministry of education" ],
+      "domains": [ "moe.go.kr" ]
+    },
+    {
+      "keys": [ "\ubcf4\uac74\ubcf5\uc9c0\ubd80", "mohw", "ministry of health and welfare" ],
+      "domains": [ "mohw.go.kr" ]
+    },
+    {
+      "keys": [ "\uc9c8\ubcd1\uad00\ub9ac\uccad", "kdca" ],
+      "domains": [ "kdca.go.kr" ]
+    },
+    {
+      "keys": [ "\uc2dd\ud488\uc758\uc57d\ud488\uc548\uc804\ucc98", "mfds" ],
+      "domains": [ "mfds.go.kr" ]
+    },
+    {
+      "keys": [ "\ud658\uacbd\ubd80", "me", "ministry of environment" ],
+      "domains": [ "me.go.kr" ]
+    },
+    {
+      "keys": [ "\uae30\uc0c1\uccad", "kma" ],
+      "domains": [ "kma.go.kr" ]
+    },
+    {
+      "keys": [ "\ubc95\uc81c\ucc98", "moleg" ],
+      "domains": [ "moleg.go.kr" ]
+    },
+    {
+      "keys": [ "\uad6d\uac00\ubc95\ub839\uc815\ubcf4\uc13c\ud130", "law.go.kr", "\ubc95\ub839" ],
+      "domains": [ "law.go.kr" ]
+    },
+    {
+      "keys": [ "\ub300\ubc95\uc6d0", "scourt" ],
+      "domains": [ "scourt.go.kr" ]
+    },
+    {
+      "keys": [ "\ud5cc\ubc95\uc7ac\ud310\uc18c", "ccourt", "\ud5cc\uc7ac" ],
+      "domains": [ "ccourt.go.kr" ]
+    },
+    {
+      "keys": [ "\uad6d\uc138\uccad", "nts" ],
+      "domains": [ "nts.go.kr" ]
+    },
+    {
+      "keys": [ "\uad00\uc138\uccad", "customs" ],
+      "domains": [ "customs.go.kr" ]
+    },
+    {
+      "keys": [ "\uc870\ub2ec\uccad", "pps" ],
+      "domains": [ "pps.go.kr" ]
+    },
+    {
+      "keys": [ "\uacf5\uc815\uac70\ub798\uc704\uc6d0\ud68c", "ftc" ],
+      "domains": [ "ftc.go.kr" ]
+    },
+    {
+      "keys": [ "\uae08\uc735\uc704\uc6d0\ud68c", "fsc" ],
+      "domains": [ "fsc.go.kr" ]
+    },
+    {
+      "keys": [ "\uae08\uc735\uac10\ub3c5\uc6d0", "fss" ],
+      "domains": [ "fss.or.kr" ]
+    },
+    {
+      "keys": [ "\ud55c\uad6d\uc740\ud589", "bok" ],
+      "domains": [ "bok.or.kr" ]
+    }
+  ]
+}

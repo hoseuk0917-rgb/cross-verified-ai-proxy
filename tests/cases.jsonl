@@ -1,0 +1,14 @@
+{"name":"health_api","endpoint":"/api/health","method":"GET","expect":{"http_any_of":[200,404]}}
+{"name":"health_root","endpoint":"/health","method":"GET","expect":{"http_any_of":[200,404]}}
+{"name":"admin_status_public","endpoint":"/api/admin/status","method":"GET","expect":{"http":200}}
+
+{"name":"verify_qv_basic","endpoint":"/api/verify","method":"POST","body":{"query":"2025년 한국 인구는?","mode":"qv"},"expect":{"http":200,"success":true,"mode":"qv","engines_used_min":1,"truthscore_min":0.20}}
+{"name":"verify_dv_github","endpoint":"/api/verify","method":"POST","body":{"query":"server.js에서 express-rate-limit trust proxy 설정 문제 진단","mode":"dv"},"expect":{"http":200,"success":true,"mode":"dv","engines_used_any":["github"]}}
+
+{"name":"verify_snippet_forced_fv","endpoint":"/api/verify-snippet","method":"POST","body":{"snippet":"Korea's population in 2025 is 52 million.","mode":"qv"},"expect":{"http":200,"success":true,"mode":"fv"}}
+
+{"name":"lv_rejected_on_verify","endpoint":"/api/verify","method":"POST","body":{"query":"테스트","mode":"lv"},"expect":{"http":400,"error_code":"LV_ENDPOINT_REQUIRED"}}
+
+{"name":"auth_missing_should_fail","endpoint":"/api/verify","method":"POST","no_auth":true,"body":{"query":"2025년 한국 인구는?","mode":"qv"},"expect":{"http_any_of":[401,403]}}
+
+{"name":"docs_upload_not_supported","endpoint":"/api/docs/upload","method":"POST","body":{"anything":true},"expect":{"http":400,"success":false}}

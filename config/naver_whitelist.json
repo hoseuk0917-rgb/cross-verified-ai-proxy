@@ -11,7 +11,7 @@
   "tiers": {
     "tier1": {
       "description": "정부·공공·국제기관 공식보도 (정책·행정·표준 근거)",
-      "weight": 1.0,
+      "weight": 1,
       "domains": [
         "molit.go.kr",
         "motie.go.kr",
@@ -241,22 +241,42 @@
   },
   "display_only": {
     "description": "표시만 허용(verify/점수 반영 금지)",
-    "domains": [ "namu.wiki" ]
+    "domains": [
+      "namu.wiki"
+    ]
   },
   "bias_penalty": {
     "criteria": {
       "political_bias": -0.05,
       "factcheck_warning": -0.08,
-      "press_arbitration_loss": -0.10,
+      "press_arbitration_loss": -0.1,
       "duplicate_content": -0.03
     },
     "sources": {
-      "chosun.com": [ "political_bias", "factcheck_warning" ],
-      "hani.co.kr": [ "political_bias" ],
-      "ohmynews.com": [ "political_bias", "press_arbitration_loss" ],
-      "pressian.com": [ "press_arbitration_loss" ],
-      "mk.co.kr": [ "duplicate_content" ],
-      "etnews.com": [ "duplicate_content" ]
+      "chosun.com": [
+        "political_bias",
+        "factcheck_warning"
+      ],
+      "hani.co.kr": [
+        "political_bias"
+      ],
+      "ohmynews.com": [
+        "political_bias",
+        "press_arbitration_loss"
+      ],
+      "pressian.com": [
+        "press_arbitration_loss"
+      ],
+      "mk.co.kr": [
+        "duplicate_content"
+      ],
+      "etnews.com": [
+        "duplicate_content"
+      ]
     }
-  }
+  },
+  "display_only_domains": [
+    "namu.wiki"
+  ],
+  "_display_only_set": {}
 }
