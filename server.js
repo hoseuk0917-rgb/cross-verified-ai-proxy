@@ -10257,24 +10257,31 @@ const verifyCoreHandler = async (req, res) => {
 
         try {
           if (String(safeMode || "").toLowerCase() === "uv") {
-            const wantsNaver = (__reqSet.size > 0 && __reqSet.has("naver"));
+            const hasNaverKeys =
+              !!(naverIdFinal && String(naverIdFinal).trim() && naverSecretFinal && String(naverSecretFinal).trim());
 
-            // ✅ UV는 naver 기본 OFF (요청 시에만)
+            // ✅ UV: 기본은 "키가 있으면 naver ON", 요청 engines가 있으면 그 요청을 우선
+            const wantsNaver = (__reqSet.size > 0) ? __reqSet.has("naver") : hasNaverKeys;
+
             if (!wantsNaver) {
               __defaults = __defaults.filter((e) => e !== "naver");
               if (partial_scores && typeof partial_scores === "object") {
-                partial_scores.naver_skipped = { mode: "uv", reason: "uv_default_off" };
+                partial_scores.naver_skipped = {
+                  mode: "uv",
+                  reason: (__reqSet.size > 0) ? "not_requested" : "missing_naver_keys",
+                };
+              }
+            } else if (!hasNaverKeys) {
+              __defaults = __defaults.filter((e) => e !== "naver");
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.naver_skipped = { mode: "uv", reason: "missing_naver_keys" };
               }
             } else {
-              // 요청했는데 키 없으면 안전하게 제외
-              const hasNaverKeys =
-                !!(naverIdFinal && String(naverIdFinal).trim() && naverSecretFinal && String(naverSecretFinal).trim());
-
-              if (!hasNaverKeys) {
-                __defaults = __defaults.filter((e) => e !== "naver");
-                if (partial_scores && typeof partial_scores === "object") {
-                  partial_scores.naver_skipped = { mode: "uv", reason: "missing_naver_keys" };
-                }
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.naver_enabled = {
+                  mode: "uv",
+                  reason: (__reqSet.size > 0) ? "requested" : "uv_default_on_with_keys",
+                };
               }
             }
           }
@@ -16304,8 +16311,14 @@ Rules:
       truthscore_01: truthscore_01_final,
       elapsed,
 
-      // ??S-15: engines_used ?먮룞 ?곗텧(紐낆떆 ?몄텧)
-      engines: (Array.isArray(partial_scores.engines_used) ? partial_scores.engines_used : engines),
+      // ✅S-15: engines는 "요청/선택된 엔진"으로 유지 (used/excluded는 별도 필드)
+      engines:
+        (partial_scores &&
+          typeof partial_scores === "object" &&
+          Array.isArray(partial_scores.engines_requested) &&
+          partial_scores.engines_requested.length > 0)
+          ? partial_scores.engines_requested
+          : (Array.isArray(engines) ? engines : []),
       engines_requested:
         (partial_scores &&
           typeof partial_scores === "object" &&
