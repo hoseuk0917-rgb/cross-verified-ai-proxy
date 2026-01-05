@@ -19230,6 +19230,30 @@ app.get("/api/admin/errors/recent", requireDiag, (req, res) => {
 
 // ✅ Health check (Render / uptime / external monitor)
 app.get("/api/health", (req, res) => {
+  // ✅ Supabase pause 방지용: 1행 upsert (데이터 증가 없음) + 요청당 실행 X(기본 22시간에 1번)
+  try {
+    const nowMs = Date.now();
+    const minMsRaw = Number(process.env.SUPABASE_KEEPALIVE_MIN_MS || (22 * 60 * 60 * 1000));
+    const minMs = Math.max(60_000, Math.min(minMsRaw, 7 * 24 * 60 * 60 * 1000));
+    const lastMs = Number(globalThis.__sb_keepalive_last_ms || 0);
+
+    if (nowMs - lastMs >= minMs) {
+      globalThis.__sb_keepalive_last_ms = nowMs;
+
+      if (pgPool && typeof pgPool.query === "function") {
+        pgPool
+          .query(
+            `insert into public.keepalive_state (id, last_seen, src)
+             values (1, now(), $1)
+             on conflict (id)
+             do update set last_seen = excluded.last_seen, src = excluded.src`,
+            ["api_health"]
+          )
+          .catch(() => { });
+      }
+    }
+  } catch (_) { }
+
   return res.status(200).json({
     success: true,
     ok: true,
