@@ -4342,13 +4342,46 @@ function _stripWww(host) {
 function _hostFromUrlish(urlish) {
   try {
     if (!urlish) return "";
-    const s = String(urlish).trim();
-    if (!s) return "";
-    if (!s.includes("://")) return _stripWww(s);
-    const u = new URL(s);
-    return _stripWww(u.hostname);
+    const s0 = String(urlish).trim();
+    if (!s0) return "";
+
+    // scheme-relative URL ("//example.com/path")
+    const s1 = s0.startsWith("//") ? ("https:" + s0) : s0;
+
+    // full URL
+    if (s1.includes("://")) {
+      const u = new URL(s1);
+      return _stripWww(u.hostname);
+    }
+
+    // bare host[:port] (no path/query)
+    const bare = s1.replace(/\s+/g, "");
+    if (/^[a-z0-9.-]+(:\d+)?$/i.test(bare) && !/[\/?#]/.test(bare)) {
+      const hostOnly = bare.replace(/:\d+$/, "");
+      return _stripWww(hostOnly);
+    }
+
+    // host + path/query ("example.com/a?b=1") → assume https://
+    const u2 = new URL("https://" + s1);
+    return _stripWww(u2.hostname);
   } catch {
-    return _stripWww(urlish);
+    try {
+      const s = String(urlish || "").trim();
+      if (!s) return "";
+      let t = s;
+
+      if (t.startsWith("//")) t = "https:" + t;
+
+      // take until first / ? #
+      t = t.split(/[\/?#]/, 1)[0];
+
+      // strip port if present (avoid clobbering ipv6)
+      if (t.includes(":") && !t.includes("]") && !t.includes("::")) t = t.replace(/:\d+$/, "");
+
+      return _stripWww(t);
+    } catch {
+      return _stripWww(urlish);
+    }
   }
 }
 
@@ -4366,10 +4399,12 @@ function hostLooksOfficial(host) {
 
   return (
     h0.endsWith(".go.kr") ||
+    h0.endsWith(".mil.kr") ||
     h0.endsWith(".ac.kr") ||
     h0.endsWith(".re.kr") ||
     h0.endsWith(".or.kr") ||
     h0.endsWith(".gov") ||
+    h0.endsWith(".mil") ||
     h0.endsWith(".edu")
   );
 }
@@ -7745,14 +7780,14 @@ async function preprocessQVFVOneShot({
   // 2) Gemini fallback (옵션)
   //   - 기본 OFF: Groq 전처리 one-shot을 기본 경로로 유지하고, 실패 시 manual fallback으로 즉시 전환
   //   - 필요하면 env로만 활성화 가능: QVFV_PRE_ENABLE_GEMINI_FALLBACK=1
-  //   - Groq key missing 상황에서는 Gemini 전처리 fallback 기본 스킵(느림/비용)이며,
-  //     필요 시 QVFV_PRE_ALLOW_GEMINI_FALLBACK_IF_GROQ_KEY_MISSING=1 로 강제 허용 가능
+  //   - Groq key missing 상황에서는 Gemini 전처리 fallback을 기본 허용하며,
+  //     원치 않으면 QVFV_PRE_ALLOW_GEMINI_FALLBACK_IF_GROQ_KEY_MISSING=0 로 비활성화 가능
   // ─────────────────────────────
   const __enableGeminiFallback =
     String(process.env.QVFV_PRE_ENABLE_GEMINI_FALLBACK || "0") === "1";
 
   const __allowGeminiIfGroqKeyMissing =
-    String(process.env.QVFV_PRE_ALLOW_GEMINI_FALLBACK_IF_GROQ_KEY_MISSING || "0") === "1";
+    String(process.env.QVFV_PRE_ALLOW_GEMINI_FALLBACK_IF_GROQ_KEY_MISSING || "1") === "1";
 
   const __groqKeyMissing =
     (__groqPreError?.stage === "groq_pre_call") &&
@@ -7761,9 +7796,8 @@ async function preprocessQVFVOneShot({
   const __geminiKeyMissing = !String(gemini_key || "").trim();
 
   const __skipGeminiFallback =
-    !__enableGeminiFallback ||
     __geminiKeyMissing ||
-    (__groqKeyMissing && !__allowGeminiIfGroqKeyMissing);
+    (!__enableGeminiFallback && !(__groqKeyMissing && __allowGeminiIfGroqKeyMissing));
 
   if (!__skipGeminiFallback) {
     try {
@@ -7806,11 +7840,11 @@ async function preprocessQVFVOneShot({
   } else {
     // 진단용: 스킵 사유를 남김
     try {
-      const _reason = !__enableGeminiFallback
-        ? "skip_gemini_fallback_disabled_by_env"
-        : (__geminiKeyMissing
-          ? "skip_gemini_fallback_due_to_gemini_key_missing"
-          : "skip_gemini_fallback_due_to_groq_key_missing");
+      const _reason = __geminiKeyMissing
+        ? "skip_gemini_fallback_due_to_gemini_key_missing"
+        : ((__groqKeyMissing && !__allowGeminiIfGroqKeyMissing)
+          ? "skip_gemini_fallback_due_to_groq_key_missing"
+          : "skip_gemini_fallback_disabled_by_env");
 
       if (!__groqPreError) __groqPreError = { stage: "gemini_pre_skipped", message: _reason, status: null };
       else __groqPreError._gemini_pre_skipped = _reason;
@@ -9994,11 +10028,17 @@ const verifyCoreHandler = async (req, res) => {
 
     const __urlHostDerived = __deriveUrlHost();
 
-    // ✅ UV: base query에 site:<urlHost>로 pin 하지 않음(자기 자신만 때리는 케이스 방지)
+    // ✅ "요청이 UV였는지"를 별도로 판정 (중간에 safeMode가 fv로 바뀌어도 UV 규칙 유지)
+    const __reqMode0 = String(req?.body?.safeMode || req?.body?.mode || "").trim().toLowerCase();
+    const __rawMode0 = (typeof rawMode === "string") ? String(rawMode).trim().toLowerCase() : "";
+    const __isUvReq = (String(safeMode || "").trim().toLowerCase() === "uv") || (__rawMode0 === "uv") || (__reqMode0 === "uv");
+
+    // ✅ UV: base query에 site:<whitelistHost>로 pin 하지 않음(자기 자신/엉뚱한 host로 때리는 케이스 방지)
     const __pickPinnedHost = (q) => {
-      if (safeMode === "uv") return "";
+      if (__isUvReq) return "";
 
       if (!Array.isArray(seedHosts) || seedHosts.length === 0) return "";
+
       const qq = String(q || "");
       const qLower = qq.toLowerCase();
 
@@ -10014,15 +10054,41 @@ const verifyCoreHandler = async (req, res) => {
 
     const expanded = [];
 
-    // ✅ UV: URL host 기반 "레지스트리/표준" 우선 확장 (per-block cap이 1이어도 첫 타격이 여기로 가게)
-    if (safeMode === "uv" && __urlHostDerived) {
-      expanded.push(`site:iana.org ${__urlHostDerived}`);
-      expanded.push(`site:rfc-editor.org ${__urlHostDerived}`);
-      expanded.push(`site:ietf.org ${__urlHostDerived}`);
-      expanded.push(`${__urlHostDerived} IANA`);
-      expanded.push(`${__urlHostDerived} RFC 2606`);
-      expanded.push(`${__urlHostDerived} reserved domain`);
-      expanded.push(`${__urlHostDerived} documentation examples`);
+    const __isIanaReservedHost = (h) => {
+      const hh = _stripWww(String(h || "").trim().toLowerCase());
+      if (!hh) return false;
+      return (
+        hh === "example.com" ||
+        hh === "example.net" ||
+        hh === "example.org" ||
+        hh === "example.edu" ||
+        hh === "example.gov" ||
+        hh === "test" ||
+        hh === "invalid" ||
+        hh === "localhost"
+      );
+    };
+
+    const __registryFirst = [];
+    const __registryLast = [];
+
+    if (__isUvReq && __urlHostDerived) {
+      const __h = _stripWww(String(__urlHostDerived || "").trim().toLowerCase());
+      const __isReserved = __isIanaReservedHost(__h);
+
+      // ✅ UV에서는 "reserved host"일 때만 레지스트리(iana/rfc/ietf) 프로빙을 허용
+      if (__isReserved) {
+        const __regQueries = [
+          `site:iana.org ${__h}`,
+          `site:rfc-editor.org ${__h}`,
+          `site:ietf.org ${__h}`,
+          `${__h} IANA`,
+          `${__h} RFC 2606`,
+          `${__h} reserved domain`,
+          `${__h} documentation examples`,
+        ];
+        __registryFirst.push(...__regQueries);
+      }
     }
 
     // ✅ 1) base 쿼리: whitelist 기반 site: 핀 버전(우선) + 원본(후순위)
@@ -10038,6 +10104,7 @@ const verifyCoreHandler = async (req, res) => {
       else pinned.push(q);
     }
 
+    expanded.push(...__registryFirst);
     expanded.push(...pinned, ...originals);
 
     // ✅ 2) seed (ko/en) 확장: 기존 동작 유지
@@ -10049,6 +10116,8 @@ const verifyCoreHandler = async (req, res) => {
       if (stripped && stripped !== s) expanded.push(stripped);
     }
 
+    expanded.push(...__registryLast);
+
     // ✅ 이 스코프에서는 항상 __uniqStrings로 정규화/상한 적용
     return __uniqStrings(expanded, 12);
   }
@@ -10057,6 +10126,18 @@ const verifyCoreHandler = async (req, res) => {
   let qvfvPreDone = false;            // 전처리 성공 여부
 
   try {
+    // ✅ Authorization: Bearer <jwt> 를 req.body.jwt / req.jwt 로 심어서
+    //    user_secrets 조회 helper들이 일관되게 쓰게 함
+    try {
+      const az = String(req?.headers?.authorization || "");
+      const m = az.match(/^\s*bearer\s+(.+)\s*$/i);
+      const jwt0 = String(m?.[1] || "").trim();
+      if (jwt0) {
+        if (req && !Object.prototype.hasOwnProperty.call(req, "jwt")) req.jwt = jwt0;
+        if (req && req.body && !req.body.jwt) req.body.jwt = jwt0;
+      }
+    } catch (_) { }
+
     // ✅ 추가: verification_logs.user_id NOT NULL 대응
     authUser = await getSupabaseAuthUser(req);
 
@@ -10249,16 +10330,30 @@ const verifyCoreHandler = async (req, res) => {
           Array.isArray(__reqArrRaw) ? __reqArrRaw.map(__normEng).filter(Boolean) : []
         );
 
-        const __defaults0 = ENABLE_WIKIDATA_QVFV
-          ? ["crossref", "openalex", "wikidata", "gdelt", "naver"]
-          : ["crossref", "openalex", "gdelt", "naver"];
+        const __isUV = String(safeMode || "").toLowerCase() === "uv";
+
+        const __uvHostHint = __isUV ? _hostFromUrlish(query) : "";
+        const __uvLooksOfficial = __isUV ? hostLooksOfficial(__uvHostHint) : false;
+
+        const __defaults0 = __isUV
+          ? (__uvLooksOfficial
+            ? (ENABLE_WIKIDATA_QVFV ? ["naver", "wikidata"] : ["naver"])
+            : (ENABLE_WIKIDATA_QVFV ? ["naver", "wikidata", "gdelt"] : ["naver", "gdelt"]))
+          : (ENABLE_WIKIDATA_QVFV
+            ? ["crossref", "openalex", "wikidata", "gdelt", "naver"]
+            : ["crossref", "openalex", "gdelt", "naver"]);
 
         let __defaults = __defaults0.slice();
+
+        // ✅ UV에서 "naver만 요청" + "키 없음" 케이스에 __final이 빈 배열이 되어 engines가 비는 문제 방지
+        let __uvHasNaverKeys = true;
 
         try {
           if (String(safeMode || "").toLowerCase() === "uv") {
             const hasNaverKeys =
               !!(naverIdFinal && String(naverIdFinal).trim() && naverSecretFinal && String(naverSecretFinal).trim());
+
+            __uvHasNaverKeys = hasNaverKeys;
 
             // ✅ UV: 기본은 "키가 있으면 naver ON", 요청 engines가 있으면 그 요청을 우선
             const wantsNaver = (__reqSet.size > 0) ? __reqSet.has("naver") : hasNaverKeys;
@@ -10287,12 +10382,13 @@ const verifyCoreHandler = async (req, res) => {
           }
         } catch (_) { }
 
-        const __final = (__reqSet.size > 0)
+        let __final = (__reqSet.size > 0)
           ? __defaults.filter((e) => __reqSet.has(e))
           : __defaults.slice();
 
         // ✅ 요청이 있었는데 기본 엔진셋에 하나도 매칭 안 되면 "아무것도 실행하지 않음"
         // (기본값으로 다시 전체 실행되는 사고 방지)
+        // ✅ 단, UV에서 "naver만 요청"했는데 키가 없어 naver가 빠져 empty가 된 경우는 defaults(=naver 제외)로 폴백
         if (__reqSet.size > 0 && __final.length === 0) {
           try {
             if (partial_scores && typeof partial_scores === "object") {
@@ -10303,6 +10399,22 @@ const verifyCoreHandler = async (req, res) => {
                 final: [],
                 reason: "no_matching_engine_in_defaults",
               };
+            }
+          } catch (_) { }
+
+          try {
+            if (String(safeMode || "").toLowerCase() === "uv" && __reqSet.has("naver") && !__uvHasNaverKeys) {
+              __final = __defaults.slice();
+              if (partial_scores && typeof partial_scores === "object") {
+                partial_scores.engines_filter_warning = {
+                  requested_raw: __rawEng,
+                  requested_norm: Array.from(__reqSet),
+                  allowed_defaults: __defaults.slice(),
+                  final: [],
+                  fallback_final: __final.slice(),
+                  reason: "uv_fallback_to_defaults_due_to_missing_naver_keys",
+                };
+              }
             }
           } catch (_) { }
         }
@@ -10418,8 +10530,13 @@ const verifyCoreHandler = async (req, res) => {
         let __uvCoreText = "";
 
         async function __tryExtractUvCoreText(urlLike) {
-          const urlStr0 = String(urlLike || "").trim();
+          let urlStr0 = String(urlLike || "").trim();
           if (!urlStr0) return "";
+
+          // ✅ scheme 없는 입력(example.com/..)도 UV에서 https://로 보정
+          if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(urlStr0)) {
+            urlStr0 = "https://" + urlStr0;
+          }
 
           const __isBlockedHost = (h0) => {
             const host = String(h0 || "").toLowerCase().trim();
@@ -10455,21 +10572,37 @@ const verifyCoreHandler = async (req, res) => {
           };
 
           const __validateUrl = (s) => {
-            const urlStr = String(s || "").trim();
-            if (!urlStr) return { ok: false, reason: "empty_url", url: urlStr };
+            const raw = String(s || "").trim();
+            if (!raw) return { ok: false, reason: "empty_url", url: raw };
+
+            let urlStr = raw;
+
+            // scheme-relative
+            if (urlStr.startsWith("//")) urlStr = "https:" + urlStr;
+
+            // has scheme but not http(s)
+            if (/^[a-z][a-z0-9+.-]*:/i.test(urlStr) && !/^https?:/i.test(urlStr)) {
+              const proto0 = String(urlStr.split(":", 1)[0] || "").toLowerCase() + ":";
+              return { ok: false, reason: "unsupported_protocol", url: raw, protocol: proto0 };
+            }
+
+            // scheme-less host/path → assume https
+            if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(urlStr)) {
+              urlStr = "https://" + urlStr;
+            }
 
             let u = null;
-            try { u = new URL(urlStr); } catch { return { ok: false, reason: "invalid_url", url: urlStr }; }
+            try { u = new URL(urlStr); } catch { return { ok: false, reason: "invalid_url", url: raw }; }
 
             const proto = String(u.protocol || "").toLowerCase();
             if (proto !== "http:" && proto !== "https:") {
-              return { ok: false, reason: "unsupported_protocol", url: urlStr, protocol: proto };
+              return { ok: false, reason: "unsupported_protocol", url: raw, protocol: proto };
             }
 
             const host = String(u.hostname || "").toLowerCase().trim();
-            if (__isBlockedHost(host)) return { ok: false, reason: "blocked_host", url: urlStr, host, protocol: proto };
+            if (__isBlockedHost(host)) return { ok: false, reason: "blocked_host", url: raw, host, protocol: proto };
 
-            return { ok: true, url: urlStr, host, protocol: proto };
+            return { ok: true, url: u.toString(), host, protocol: proto };
           };
 
           const __decodeEntitiesLite = (s) => {
@@ -10484,11 +10617,138 @@ const verifyCoreHandler = async (req, res) => {
             return t;
           };
 
+          const __unescapeJsonStringLite = (s) => {
+            let t = String(s ?? "");
+            t = t
+              .replace(/\\n/g, " ")
+              .replace(/\\r/g, " ")
+              .replace(/\\t/g, " ")
+              .replace(/\\"/g, '"')
+              .replace(/\\\\/g, "\\");
+            t = t.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => {
+              try { return String.fromCharCode(parseInt(h, 16)); } catch { return ""; }
+            });
+            t = t.replace(/\s+/g, " ").trim();
+            return t;
+          };
+
+          const __extractEmbeddedTextLite = (html) => {
+            const H = String(html ?? "");
+            if (!H) return "";
+
+            const out = [];
+            const seen = new Set();
+
+            const pushLine = (line) => {
+              const s = String(line || "").replace(/\s+/g, " ").trim();
+              if (!s || s.length < 12) return;
+              if (seen.has(s)) return;
+              seen.add(s);
+              out.push(s);
+            };
+
+            const pushVal = (k, v) => {
+              const kk = String(k || "").trim();
+              let vv = String(v || "").trim();
+              if (!kk || !vv) return;
+
+              vv = __unescapeJsonStringLite(__decodeEntitiesLite(vv));
+              vv = vv.replace(/\s+/g, " ").trim();
+              if (!vv || vv.length < 12) return;
+
+              pushLine(`${kk}: ${vv}`);
+            };
+
+            const scanPairs = (blob) => {
+              const s0 = String(blob ?? "").trim();
+              if (!s0) return;
+
+              const s = (s0.length > 80000) ? s0.slice(0, 80000) : s0;
+
+              const regs = [
+                /"(title|name|headline|description|summary|articleBody|article_body|text|content)"\s*:\s*"([^"]{12,900})"/g,
+                /'(title|name|headline|description|summary|articleBody|article_body|text|content)'\s*:\s*'([^']{12,900})'/g,
+                /\b(title|name|headline|description|summary|articleBody|article_body|text|content)\b\s*:\s*"([^"]{12,900})"/g,
+              ];
+
+              let hits = 0;
+
+              for (const re of regs) {
+                re.lastIndex = 0;
+                let m;
+                while ((m = re.exec(s)) && hits < 24) {
+                  pushVal(m[1], m[2]);
+                  hits += 1;
+                }
+                if (hits >= 24) break;
+              }
+
+              // window.__NUXT__ / __INITIAL_STATE__ 같은 패턴(정규표현식으로 너무 빡세게 파싱하지 말고 키-값만 긁기)
+              if (hits < 6) {
+                const m2 = s.match(/__NUXT__\s*=\s*(\{[\s\S]{0,60000}\})/i) || s.match(/__INITIAL_STATE__\s*=\s*(\{[\s\S]{0,60000}\})/i);
+                if (m2 && m2[1]) {
+                  const s2 = String(m2[1]).slice(0, 60000);
+                  for (const re of regs) {
+                    re.lastIndex = 0;
+                    let m;
+                    while ((m = re.exec(s2)) && hits < 24) {
+                      pushVal(m[1], m[2]);
+                      hits += 1;
+                    }
+                    if (hits >= 24) break;
+                  }
+                }
+              }
+            };
+
+            // 1) known JSON script blocks
+            const pats = [
+              /<script[^>]+id\s*=\s*["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/gi,
+              /<script[^>]+type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi,
+              /<script[^>]+type\s*=\s*["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi,
+            ];
+
+            let scanned = 0;
+            for (const p of pats) {
+              let mm;
+              while ((mm = p.exec(H)) && scanned < 10) {
+                const inner = (mm && mm[1]) ? String(mm[1]).trim() : "";
+                if (inner) {
+                  scanPairs(inner);
+                  scanned += 1;
+                }
+              }
+            }
+
+            // 2) fallback: ANY inline script (no src)
+            if (out.length < 3) {
+              const anyInline = /<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi;
+              let mm;
+              let n = 0;
+              while ((mm = anyInline.exec(H)) && n < 10) {
+                const inner = (mm && mm[1]) ? String(mm[1]).trim() : "";
+                if (inner && inner.length >= 20) {
+                  scanPairs(inner);
+                  n += 1;
+                }
+              }
+            }
+
+            if (out.length === 0) return "";
+
+            const joined = out.slice(0, 16).join("\n").trim();
+            if (!joined) return "";
+            return joined;
+          };
+
           const __stripTagsLite = (s) => {
             let t = String(s ?? "");
             t = t.replace(/<script[\s\S]*?<\/script>/gi, " ");
             t = t.replace(/<style[\s\S]*?<\/style>/gi, " ");
-            t = t.replace(/<noscript[\s\S]*?<\/noscript>/gi, " ");
+
+            // ✅ noscript는 "제거"가 아니라 "내용 보존" (JS-heavy 페이지의 유일 텍스트일 때가 많음)
+            t = t.replace(/<noscript[^>]*>([\s\S]*?)<\/noscript>/gi, " $1 ");
+
             t = t.replace(/<svg[\s\S]*?<\/svg>/gi, " ");
             t = t.replace(/<[^>]+>/g, " ");
             t = __decodeEntitiesLite(t);
@@ -10541,15 +10801,77 @@ const verifyCoreHandler = async (req, res) => {
           const __maxLen = 1024 * 1024;
           const __maxRedirects = 5;
 
+          const __pickCharsetFromCt = (ct0) => {
+            const s = String(ct0 || "");
+            const m = s.match(/charset\s*=\s*([a-z0-9\-_]+)/i);
+            return (m && m[1]) ? String(m[1]).trim().toLowerCase() : "";
+          };
+
+          const __pickCharsetFromMeta = (headText) => {
+            const s = String(headText || "");
+            let m = s.match(/<meta[^>]+charset\s*=\s*["']?\s*([a-z0-9\-_]+)\s*["']?/i);
+            if (m && m[1]) return String(m[1]).trim().toLowerCase();
+
+            m = s.match(/<meta[^>]+http-equiv\s*=\s*["']content-type["'][^>]*content\s*=\s*["'][^"']*charset\s*=\s*([a-z0-9\-_]+)[^"']*["']/i);
+            if (m && m[1]) return String(m[1]).trim().toLowerCase();
+
+            return "";
+          };
+
+          const __decodeBytes = (buf, charset0) => {
+            const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || []);
+            const cs = String(charset0 || "").trim().toLowerCase();
+
+            try {
+              const dec = new TextDecoder(cs || "utf-8", { fatal: false });
+              return dec.decode(b);
+            } catch (_) {
+              try {
+                const dec2 = new TextDecoder("utf-8", { fatal: false });
+                return dec2.decode(b);
+              } catch {
+                return b.toString("utf8");
+              }
+            }
+          };
+
           let currentUrl = urlStr0;
           let finalUrl = urlStr0;
           let finalHost = null;
           let status = 0;
           let ct = "";
+          let charset = "";
           let raw = "";
           let redirects = 0;
 
           const redirect_chain = [];
+
+          let __lastHost = null;
+          let __lastProto = null;
+
+          let __retriedAltFromCert = false;
+          let __retriedHttpsToHttp = false;
+
+          const __sameOfficialSuffix = (a, b) => {
+            const ha = String(a || "").toLowerCase().trim();
+            const hb = String(b || "").toLowerCase().trim();
+            if (!ha || !hb) return false;
+
+            const suffixes = [".go.kr", ".mil.kr", ".ac.kr", ".re.kr", ".or.kr", ".gov", ".mil", ".edu"];
+            for (const s of suffixes) {
+              if (ha.endsWith(s) && hb.endsWith(s)) return true;
+            }
+            return false;
+          };
+
+          const __extractAltDnsFromCertError = (msg) => {
+            const s = String(msg || "");
+            let m = s.match(/cert's altnames:[\s\S]*?\bDNS:([a-z0-9.-]+)\b/i);
+            if (m && m[1]) return String(m[1]).toLowerCase().trim();
+            m = s.match(/\bDNS:([a-z0-9.-]+)\b/i);
+            if (m && m[1]) return String(m[1]).toLowerCase().trim();
+            return "";
+          };
 
           // ✅ 수동 리다이렉트(각 hop마다 host 검증)
           while (true) {
@@ -10564,11 +10886,17 @@ const verifyCoreHandler = async (req, res) => {
               return "";
             }
 
+            // normalize URL (scheme-less 입력 포함)
+            currentUrl = v.url;
+            __lastHost = v.host;
+            __lastProto = v.protocol;
+
+            // [REPLACEMENT BLOCK - PASTE WHOLE]
             try {
               const resp = await axios.get(currentUrl, {
                 timeout: __timeout,
                 maxRedirects: 0,
-                responseType: "text",
+                responseType: "arraybuffer",
                 maxContentLength: __maxLen,
                 validateStatus: () => true,
                 headers: __headers,
@@ -10577,6 +10905,131 @@ const verifyCoreHandler = async (req, res) => {
               status = Number(resp?.status || 0);
               ct = String(resp?.headers?.["content-type"] || "").toLowerCase();
 
+              const hdrRefresh = String(resp?.headers?.refresh || "").trim();
+
+              let raw0 = "";
+              try {
+                const buf = Buffer.isBuffer(resp?.data)
+                  ? resp.data
+                  : Buffer.from(resp?.data || []);
+
+                let __iconv = null;
+
+                const __decodeTD = (enc) => {
+                  try {
+                    const TD = (typeof TextDecoder !== "undefined") ? TextDecoder : require("util").TextDecoder;
+                    return new TD(enc, { fatal: false }).decode(buf);
+                  } catch {
+                    return "";
+                  }
+                };
+
+                const __decodeIconv = (enc) => {
+                  try {
+                    if (!__iconv) __iconv = require("iconv-lite");
+                    if (__iconv && typeof __iconv.decode === "function") return __iconv.decode(buf, enc);
+                  } catch { }
+                  return "";
+                };
+
+                const __pickCharset = () => {
+                  // 1) header charset
+                  const m1 = ct.match(/charset\s*=\s*([a-z0-9._-]+)/i);
+                  let cs = String(m1?.[1] || "").toLowerCase().trim();
+
+                  // 2) sniff meta charset from head bytes (ASCII zone)
+                  if (!cs) {
+                    const head = buf.toString("latin1", 0, Math.min(buf.length, 8192));
+
+                    let m2 = head.match(/<meta[^>]+charset\s*=\s*["']?\s*([a-z0-9._-]+)\s*["']?/i);
+                    if (m2 && m2[1]) cs = String(m2[1]).toLowerCase().trim();
+
+                    if (!cs) {
+                      m2 = head.match(/<meta[^>]+http-equiv\s*=\s*["']?\s*content-type\s*["']?[^>]+content\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i);
+                      const c2 = String(m2?.[1] || m2?.[2] || m2?.[3] || "").toLowerCase();
+                      const m3 = c2.match(/charset\s*=\s*([a-z0-9._-]+)/i);
+                      if (m3 && m3[1]) cs = String(m3[1]).toLowerCase().trim();
+                    }
+
+                    if (!cs) {
+                      m2 = head.match(/charset\s*=\s*([a-z0-9._-]+)/i);
+                      if (m2 && m2[1]) cs = String(m2[1]).toLowerCase().trim();
+                    }
+                  }
+
+                  // normalize common KR labels
+                  if (cs === "ks_c_5601-1987" || cs === "ksc5601" || cs === "euckr") cs = "euc-kr";
+                  if (cs === "cp949" || cs === "windows-949" || cs === "x-windows-949") cs = "euc-kr";
+                  if (cs === "utf8") cs = "utf-8";
+
+                  return cs;
+                };
+
+                const __decode = (enc) => {
+                  const e = String(enc || "").toLowerCase().trim();
+                  let t = __decodeTD(e);
+                  if (t) return t;
+
+                  if (e === "euc-kr" || e === "cp949" || e === "windows-949" || e === "x-windows-949") {
+                    t = __decodeIconv("cp949") || __decodeIconv("euc-kr");
+                    if (t) return t;
+                  }
+
+                  t = __decodeIconv(e);
+                  if (t) return t;
+
+                  try { return buf.toString("utf8"); } catch { return ""; }
+                };
+
+                const __countFFFD = (s0) => (String(s0 || "").match(/\uFFFD/g) || []).length;
+                const __countHangul = (s0) => (String(s0 || "").match(/[\uAC00-\uD7A3]/g) || []).length;
+
+                const picked = __pickCharset();
+                const cs0 = picked || "utf-8";
+
+                let t = __decode(cs0);
+                let used = cs0;
+
+                // heuristic(강화): utf-8/unknown이면 euc-kr(cp949)도 같이 디코딩해서 "덜 깨지고 한글이 더 자연스러운" 쪽 선택
+                if (used === "utf-8" || !picked) {
+                  const t2 = __decode("euc-kr"); // 내부에서 cp949 우선
+                  if (t2) {
+                    const bad1 = __countFFFD(t);
+                    const bad2 = __countFFFD(t2);
+
+                    const h1 = __countHangul(t);
+                    const h2 = __countHangul(t2);
+
+                    // 전환 조건:
+                    // - utf8에 깨짐(FFFD)이 1개 이상이고, euc-kr이 더 덜 깨지며, euc-kr 쪽에서 한글이 의미 있게 보일 때
+                    // - 또는 euc-kr 쪽이 한글이 확실히 더 많고(>= +2), 깨짐이 더 심하지 않을 때
+                    if (
+                      ((bad1 >= 1 && bad2 < bad1) && (h2 >= 1 || h2 > h1)) ||
+                      (h2 >= h1 + 2 && bad2 <= bad1)
+                    ) {
+                      t = t2;
+                      used = "euc-kr";
+                    }
+                  }
+                }
+
+                raw0 = t || "";
+                uv_charset = used || uv_charset || "";
+              } catch (_) {
+                raw0 = (typeof resp?.data === "string") ? resp.data : "";
+              }
+
+              const __parseRefreshNext = (s0) => {
+                const s = String(s0 || "").trim();
+                if (!s) return "";
+                const m = s.match(/url\s*=\s*([^;]+)/i);
+                if (!m || !m[1]) return "";
+                let u = String(m[1]).trim();
+                u = u.replace(/^['"]+|['"]+$/g, "");
+                return u.trim();
+              };
+
+              // 1) 표준 Location 리다이렉트
               const loc = resp?.headers?.location;
               if (loc && status >= 300 && status < 400 && redirects < __maxRedirects) {
                 const nextUrl = new URL(String(loc), currentUrl).toString();
@@ -10586,22 +11039,111 @@ const verifyCoreHandler = async (req, res) => {
                 continue;
               }
 
+              // 2) Refresh header 리다이렉트
+              const __hdrRefreshNext = __parseRefreshNext(hdrRefresh);
+              if (__hdrRefreshNext && redirects < __maxRedirects) {
+                let nextUrl = "";
+                try { nextUrl = new URL(__hdrRefreshNext, currentUrl).toString(); } catch { nextUrl = __hdrRefreshNext; }
+
+                const v2 = __validateUrl(nextUrl);
+                if (v2.ok && nextUrl && nextUrl !== currentUrl) {
+                  redirect_chain.push({ from: currentUrl, to: nextUrl, status: "header_refresh" });
+                  currentUrl = nextUrl;
+                  redirects += 1;
+                  continue;
+                }
+              }
+
+              // 3) meta refresh 리다이렉트 (Location이 없는데 refresh로 넘기는 케이스)
+              const __metaRefreshNext = (() => {
+                const html2 = String(raw0 || "");
+                const m = html2.match(/<meta\b[^>]*http-equiv\s*=\s*["']?\s*refresh\s*["']?[^>]*>/i);
+                if (!m || !m[0]) return "";
+
+                const tag = String(m[0]);
+                const mm = tag.match(/\bcontent\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i);
+                const content = String(mm?.[1] || mm?.[2] || mm?.[3] || "").trim();
+                if (!content) return "";
+
+                const u = content.match(/url\s*=\s*([^;]+)/i);
+                if (!u || !u[1]) return "";
+
+                let next0 = String(u[1]).trim();
+                next0 = next0.replace(/^['"]+|['"]+$/g, "");
+                return next0.trim();
+              })();
+
+              if (__metaRefreshNext && redirects < __maxRedirects) {
+                let nextUrl = "";
+                try { nextUrl = new URL(__metaRefreshNext, currentUrl).toString(); } catch { nextUrl = __metaRefreshNext; }
+
+                const v2 = __validateUrl(nextUrl);
+                if (v2.ok && nextUrl && nextUrl !== currentUrl) {
+                  redirect_chain.push({ from: currentUrl, to: nextUrl, status: "meta_refresh" });
+                  currentUrl = nextUrl;
+                  redirects += 1;
+                  continue;
+                }
+              }
+
               finalUrl = currentUrl;
               finalHost = v.host;
 
-              raw = (typeof resp?.data === "string") ? resp.data : "";
+              raw = raw0;
               break;
             } catch (e) {
               const ms = Date.now() - t0;
+              const errMsg = String(e?.message || e || "uv_fetch_failed");
+              const h0 = String(__lastHost || "").toLowerCase().trim();
+
+              // 1) TLS altname mismatch → cert의 DNS:xxxx 로 1회 호스트 교체 재시도(공식 suffix 일치 시에만)
+              try {
+                if (!__retriedAltFromCert && h0 && hostLooksOfficial(h0)) {
+                  const altHost = __extractAltDnsFromCertError(errMsg);
+                  if (
+                    altHost &&
+                    altHost !== h0 &&
+                    !__isBlockedHost(altHost) &&
+                    hostLooksOfficial(altHost) &&
+                    __sameOfficialSuffix(h0, altHost)
+                  ) {
+                    __retriedAltFromCert = true;
+                    try {
+                      const uAlt = new URL(currentUrl);
+                      uAlt.hostname = altHost;
+                      const nextUrl = uAlt.toString();
+                      redirect_chain.push({ from: currentUrl, to: nextUrl, status: "tls_altname_retry" });
+                      currentUrl = nextUrl;
+                      redirects += 1;
+                      continue;
+                    } catch { }
+                  }
+                }
+              } catch { }
+
+              // 2) https 실패(공식 도메인) → http로 1회 다운그레이드 재시도
+              try {
+                if (!__retriedHttpsToHttp && h0 && hostLooksOfficial(h0) && String(__lastProto || "") === "https:") {
+                  __retriedHttpsToHttp = true;
+                  const nextUrl = String(currentUrl).replace(/^https:/i, "http:");
+                  redirect_chain.push({ from: currentUrl, to: nextUrl, status: "https_to_http_retry" });
+                  currentUrl = nextUrl;
+                  redirects += 1;
+                  continue;
+                }
+              } catch { }
+
               try {
                 if (partial_scores && typeof partial_scores === "object") {
                   partial_scores.uv_extract = {
                     ok: false,
                     reason: "fetch_exception",
                     url: currentUrl,
-                    host: finalHost || null,
+                    host: h0 || null,
                     ms,
-                    error: String(e?.message || e || "uv_fetch_failed"),
+                    error: errMsg,
+                    redirects,
+                    redirect_chain: redirect_chain.slice(0, 5),
                   };
                 }
               } catch { }
@@ -10659,16 +11201,154 @@ const verifyCoreHandler = async (req, res) => {
           })();
 
           // ✅ 본문 텍스트
+          // ✅ 본문 텍스트
           let bodyText = __stripTagsLite(html);
 
-          if (bodyText.length > 3500) bodyText = bodyText.slice(0, 3500).trim();
+          // 메뉴/네비 덩어리(SITEMAP 등)로만 가득 찬 케이스 컷
+          const __cutAtMenu = (s) => {
+            let t = String(s || "");
+            const keys = ["SITEMAP", "SITE MAP", "사이트맵", "전체메뉴", "주메뉴", "메뉴", "FAQ", "Q&A"];
+            for (const k of keys) {
+              const idx = t.toUpperCase().indexOf(String(k).toUpperCase());
+              if (idx >= 0 && idx <= 900) {
+                t = t.slice(0, idx).trim();
+                break;
+              }
+            }
+            return t;
+          };
+
+          bodyText = __cutAtMenu(bodyText);
+
+          // UV는 전처리 입력을 더 작게(쿼리 키워드 살리기)
+          if (bodyText.length > 900) bodyText = bodyText.slice(0, 900).trim();
 
           if (!bodyText) {
+            // ✅ meta/URL + embedded + script src 목록까지 core_text로 넘김 (JS-render 페이지 힌트)
+            const headerLines = [];
+            if (metaTitle) headerLines.push(`TITLE: ${metaTitle}`);
+            if (metaDesc) headerLines.push(`DESCRIPTION: ${metaDesc}`);
+            if (canonicalUrl) headerLines.push(`CANONICAL: ${canonicalUrl}`);
+            if (finalUrl) headerLines.push(`URL: ${finalUrl}`);
+            if (finalHost) headerLines.push(`HOST: ${finalHost}`);
+
+            const header = headerLines.join("\n").trim();
+
+            let embedded = "";
+            try { embedded = __extractEmbeddedTextLite(html); } catch { embedded = ""; }
+
+            const scriptSrcs = (() => {
+              const arr = [];
+              const seen = new Set();
+
+              const add = (rawSrc, prefix) => {
+                const s0 = String(rawSrc || "").trim();
+                if (!s0) return;
+
+                let abs = s0;
+                try { abs = new URL(s0, finalUrl || urlStr0).toString(); } catch { abs = s0; }
+
+                const line = prefix ? `${prefix}${abs}` : abs;
+                const key = String(line || "").trim();
+                if (!key) return;
+
+                if (seen.has(key)) return;
+                seen.add(key);
+                arr.push(key);
+              };
+
+              // 1) <script ... src=...> (quoted/unquoted) + data-src
+              const scriptTagRe = /<script\b[^>]*>/gi;
+              let m;
+
+              while ((m = scriptTagRe.exec(html)) && arr.length < 12) {
+                const tag = String(m[0] || "");
+
+                const mm = tag.match(/\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i);
+                if (mm) add(mm[1] || mm[2] || mm[3], "");
+
+                const mm2 = tag.match(/\bdata-src\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i);
+                if (mm2) add(mm2[1] || mm2[2] || mm2[3], "");
+              }
+
+              // 2) <iframe|frame ... src=...>
+              const frameTagRe = /<(iframe|frame)\b[^>]*>/gi;
+              while ((m = frameTagRe.exec(html)) && arr.length < 12) {
+                const tag = String(m[0] || "");
+                const mm = tag.match(/\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i);
+                if (mm) add(mm[1] || mm[2] || mm[3], "IFRAME: ");
+              }
+
+              // 3) <meta http-equiv="refresh" content="0; url=...">
+              const metaRefreshRe = /<meta\b[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi;
+              while ((m = metaRefreshRe.exec(html)) && arr.length < 12) {
+                const tag = String(m[0] || "");
+                const mm = tag.match(/\bcontent\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i);
+                const content = String(mm?.[1] || mm?.[2] || mm?.[3] || "").trim();
+                const u = content.match(/url\s*=\s*([^;]+)/i);
+                if (u && u[1]) add(u[1].trim(), "REFRESH: ");
+              }
+
+              // 4) HTML 문자열 안의 .js URL 힌트(태그로 안 내려오는 케이스 포함)
+              const jsAbsRe = /(https?:\/\/[^\s"'<>]+?\.js(?:\?[^\s"'<>]*)?)/gi;
+              while ((m = jsAbsRe.exec(html)) && arr.length < 12) {
+                add(m[1], "");
+              }
+
+              const jsRelRe = /(?:["'`])((?:\/|\.\/|\.\.\/)[^"'`<>]{1,240}\.js(?:\?[^"'`<>]*)?)(?:["'`])/gi;
+              while ((m = jsRelRe.exec(html)) && arr.length < 12) {
+                add(m[1], "");
+              }
+
+              return arr;
+            })();
+
+            const jsSuspected = (!metaTitle && !metaDesc && !embedded && scriptSrcs.length > 0);
+
+            const parts = [];
+            if (header) parts.push(header);
+
+            if (jsSuspected) {
+              parts.push("NOTE: JS_RENDER_SUSPECTED");
+              parts.push(`SCRIPTS_COUNT: ${scriptSrcs.length}`);
+            }
+
+            if (scriptSrcs.length > 0) {
+              parts.push("SCRIPTS:");
+              parts.push(scriptSrcs.join("\n"));
+            }
+
+            if (embedded) {
+              parts.push("EMBEDDED:");
+              parts.push(embedded);
+            }
+
+            let coreText = parts.join("\n\n").trim();
+
+            if (coreText && coreText.length > 3800) coreText = coreText.slice(0, 3800).trim();
+
+            const chars = coreText ? coreText.length : 0;
+
+            const __minChars2 = (() => {
+              const v = Number(process.env.UV_MIN_CHARS ?? 120);
+              const n = (Number.isFinite(v) && v >= 0) ? Math.floor(v) : 120;
+              return n;
+            })();
+
+            const ok2 = !!(coreText && coreText.length >= __minChars2);
+
             try {
               if (partial_scores && typeof partial_scores === "object") {
                 partial_scores.uv_extract = {
-                  ok: false,
+                  ok: ok2,
                   reason: "empty_text_after_strip",
+                  fallback: (
+                    embedded ? "embedded_script_text"
+                      : (scriptSrcs.length > 0 ? "meta_plus_scripts_core_text"
+                        : (coreText ? "meta_only_core_text" : null))
+                  ),
+                  js_render_suspected: jsSuspected,
+
                   url: finalUrl,
                   host: finalHost || null,
                   status,
@@ -10676,7 +11356,13 @@ const verifyCoreHandler = async (req, res) => {
                   ms,
                   redirects,
                   redirect_chain: redirect_chain.slice(0, 5),
-                  chars: 0,
+
+                  chars,
+                  min_chars: __minChars2,
+                  thin_page: !ok2,
+
+                  scripts_count: scriptSrcs.length,
+                  scripts_sample: scriptSrcs.slice(0, 5),
 
                   meta_title: metaTitle || null,
                   meta_description: metaDesc || null,
@@ -10684,6 +11370,8 @@ const verifyCoreHandler = async (req, res) => {
                 };
               }
             } catch { }
+
+            if (coreText) return coreText;
             return "";
           }
 
@@ -10717,6 +11405,7 @@ const verifyCoreHandler = async (req, res) => {
                 host: finalHost || null,
                 status,
                 content_type: ct || null,
+                charset: uv_charset || null,
                 ms,
                 chars: bodyText.length,
                 min_chars: __minChars,
@@ -10737,6 +11426,47 @@ const verifyCoreHandler = async (req, res) => {
 
         if (__sm0 === "uv") {
           __uvCoreText = await __tryExtractUvCoreText(query);
+
+          // UV 추출 실패면 "검증할 대상 없음"으로 즉시 종료
+          // (필요 시 UV_ALLOW_DOMAIN_ONLY=1 로 우회 가능)
+          const __allowDomainOnly = String(process.env.UV_ALLOW_DOMAIN_ONLY || "0") === "1";
+
+          try {
+            const u =
+              partial_scores && typeof partial_scores === "object"
+                ? partial_scores.uv_extract
+                : null;
+
+            const uvFailed = !!(u && typeof u === "object" && u.ok === false);
+
+            if (uvFailed && !__allowDomainOnly) {
+              const bits = [];
+              try {
+                const r = typeof u.reason === "string" ? u.reason : "";
+                const st = typeof u.status === "number" ? u.status : null;
+                const ct = typeof u.content_type === "string" ? u.content_type : "";
+                if (r) bits.push(`reason=${r}`);
+                if (st != null) bits.push(`status=${st}`);
+                if (ct) bits.push(`content_type=${ct}`);
+              } catch { }
+
+              const msg =
+                bits.length
+                  ? `검증할 대상이 없습니다. (UV 추출 실패: ${bits.join(", ")})`
+                  : "검증할 대상이 없습니다. (UV 추출 실패)";
+
+              return res.status(200).json({
+                success: false,
+                code: "UV_NO_TARGET",
+                message: msg,
+                diag: {
+                  mode: "uv",
+                  uv_extract: u || null,
+                },
+                timestamp: new Date().toISOString(),
+              });
+            }
+          } catch { }
         }
 
         // ✅ baseText 선택에서 safeMode 기본값(qv)이 끼어들면 core_text를 잃는다.
@@ -11246,7 +11976,7 @@ const verifyCoreHandler = async (req, res) => {
 
         const __caps = {
           total: __capNum(process.env.ENGINE_CALL_CAP_TOTAL, 999),
-          academic: __capNum(process.env.ENGINE_CALL_CAP_ACADEMIC, 999), // crossref+openalex 합
+          academic: __capNum(process.env.ENGINE_CALL_CAP_ACADEMIC, 3), // crossref+openalex 합
           gdelt: __capNum(process.env.ENGINE_CALL_CAP_GDELT, 999),
           naver: __capNum(process.env.ENGINE_CALL_CAP_NAVER, 999), // ✅ 요청 전체 naver query 호출 상한
 
@@ -13845,6 +14575,23 @@ const verifyCoreHandler = async (req, res) => {
       } else if (effMode === "fv") {
         // ✅ FV: 검증 대상은 사용자가 준 사실 문장(core_text)이므로 별도 flash 불필요
         flash = "";
+      } else if (effMode === "uv") {
+        // ✅ UV: URL 검증은 flash(요약/답변) 생성 금지 (엉뚱한 요약/언어 혼입 방지)
+        try {
+          const core =
+            String(
+              partial_scores?.qvfv_pre?.korean_core ||
+              partial_scores?.qvfv_pre?.english_core ||
+              ""
+            ).trim();
+
+          flash = core;
+
+          const __max = Math.max(200, Number(process.env.UV_FLASH_MAX_CHARS || 1800));
+          if (flash.length > __max) flash = flash.slice(0, __max - 1) + "…";
+        } catch (_) {
+          flash = "";
+        }
       } else {
         // ✅ DV/CV: external을 포함한 1차 요약/설명 생성 (기존 로직 유지)
         const flashPrompt =
@@ -16326,37 +17073,155 @@ Rules:
           partial_scores.engines_requested.length > 0)
           ? partial_scores.engines_requested
           : (Array.isArray(engines) ? engines : []),
-      engines_used: (
-        (Array.isArray(partial_scores.engines_used) && partial_scores.engines_used.length > 0)
-          ? partial_scores.engines_used
-          : (
-            (Array.isArray(partial_scores.engines_used_pre) && partial_scores.engines_used_pre.length > 0)
-              ? partial_scores.engines_used_pre
-              : (Array.isArray(engines) ? engines : [])
-          )
-      ),
+      engines_used: (() => {
+        const ps = (partial_scores && typeof partial_scores === "object") ? partial_scores : {};
 
-      engines_excluded: (
-        (Array.isArray(partial_scores.engines_excluded) && partial_scores.engines_excluded.length > 0)
-          ? partial_scores.engines_excluded
-          : (
-            (Array.isArray(partial_scores.engines_requested) && partial_scores.engines_requested.length > 0)
-              ? partial_scores.engines_requested.filter(x => x && !(
-                (
-                  (Array.isArray(partial_scores.engines_used) && partial_scores.engines_used.length > 0)
-                    ? partial_scores.engines_used
-                    : (
-                      (Array.isArray(partial_scores.engines_used_pre) && partial_scores.engines_used_pre.length > 0)
-                        ? partial_scores.engines_used_pre
-                        : (Array.isArray(engines) ? engines : [])
-                    )
-                ).includes(x)
-              ))
-              : (partial_scores.engines_excluded_pre && typeof partial_scores.engines_excluded_pre === "object"
-                ? Object.keys(partial_scores.engines_excluded_pre)
-                : [])
-          )
-      ),
+        // ✅ engines_used가 "존재"하면(빈 배열 포함) 그 값을 존중
+        if (Object.prototype.hasOwnProperty.call(ps, "engines_used") && Array.isArray(ps.engines_used)) {
+          return ps.engines_used;
+        }
+
+        // (레거시) pre만 있으면 사용(단, pre는 빈 배열이면 의미 없음)
+        if (
+          Object.prototype.hasOwnProperty.call(ps, "engines_used_pre") &&
+          Array.isArray(ps.engines_used_pre) &&
+          ps.engines_used_pre.length > 0
+        ) {
+          return ps.engines_used_pre;
+        }
+
+        // 없으면 요청/기본값으로 폴백(기존 호환)
+        return (Array.isArray(engines) ? engines : []);
+      })(),
+
+      engines_excluded: (() => {
+        const ps = (partial_scores && typeof partial_scores === "object") ? partial_scores : {};
+
+        // ✅ engines_excluded가 "존재"하면(빈 배열 포함) 그 값을 존중
+        if (Object.prototype.hasOwnProperty.call(ps, "engines_excluded") && Array.isArray(ps.engines_excluded)) {
+          return ps.engines_excluded;
+        }
+
+        const requested =
+          (Array.isArray(ps.engines_requested) ? ps.engines_requested : (Array.isArray(engines) ? engines : []));
+
+        const used = (() => {
+          if (Object.prototype.hasOwnProperty.call(ps, "engines_used") && Array.isArray(ps.engines_used)) {
+            return ps.engines_used;
+          }
+          if (Array.isArray(ps.engines_used_pre) && ps.engines_used_pre.length > 0) {
+            return ps.engines_used_pre;
+          }
+          return [];
+        })();
+
+        if (Array.isArray(requested) && requested.length > 0) {
+          return requested.filter((x) => x && !used.includes(x));
+        }
+
+        if (ps.engines_excluded_pre && typeof ps.engines_excluded_pre === "object") {
+          return Object.keys(ps.engines_excluded_pre);
+        }
+
+        return [];
+      })(),
+
+      // ✅ expose: 실제 호출/시도 엔진
+      engines_called: (() => {
+        const ps = (partial_scores && typeof partial_scores === "object") ? partial_scores : {};
+
+        // ✅ 이미 FINALIZE에서 채워졌으면 그대로 사용
+        if (Object.prototype.hasOwnProperty.call(ps, "engines_called") && Array.isArray(ps.engines_called)) {
+          try {
+            if (!Object.prototype.hasOwnProperty.call(ps, "engines_called_source")) {
+              ps.engines_called_source = (ps.engines_called.length > 0) ? "partial_scores" : "none";
+            }
+          } catch { }
+          return ps.engines_called;
+        }
+
+        const __norm = (x) => String(x || "").trim().toLowerCase();
+
+        const allowed =
+          (Array.isArray(ps.engines_requested) && ps.engines_requested.length > 0)
+            ? ps.engines_requested
+            : (Array.isArray(engines) ? engines : []);
+
+        const __allowed = new Set((allowed || []).map(__norm).filter(Boolean));
+        const __called = new Set();
+
+        // 1) engine_metrics: calls>0
+        const __m2 =
+          (ps.engine_metrics && typeof ps.engine_metrics === "object")
+            ? ps.engine_metrics
+            : ((engineMetrics && typeof engineMetrics === "object") ? engineMetrics : null);
+
+        if (__m2 && typeof __m2 === "object") {
+          for (const [k, v] of Object.entries(__m2)) {
+            const kk = __norm(k);
+            if (!kk) continue;
+            if (__allowed.size > 0 && !__allowed.has(kk)) continue;
+
+            const calls = Number(v?.calls ?? v?.call_count ?? v?.n_calls ?? v?.count ?? 0);
+            if (Number.isFinite(calls) && calls > 0) __called.add(kk);
+          }
+        }
+
+        // 2) engine_times: ms>0 (키가 *_ms 형태면 suffix 제거)
+        const __t2 =
+          (engineTimes && typeof engineTimes === "object")
+            ? engineTimes
+            : null;
+
+        if (__t2 && typeof __t2 === "object") {
+          for (const [k, v] of Object.entries(__t2)) {
+            let kk = __norm(k);
+            if (!kk) continue;
+            if (kk.endsWith("_ms")) kk = kk.slice(0, -3);
+            if (!kk) continue;
+            if (__allowed.size > 0 && !__allowed.has(kk)) continue;
+
+            const ms = Number(v);
+            if (Number.isFinite(ms) && ms > 0) __called.add(kk);
+          }
+        }
+
+        // 3) engine_queries_used(또는 engine_queries): queries.length>0
+        const __q2 =
+          (ps.engine_queries_used && typeof ps.engine_queries_used === "object")
+            ? ps.engine_queries_used
+            : ((ps.engine_queries && typeof ps.engine_queries === "object") ? ps.engine_queries : null);
+
+        if (__q2 && typeof __q2 === "object") {
+          for (const [k, arr] of Object.entries(__q2)) {
+            const kk = __norm(k);
+            if (!kk) continue;
+            if (__allowed.size > 0 && !__allowed.has(kk)) continue;
+
+            if (Array.isArray(arr) && arr.length > 0) __called.add(kk);
+          }
+        }
+
+        const out = [...__called];
+
+        try {
+          ps.engines_called = out;
+          ps.engines_called_source = (out.length > 0) ? "metrics_or_times_or_queries" : "none";
+        } catch { }
+
+        return out;
+      })(),
+
+      engines_called_source: (() => {
+        const ps = (partial_scores && typeof partial_scores === "object") ? partial_scores : {};
+        if (Object.prototype.hasOwnProperty.call(ps, "engines_called_source")) return ps.engines_called_source;
+
+        if (Object.prototype.hasOwnProperty.call(ps, "engines_called") && Array.isArray(ps.engines_called)) {
+          return (ps.engines_called.length > 0) ? "partial_scores" : "none";
+        }
+
+        return "none";
+      })(),
 
       partial_scores: normalizedPartial,
 
@@ -16446,13 +17311,73 @@ Rules:
 
     // ✅ verdict_label & verdict_detail: truthscore_01 + conflict_meta 기반 요약 라벨
     try {
+      // UV: 본문/텍스트 추출 실패면 "검증할 대상 없음"으로 강제(점수/근거 무효화)
+      const uvFail = (() => {
+        try {
+          if (safeMode !== "uv") return false;
+          const u =
+            partial_scores && typeof partial_scores === "object"
+              ? partial_scores.uv_extract
+              : null;
+          return !!(u && typeof u === "object" && u.ok === false);
+        } catch (_) {
+          return false;
+        }
+      })();
+
       // 0~1 구간 점수
       const t01 =
-        typeof payload.truthscore_01 === "number"
-          ? payload.truthscore_01
-          : typeof truthscore === "number"
-            ? Number(truthscore.toFixed(4))
-            : null;
+        uvFail
+          ? 0.5
+          : typeof payload.truthscore_01 === "number"
+            ? payload.truthscore_01
+            : typeof truthscore === "number"
+              ? Number(truthscore.toFixed(4))
+              : null;
+
+      // UV 추출 실패면 응답 점수/엔진/근거를 "대상 없음" 상태로 정리
+      if (uvFail) {
+        try {
+          payload.truthscore_01 = 0.5;
+          payload.truthscore_pct = 50;
+          payload.truthscore = "50.00%";
+        } catch (_) { }
+
+        try {
+          payload.engines = [];
+          payload.engines_requested = [];
+          payload.engines_used = [];
+          payload.engines_excluded = [];
+          payload.engines_called = [];
+        } catch (_) { }
+
+        try {
+          if (!payload.diagnostics || typeof payload.diagnostics !== "object") {
+            payload.diagnostics = {};
+          }
+          payload.diagnostics.effective_engines = [];
+          payload.diagnostics.effective_engines_count = 0;
+          payload.diagnostics.conflict_meta = {
+            total_blocks: 0,
+            support_blocks: 0,
+            conflict_blocks: 0,
+            conflict_index: null,
+            by_engine: {},
+          };
+        } catch (_) { }
+
+        try {
+          if (partial_scores && typeof partial_scores === "object") {
+            partial_scores.conflict_meta = {
+              total_blocks: 0,
+              support_blocks: 0,
+              conflict_blocks: 0,
+              conflict_index: null,
+              by_engine: {},
+            };
+          }
+        } catch (_) { }
+      }
 
       const diag = payload.diagnostics || {};
       const effEngines = Array.isArray(diag.effective_engines)
@@ -16479,11 +17404,31 @@ Rules:
           ? cMeta.conflict_index
           : null;
 
+      const sBlocks =
+        cMeta && typeof cMeta.support_blocks === "number"
+          ? cMeta.support_blocks
+          : null;
+      const cBlocks =
+        cMeta && typeof cMeta.conflict_blocks === "number"
+          ? cMeta.conflict_blocks
+          : null;
+
+      // ✅ UV 추출 실패면 근거가 있어도 "판정 대상 없음" 우선
+      const hasAnyJudgeEvidence =
+        uvFail
+          ? false
+          : (typeof sBlocks === "number" && typeof cBlocks === "number")
+            ? ((sBlocks + cBlocks) > 0)
+            : (cIndex != null); // fallback: conflict_index가 있으면 최소한의 근거가 있다는 뜻
+
       let vLabel = null;
 
       if (t01 != null) {
+        if (!hasAnyJudgeEvidence) {
+          vLabel = "insufficient_evidence";
+        }
         // 매우 높은 점수 + 충돌 없음/약함 → likely_true
-        if (t01 >= 0.75 && (cIndex == null || cIndex <= 0.2)) {
+        else if (t01 >= 0.75 && (cIndex == null || cIndex <= 0.2)) {
           vLabel = "likely_true";
         }
         // 매우 낮은 점수 + 충돌 강함 → likely_false_conflict
@@ -16526,6 +17471,31 @@ Rules:
             "사실이 아닐 가능성이 높고, 검색된 근거들과 상충합니다.";
         } else if (vLabel === "likely_false") {
           vMessage = "사실이 아닐 가능성이 높습니다.";
+        } else if (vLabel === "insufficient_evidence") {
+          if (uvFail) {
+            const u =
+              partial_scores && typeof partial_scores === "object"
+                ? partial_scores.uv_extract
+                : null;
+
+            const bits = [];
+            try {
+              const r = u && typeof u.reason === "string" ? u.reason : "";
+              const st = u && typeof u.status === "number" ? u.status : null;
+              const ct = u && typeof u.content_type === "string" ? u.content_type : "";
+              if (r) bits.push(`reason=${r}`);
+              if (st != null) bits.push(`status=${st}`);
+              if (ct) bits.push(`content_type=${ct}`);
+            } catch (_) { }
+
+            vMessage = bits.length
+              ? `검증할 대상이 없습니다. (UV 추출 실패: ${bits.join(", ")})`
+              : "검증할 대상이 없습니다. (UV 추출 실패)";
+          } else {
+            vMessage =
+              "근거가 충분하지 않아 판단할 수 없습니다. (추가 근거 수집/쿼리 보강이 필요합니다.)";
+          }
+        } else if (vLabel === "borderline_uncertain") {
         } else if (vLabel === "borderline_uncertain") {
           vMessage =
             "근거가 충분하지 않아 불확실하거나 추가 검증이 필요합니다.";
@@ -18260,6 +19230,15 @@ app.get("/api/admin/errors/recent", requireDiag, (req, res) => {
 
 // ✅ Health check (Render / uptime / external monitor)
 app.get("/api/health", (req, res) => {
+  return res.status(200).json({
+    success: true,
+    ok: true,
+    ts: new Date().toISOString(),
+  });
+});
+
+// ✅ compat: some clients/monitors call /api/ping
+app.get("/api/ping", (req, res) => {
   return res.status(200).json({
     success: true,
     ok: true,
